@@ -81,19 +81,22 @@ Acceptance:
 **Goal**: Hermes-style autonomous skill creation — the agent saves reusable workflows as `SKILL.md` files it can load on demand. Design: [`docs/design/skills.md`](docs/design/skills.md). Depends on the M2 tool loop.
 
 Tasks:
-- [ ] `internal/skills`: filesystem store (`<data>/skills/<category>/<name>/SKILL.md`), agentskills.io-compatible frontmatter subset via `yaml.v3`, validation (slug regex, ≤60-char description, required sections, size caps), path hardening for `references/`
-- [ ] tools: `skills_list` / `skill_view` (read), `skill_manage` (create/patch/edit/delete/write_file/remove_file; write-gated)
-- [ ] end-of-turn creation-trigger prompt (5+ tool calls succeeded / user correction / error→working path / non-trivial workflow)
+- [ ] `internal/skills`: filesystem store — global `<data>/skills/` + project `<workspace>/.yagent/skills/` (both read roots), agentskills.io-compatible frontmatter subset via `yaml.v3`, lifecycle metadata (`source`/`created_at`/`last_used`, store-managed), validation (slug regex, ≤60-char description, required sections, size caps), path hardening for `references/`, dangerous-pattern scanner (block/flag verdicts), dedup helper
+- [ ] tools: `skills_list` / `skill_view` (read; bumps `last_used`), `skill_manage` (create/patch/edit/delete/write_file/remove_file, `scope: global|project`; write-gated; per-session cap)
+- [ ] end-of-turn creation-trigger prompt (5+ tool calls succeeded / user correction / error→working path / non-trivial workflow) with embedded authoring rules + dedup-before-create + ≤2 staged writes/session
 - [ ] approval gate `skills.write_approval` (default true): staging under `<data>/pending/skills/`, `/skills pending|diff|approve|reject`
 - [ ] REPL invocation: `/skill-name` loads SKILL.md; `/skills list`
-- [ ] L0 budget: skills_list in system prompt capped (~3k tokens); activation respects L1 budget
-- [ ] tests: fake-LLM scripted skill_manage flows, gate on/off, patch ambiguity, path traversal, frontmatter validation retry
+- [ ] L0 budget: skills_list in system prompt capped (~3k tokens / 40 skills, evict by `last_used`); activation respects L1 budget
+- [ ] tests: fake-LLM scripted skill_manage flows, gate on/off, patch ambiguity, path traversal, frontmatter validation retry, dedup rejection, session cap, scanner block/flag, project-store write
 
 Acceptance:
 - [ ] scripted 5+ tool-call task → agent proposes a skill → staged → approved → `skills_list` shows it next session
 - [ ] "Remember how I fixed the Ollama ROCm env issue" → skill created, recalled and followed later
 - [ ] user correction → existing skill patched via `skill_manage patch`, never applied without approval
-- [ ] `write_approval: false` writes immediately; 100-skill store stays under the L0 cap
+- [ ] duplicate skill proposal merged into the existing skill; ≤2 staged writes per session enforced
+- [ ] `rm -rf /` skill blocked at write; "ignore previous instructions" skill loads with a visible warning
+- [ ] project-scoped skill in `.yagent/skills/` available in any session on that repo
+- [ ] `write_approval: false` writes immediately; 100-skill store stays under the L0 cap (40 most recently used)
 
 ## M4 — Codebase index
 
