@@ -16,6 +16,7 @@ import (
 
 	"yagent/internal/llm"
 	"yagent/internal/memory"
+	"yagent/internal/skills"
 	"yagent/internal/tools"
 )
 
@@ -126,7 +127,7 @@ func (c *captureTokens) all() string {
 func setup(t *testing.T, s *scriptedLLM, allow bool, maxIter int) (*Agent, *stubApprover, *captureTokens, string) {
 	t.Helper()
 	ws := t.TempDir()
-	reg := tools.NewRegistry(ws, nil, "")
+	reg := tools.NewRegistry(ws, nil, "", nil, true)
 	ap := &stubApprover{allow: allow}
 	tok := &captureTokens{}
 	client := llm.NewClient(s.ts.URL, "test-model")
@@ -399,7 +400,7 @@ func TestBudgetSummarizesOldestHalf(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "big.txt", strings.Repeat("x", 800)+"\n")
-	reg := tools.NewRegistry(ws, nil, "")
+	reg := tools.NewRegistry(ws, nil, "", nil, true)
 	summ := &fixedSummaryLLM{summary: "SUM: user prefers tabs"}
 
 	client := llm.NewClient(s.ts.URL, "test-model")
@@ -446,7 +447,7 @@ func TestRunPersistsMessages(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "a.txt", "data")
-	reg := tools.NewRegistry(ws, nil, "")
+	reg := tools.NewRegistry(ws, nil, "", nil, true)
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true},
 		Config{MaxIterations: 10, Store: st, SessionID: sess.ID}, ws)
@@ -482,7 +483,7 @@ func TestBudgetPersistsSummary(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "big.txt", strings.Repeat("y", 800)+"\n")
-	reg := tools.NewRegistry(ws, nil, "")
+	reg := tools.NewRegistry(ws, nil, "", nil, true)
 	summ := &fixedSummaryLLM{summary: "persisted summary text"}
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true},
@@ -517,7 +518,7 @@ func TestRecallInjectedAndSessionDedup(t *testing.T) {
 
 	s := newScriptedLLM(t, [][]string{finalContent("ok")})
 	ws := t.TempDir()
-	reg := tools.NewRegistry(ws, nil, "")
+	reg := tools.NewRegistry(ws, nil, "", nil, true)
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true},
 		Config{MaxIterations: 10, Vectors: vs, SessionID: "s-current"}, ws)
@@ -536,5 +537,160 @@ func TestRecallInjectedAndSessionDedup(t *testing.T) {
 	}
 	if strings.Contains(req, "current session fact") {
 		t.Error("current-session memory was not deduped")
+	}
+}
+
+// ---------- M3.5: skills ----------
+
+// openSkills creates a skills store wired to a scratch workspace.
+func openSkills(t *testing.T) *skills.Store {
+	t.Helper()
+	sk, err := skills.Open(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("open skills store: %v", err)
+	}
+	return sk
+}
+
+func validSkillBody(name, description string) string {
+	return "---\nname: " + name + "\ndescription: " + description + "\n---\n" +
+		"## When to Use\nwhen asked\n## Procedure\n1. do it\n## Verification\nok\n"
+}
+
+func TestRunOffersSkillCreationAfterComplexTurn(t *testing.T) {
+	sk := openSkills(t)
+	createArgs, _ := json.Marshal(map[string]any{
+		"action": "create", "name": "read-a",
+		"content": validSkillBody("read-a", "read file a when needed"),
+	})
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "a.go"}`),
+		toolCall("c2", "fs_read", `{"path": "a.go"}`),
+		toolCall("c3", "fs_read", `{"path": "a.go"}`),
+		toolCall("c4", "fs_read", `{"path": "a.go"}`),
+		toolCall("c5", "fs_read", `{"path": "a.go"}`),
+		finalContent("done"),
+		toolCall("s1", "skill_manage", string(createArgs)),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.go", "package main\n")
+	reg := tools.NewRegistry(ws, nil, "", sk, true)
+	ap := &stubApprover{allow: true}
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, ap, Config{MaxIterations: 10, Skills: sk}, ws)
+
+	answer, err := a.Run(context.Background(), "do the thing")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("answer = %q", answer)
+	}
+	// skill_manage is self-gated: it must not hit the generic y/n approver
+	if ap.n != 0 {
+		t.Errorf("approver called %d times for a self-gated skill write", ap.n)
+	}
+	pending, err := sk.ListPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Action != "create" || pending[0].Name != "read-a" {
+		t.Fatalf("pending = %+v, want the proposed skill staged", pending)
+	}
+	if sk.Exists("read-a") {
+		t.Error("skill applied before approval")
+	}
+}
+
+func TestRunNoSkillOpportunityForSimpleTurn(t *testing.T) {
+	sk := openSkills(t)
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "a.go"}`),
+		finalContent("done"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.go", "x")
+	reg := tools.NewRegistry(ws, nil, "", sk, true)
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 10, Skills: sk}, ws)
+
+	if _, err := a.Run(context.Background(), "small task"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) != 2 {
+		t.Errorf("requests = %d, want 2 (task + answer); a sub-5-call turn must not add an opportunity request", len(s.requests))
+	}
+	if pl, _ := sk.ListPending(); len(pl) != 0 {
+		t.Errorf("unexpected staged writes: %+v", pl)
+	}
+}
+
+func TestRunInjectsSkillIndex(t *testing.T) {
+	sk := openSkills(t)
+	if _, err := sk.Apply(skills.Op{Action: skills.ActionCreate, Name: "code-review-go",
+		Content: validSkillBody("code-review-go", "review Go code")}); err != nil {
+		t.Fatal(err)
+	}
+	s := newScriptedLLM(t, [][]string{finalContent("ok")})
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, nil, "", sk, true)
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 5, Skills: sk}, ws)
+
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req := string(s.requests[0])
+	if !strings.Contains(req, "Available skills") || !strings.Contains(req, "code-review-go") {
+		t.Errorf("L0 skills index not injected: %q", req[:300])
+	}
+}
+
+func TestFinishOffersSkillCreation(t *testing.T) {
+	sk := openSkills(t)
+	createArgs, _ := json.Marshal(map[string]any{
+		"action": "create", "name": "session-skill",
+		"content": validSkillBody("session-skill", "session skill"),
+	})
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "a.go"}`),
+		finalContent("done"),
+		toolCall("s1", "skill_manage", string(createArgs)),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.go", "x")
+	reg := tools.NewRegistry(ws, nil, "", sk, true)
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 10, Skills: sk}, ws)
+
+	if _, err := a.Run(context.Background(), "task"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := a.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	pending, _ := sk.ListPending()
+	if len(pending) != 1 || pending[0].Name != "session-skill" {
+		t.Errorf("pending after Finish = %+v", pending)
+	}
+}
+
+func TestInjectSystemAppearsInNextRequest(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{finalContent("ok")})
+	a, _, _, _ := setup(t, s, true, 5)
+	a.InjectSystem("SKILL CONTENT: run the checklist")
+
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req := string(s.requests[0])
+	if !strings.Contains(req, "SKILL CONTENT: run the checklist") {
+		t.Error("injected skill content missing from the request")
 	}
 }

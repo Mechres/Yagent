@@ -27,7 +27,7 @@ Developed and tuned for a single **AMD RX 6700 XT (12 GB, RDNA2 / gfx1031)**:
 
 ## Status
 
-**M1–M3 complete** — streaming chat CLI, tool loop (9 workspace-scoped tools with risk-gated approvals), and memory: SQLite sessions (`yagent sessions`, `chat --continue <id>`), running-summary context budget, chromem semantic recall with `memory_save`/`memory_search`, session-end summaries. Acceptance verified: 60-turn bounded session + cross-session recall e2e; chat runs on Qwythos-9B via llama.cpp :8089, semantic recall needs an embeddings-capable server (llama.cpp `--embeddings` or Ollama `nomic-embed-text`). Next: **M3.5 — skills (procedural memory)** per [`docs/PLAN.md`](docs/PLAN.md).
+**M1–M3.5 complete** — streaming chat CLI, tool loop (9 workspace-scoped tools with risk-gated approvals), memory (SQLite sessions with `yagent sessions` / `chat --continue <id>`, running-summary context budget, chromem semantic recall with `memory_save`/`memory_search`, session-end summaries), and skills (procedural memory): filesystem `SKILL.md` store, progressive disclosure, autonomous creation with a write-approval gate and dangerous-pattern scanner, `/skills` review commands and `/skill-name` invocation. Acceptance verified: 60-turn bounded session + cross-session recall e2e; chat, skills and semantic recall run on Qwythos-9B via llama.cpp :8089 (started with `--embeddings --pooling mean`; the model-proposed skill flow — corrected → staged → approved → loaded next session — was exercised live). Next: **M4 — codebase index** per [`docs/PLAN.md`](docs/PLAN.md).
 
 - Start here: [`AGENTS.md`](AGENTS.md) (contributor/agent guide)
 - Execution plan: [`docs/PLAN.md`](docs/PLAN.md)

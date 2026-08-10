@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,11 +12,26 @@ import (
 
 // Config contains runtime configuration for the agent.
 type Config struct {
-	ServerURL      string `yaml:"server_url"`
-	Model          string `yaml:"model"`
-	EmbeddingModel string `yaml:"embedding_model"`
-	DataDir        string `yaml:"data_dir"`
-	ContextWindow  int    `yaml:"context_window"`
+	ServerURL      string       `yaml:"server_url"`
+	Model          string       `yaml:"model"`
+	EmbeddingModel string       `yaml:"embedding_model"`
+	DataDir        string       `yaml:"data_dir"`
+	ContextWindow  int          `yaml:"context_window"`
+	Skills         SkillsConfig `yaml:"skills"`
+	// Path is the config file this was loaded from ("" when none existed);
+	// used to persist runtime toggles like skills.write_approval.
+	Path string `yaml:"-"`
+}
+
+// SkillsConfig configures procedural memory (M3.5).
+type SkillsConfig struct {
+	// WriteApproval gates skill writes: when true (default) every skill_manage
+	// write is staged for review instead of applied.
+	WriteApproval bool `yaml:"write_approval"`
+	// DataDir overrides where the global skills store lives (default: data_dir).
+	DataDir string `yaml:"data_dir"`
+	// ProjectDir overrides the project store (default: <workspace>/.yagent/skills).
+	ProjectDir string `yaml:"project_dir"`
 }
 
 // Defaults applied when no config file and no env override is present.
@@ -70,6 +86,7 @@ func LoadConfig(path string) (*Config, error) {
 		Model:          DefaultModel,
 		EmbeddingModel: DefaultEmbeddingModel,
 		ContextWindow:  DefaultContextWindow,
+		Skills:         SkillsConfig{WriteApproval: true},
 	}
 	dataDir, err := DefaultDataDir()
 	if err != nil {
@@ -85,6 +102,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		usePath = def
 	}
+	cfg.Path = usePath
 
 	data, err := os.ReadFile(usePath)
 	switch {
@@ -142,4 +160,71 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.DataDir = dataDir
 	}
 	return cfg, nil
+}
+
+// SetWriteApproval persists skills.write_approval to the config file at path
+// (creating it if needed), preserving every other key. Returns an error only
+// on I/O or YAML problems; the caller may fall back to an in-memory toggle.
+func SetWriteApproval(path string, on bool) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+	var root yaml.Node
+	if len(bytes.TrimSpace(data)) == 0 {
+		root = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	} else if err := yaml.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("parse config %s: %w", path, err)
+	}
+	doc := &root
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		doc = &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	}
+	m := doc.Content[0]
+	if m.Kind != yaml.MappingNode {
+		return fmt.Errorf("config %s is not a mapping", path)
+	}
+	skills := mappingValue(m, "skills")
+	if skills == nil {
+		skills = &yaml.Node{Kind: yaml.MappingNode}
+		m.Content = append(m.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "skills"},
+			skills)
+	}
+	setMappingKey(skills, "write_approval",
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: strconv.FormatBool(on)})
+
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("render config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("config dir: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
+}
+
+// mappingValue returns the value node for key in a mapping, or nil.
+func mappingValue(m *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func setMappingKey(m *yaml.Node, key string, value *yaml.Node) {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			m.Content[i+1] = value
+			return
+		}
+	}
+	m.Content = append(m.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		value)
 }

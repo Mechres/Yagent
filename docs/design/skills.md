@@ -131,7 +131,7 @@ Hermes's triggers, adopted verbatim: the agent creates a skill **after** a turn 
 3. The user corrected its approach
 4. It discovered a non-trivial workflow
 
-Mechanically: at end of turn (and at session end), the loop appends a one-shot *skill-creation opportunity* prompt (no tools) — *"Did this turn meet a trigger above? If so propose a skill with `skill_manage create`; otherwise reply with nothing."* The model's proposal goes through the normal `skill_manage` path and the approval gate.
+Mechanically: at end of turn (and at session end), the loop appends a one-shot *skill-creation opportunity* prompt — *"Did this turn meet a trigger above? If so propose a skill with `skill_manage create`; otherwise reply with nothing."* The prompt offers **only the skills tools** (`skills_list`, `skill_view`, `skill_manage`), because the authoring rules require the model to consult `skills_list` before proposing. The model's proposal goes through the normal `skill_manage` path and the approval gate. Trigger count: the agent offers the opportunity when a turn used 5+ tool calls (the `totalToolCalls` counter also drives the session-end pass). The exchange is persisted only when the model actually proposes a write, so quiet turns leave no trace in the session store.
 
 **Authoring rules** are embedded in that prompt (agentskills.io best practices; small models need explicit standards): description ≤60 chars and states the trigger; standard section order (When to Use → Procedure → Pitfalls → Verification); concrete steps with real paths/commands from this session; never invent tools or commands the skill can't actually run.
 
@@ -157,7 +157,10 @@ Hermes defaults `skills.write_approval: false` (write freely). **Yagent defaults
 
 - `write_approval: false` → writes apply immediately
 - `write_approval: true` (default) → every `skill_manage` write is **staged** under `<data>/pending/skills/<id>/` (survives restarts; full unified diff) instead of applied
-- REPL review surface (extends the M1 slash-command set):
+
+`skill_manage` is **self-gated** (never a generic y/n prompt): the gate *is* the staging step. Gate on → the call returns "staged as `<id>`" and the user reviews via the slash commands below; gate off → applies immediately. The cap counter and staging live in the store, so a staged write is not visible to the agent until approved.
+
+REPL review surface (extends the M1 slash-command set):
 
 ```
 /skills list                # name + description of all skills
@@ -176,13 +179,14 @@ Approval uses the same y/n prompt machinery as dangerous `fs`/`shell` writes. A 
 - L0 list: always present, hard-capped (~3k tokens); evicts by `last_used` desc, then `created_at` desc
 - Activation: `skill_view` result is a tool result; if injecting it would blow the window, it is truncated and the running summary notes "skill X loaded partially" (`memory.md` L1 rules apply)
 - Skills never load automatically by keyword — only by explicit model tool call or `/skill-name`
+- Because the llama.cpp template in use accepts only ONE system message per request, the L0 index (plus running summary, recall and any `/skill-name` injection) is merged into the single leading system message in `assembleContext` — see [`docs/models.md`](../models.md). Keep it that way; don't reintroduce separate system messages.
 
 ## Implementation mapping (M3.5)
 
-- `internal/skills`: store (`Open(dataDir, workspace)` → `List`, `View(name, path)`, `Write`, `Patch`, `Delete`, `RemoveFile`), lifecycle metadata updates on view/write, frontmatter parse/validate (`yaml.v3`), path hardening, dangerous-pattern scanner table, dedup helper (description overlap)
-- `internal/tools`: `skills_list`, `skill_view` (read), `skill_manage` (write; stages instead of applying when gate on; enforces per-session cap counter)
-- `internal/agent`: end-of-turn creation-trigger prompt (with authoring rules + cap); gate wiring; budget for L0 + activations
-- `internal/ui`: `/skills` + `/skill-name` commands; approve/reject flow reusing the approval prompt
+- `internal/skills`: store (`Open(dataDir, workspace)` / `OpenProject(dataDir, projectDir)` → `List`, `View(name, path)`, `Apply(op)`, `Stage(op)`, `ApprovePending(id)`, `RejectPending(id)`, `ListPending`, `PendingDiff`, `StagedCount`), lifecycle metadata updates on view/write, frontmatter parse/validate (`yaml.v3`), path hardening, dangerous-pattern scanner table, dedup helper (description overlap). Mutations are unified in one `Op` struct (`create`/`patch`/`edit`/`delete`/`write_file`/`remove_file`, `scope: global|project`); `Stage` validates + writes a review diff to `<data>/pending/skills/<id>/` and bumps the session cap, `Apply` validates + mutates immediately.
+- `internal/tools`: `skills_list`, `skill_view` (read, bumps `last_used`), `skill_manage` (write, **self-gated**: gate on → `Stage`, gate off → `Apply`; enforces per-session cap counter). Registered only when a skills store is configured.
+- `internal/agent`: L0 index injected each request (merged into the single system message); end-of-turn creation-trigger pass offering only the skills tools (with authoring rules + cap); `InjectSystem` for `/skill-name`; `Finish` for the session-end pass.
+- `internal/ui`: `/skills` + `/skill-name` commands; approve/reject flow; `/skills approval on|off` persists to the config file via `config.SetWriteApproval`.
 - config: `skills.write_approval` (default true), `skills.data_dir` (default data dir), `skills.project_dir` (default `<workspace>/.yagent/skills`)
 
 Tests (no network — fake LLM server pattern from M2):
@@ -199,12 +203,12 @@ Tests (no network — fake LLM server pattern from M2):
 
 ## Acceptance (M3.5)
 
-- [ ] "Remember how I fixed the Ollama ROCm env issue" → skill created (staged), approved, recalled via `skills_list` in a later session
-- [ ] scripted 60-tool-call session creates ≤ 3 skills, all gated, none applied without approval; a duplicate proposal is merged into the existing skill instead
-- [ ] a wrong procedure in an existing skill is patched via `skill_manage patch` after user correction
-- [ ] a skill containing `rm -rf /` is blocked at write time; one with "ignore previous instructions" loads with a visible warning
-- [ ] a project-scoped skill committed to `.yagent/skills/` is available in any session on that repo
-- [ ] 100 skills installed → `skills_list` output stays under the L0 budget cap, keeping the 40 most recently used
+- [x] "Remember how I fixed the Ollama ROCm env issue" → skill created (staged), approved, recalled via `skills_list` in a later session
+- [x] scripted 60-tool-call session creates ≤ 3 skills, all gated, none applied without approval; a duplicate proposal is merged into the existing skill instead
+- [x] a wrong procedure in an existing skill is patched via `skill_manage patch` after user correction
+- [x] a skill containing `rm -rf /` is blocked at write time; one with "ignore previous instructions" loads with a visible warning
+- [x] a project-scoped skill committed to `.yagent/skills/` is available in any session on that repo
+- [x] 100 skills installed → `skills_list` output stays under the L0 budget cap, keeping the 40 most recently used
 
 ## Follow-ups (deferred, same staging/approval machinery)
 

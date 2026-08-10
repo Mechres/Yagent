@@ -13,6 +13,7 @@ import (
 	"yagent/internal/config"
 	"yagent/internal/llm"
 	"yagent/internal/memory"
+	"yagent/internal/skills"
 	"yagent/internal/tools"
 )
 
@@ -23,9 +24,16 @@ import (
 // exit, the session is summarized into long-term memory (best-effort).
 // Slash commands:
 //
-//	/exit   quit
-//	/clear  reset conversation history
-//	/help   list commands
+//	/exit                  quit
+//	/clear                 reset conversation history
+//	/help                  list commands
+//	/skills list           list skills
+//	/skills pending        staged skill writes
+//	/skills diff <id>      full diff of a staged write
+//	/skills approve <id|all>
+//	/skills reject <id|all>
+//	/skills approval on|off
+//	/skill-name            load a SKILL.md into context
 func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string) error {
 	ws, err := os.Getwd()
 	if err != nil {
@@ -42,12 +50,22 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	}
 	defer vs.Close()
 
+	skillsRoot := cfg.Skills.DataDir
+	if skillsRoot == "" {
+		skillsRoot = cfg.DataDir
+	}
+	sk, err := skills.OpenProject(skillsRoot, cfg.Skills.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("open skills store: %w", err)
+	}
+
 	sessionID, initialHistory, initialSummary, err := resolveSession(ctx, st, ws, continueID)
 	if err != nil {
 		return err
 	}
 
-	registry := tools.NewRegistry(ws, vs, sessionID)
+	writeApproval := cfg.Skills.WriteApproval
+	registry := tools.NewRegistry(ws, vs, sessionID, sk, writeApproval)
 	reader := bufio.NewReader(os.Stdin)
 	w := os.Stdout
 	ap := &replApprover{reader: reader, writer: w}
@@ -60,10 +78,16 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		Store:          st,
 		SessionID:      sessionID,
 		Vectors:        vs,
+		Skills:         sk,
 		InitialHistory: initialHistory,
 		InitialSummary: initialSummary,
 		Window:         cfg.ContextWindow,
 	}, ws)
+
+	skillsCmd := &skillsHandler{
+		store: sk, reg: registry, cfg: cfg, w: w,
+		approval: &writeApproval,
+	}
 
 	fmt.Printf("yagent chat — session %s (/exit, /clear, /help)\n", sessionID)
 	if initialSummary != "" {
@@ -90,10 +114,17 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			fmt.Fprintln(w, "history cleared")
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /help")
+			fmt.Fprintln(w, "commands: /exit /clear /help /skills list|pending|diff|approve|reject|approval /skill-name")
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
+			handled, err := skillsCmd.handle(line, ag)
+			if err != nil {
+				fmt.Fprintf(w, "error: %v\n", err)
+			}
+			if handled {
+				continue
+			}
 			fmt.Fprintln(w, "unknown command:", line)
 			continue
 		}
@@ -109,11 +140,168 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		fmt.Fprintln(w) // next prompt on a fresh line after the streamed answer
 	}
 done:
-	// Session-end summary job: fold the session into long-term memory.
+	// End-of-session skill-creation opportunity, then the session-summary job.
+	if err := ag.Finish(ctx); err != nil {
+		fmt.Fprintf(w, "\nwarning: skill review: %v\n", err)
+	}
 	if err := memory.SummarizeSession(ctx, client, st, vs, sessionID); err != nil {
 		fmt.Fprintf(w, "\nwarning: session summary: %v\n", err)
 	}
 	return nil
+}
+
+// skillsHandler implements the /skills and /skill-name REPL commands.
+type skillsHandler struct {
+	store    *skills.Store
+	reg      *tools.Registry
+	cfg      *config.Config
+	w        io.Writer
+	approval *bool
+}
+
+func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
+	rest := strings.TrimPrefix(line, "/")
+	switch {
+	case rest == "skills":
+		fmt.Fprintln(h.w, "usage: /skills list | pending | diff <id> | approve <id|all> | reject <id|all> | approval on|off")
+		return true, nil
+	case strings.HasPrefix(rest, "skills "):
+		return h.handleSkills(strings.Fields(rest)[1:])
+	default:
+		// /skill-name: load a SKILL.md into context and continue.
+		content, warning, err := h.store.View(rest, "")
+		if err != nil {
+			return false, nil // not a skill; let the caller say "unknown command"
+		}
+		ag.InjectSystem("Skill loaded (procedural memory) — follow it when applicable:\n\n" + content)
+		fmt.Fprintf(h.w, "loaded skill %s\n", rest)
+		if warning != "" {
+			fmt.Fprintln(h.w, warning)
+		}
+		return true, nil
+	}
+}
+
+func (h *skillsHandler) handleSkills(args []string) (bool, error) {
+	if len(args) == 0 {
+		fmt.Fprintln(h.w, "usage: /skills list | pending | diff <id> | approve <id|all> | reject <id|all> | approval on|off")
+		return true, nil
+	}
+	switch args[0] {
+	case "list":
+		metas := h.store.List()
+		if len(metas) == 0 {
+			fmt.Fprintln(h.w, "no skills yet")
+			return true, nil
+		}
+		for _, m := range metas {
+			fmt.Fprintf(h.w, "- %s [%s, %s%s]: %s\n", m.Name, m.Category, m.Source,
+				projectSuffix(m.Root), m.Description)
+		}
+		return true, nil
+	case "pending":
+		pending, err := h.store.ListPending()
+		if err != nil {
+			return true, err
+		}
+		if len(pending) == 0 {
+			fmt.Fprintln(h.w, "no pending skill writes (approval gate on: writes are staged here)")
+			return true, nil
+		}
+		for _, p := range pending {
+			fmt.Fprintf(h.w, "%s  %-11s %s\n", shortID(p.ID), p.Action, p.Name)
+		}
+		return true, nil
+	case "diff":
+		if len(args) < 2 {
+			return true, fmt.Errorf("diff needs an id")
+		}
+		diff, err := h.store.PendingDiff(args[1])
+		if err != nil {
+			return true, err
+		}
+		fmt.Fprintln(h.w, diff)
+		return true, nil
+	case "approve":
+		if len(args) < 2 {
+			return true, fmt.Errorf("approve needs an id or 'all'")
+		}
+		ids, err := h.pendingIDs(args[1])
+		if err != nil {
+			return true, err
+		}
+		for _, id := range ids {
+			if warning, err := h.store.ApprovePending(id); err != nil {
+				fmt.Fprintf(h.w, "error: %s: %v\n", id, err)
+			} else {
+				fmt.Fprintf(h.w, "approved %s\n", id)
+				if warning != "" {
+					fmt.Fprintln(h.w, warning)
+				}
+			}
+		}
+		return true, nil
+	case "reject":
+		if len(args) < 2 {
+			return true, fmt.Errorf("reject needs an id or 'all'")
+		}
+		ids, err := h.pendingIDs(args[1])
+		if err != nil {
+			return true, err
+		}
+		for _, id := range ids {
+			if err := h.store.RejectPending(id); err != nil {
+				fmt.Fprintf(h.w, "error: %s: %v\n", id, err)
+			} else {
+				fmt.Fprintf(h.w, "rejected %s\n", id)
+			}
+		}
+		return true, nil
+	case "approval":
+		if len(args) < 2 || (args[1] != "on" && args[1] != "off") {
+			return true, fmt.Errorf("approval needs 'on' or 'off'")
+		}
+		on := args[1] == "on"
+		*h.approval = on
+		h.reg.SetSkillsWriteApproval(on)
+		if err := config.SetWriteApproval(h.cfg.Path, on); err != nil {
+			fmt.Fprintf(h.w, "note: could not persist to config (%v); toggle is session-only\n", err)
+		} else {
+			fmt.Fprintf(h.w, "skills approval %s (persisted to %s)\n", args[1], h.cfg.Path)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// pendingIDs resolves an id or "all" to the list of staged write ids.
+func (h *skillsHandler) pendingIDs(id string) ([]string, error) {
+	if id != "all" {
+		return []string{id}, nil
+	}
+	pending, err := h.store.ListPending()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(pending))
+	for _, p := range pending {
+		ids = append(ids, p.ID)
+	}
+	return ids, nil
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func projectSuffix(root string) string {
+	if root == skills.RootProject {
+		return ", project"
+	}
+	return ""
 }
 
 // resolveSession returns the session id plus seeded history/summary: a new

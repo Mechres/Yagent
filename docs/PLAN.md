@@ -81,22 +81,22 @@ Acceptance: *(all verified — 60-turn budget + remember/recall e2e against fake
 **Goal**: Hermes-style autonomous skill creation — the agent saves reusable workflows as `SKILL.md` files it can load on demand. Design: [`docs/design/skills.md`](docs/design/skills.md). Depends on the M2 tool loop.
 
 Tasks:
-- [ ] `internal/skills`: filesystem store — global `<data>/skills/` + project `<workspace>/.yagent/skills/` (both read roots), agentskills.io-compatible frontmatter subset via `yaml.v3`, lifecycle metadata (`source`/`created_at`/`last_used`, store-managed), validation (slug regex, ≤60-char description, required sections, size caps), path hardening for `references/`, dangerous-pattern scanner (block/flag verdicts), dedup helper
-- [ ] tools: `skills_list` / `skill_view` (read; bumps `last_used`), `skill_manage` (create/patch/edit/delete/write_file/remove_file, `scope: global|project`; write-gated; per-session cap)
-- [ ] end-of-turn creation-trigger prompt (5+ tool calls succeeded / user correction / error→working path / non-trivial workflow) with embedded authoring rules + dedup-before-create + ≤2 staged writes/session
-- [ ] approval gate `skills.write_approval` (default true): staging under `<data>/pending/skills/`, `/skills pending|diff|approve|reject`
-- [ ] REPL invocation: `/skill-name` loads SKILL.md; `/skills list`
-- [ ] L0 budget: skills_list in system prompt capped (~3k tokens / 40 skills, evict by `last_used`); activation respects L1 budget
-- [ ] tests: fake-LLM scripted skill_manage flows, gate on/off, patch ambiguity, path traversal, frontmatter validation retry, dedup rejection, session cap, scanner block/flag, project-store write
+- [x] `internal/skills`: filesystem store — global `<data>/skills/` + project `<workspace>/.yagent/skills/` (both read roots), agentskills.io-compatible frontmatter subset via `yaml.v3`, lifecycle metadata (`source`/`created_at`/`last_used`, store-managed), validation (slug regex, ≤60-char description, required sections, size caps), path hardening for `references/`, dangerous-pattern scanner (block/flag verdicts), dedup helper
+- [x] tools: `skills_list` / `skill_view` (read; bumps `last_used`), `skill_manage` (create/patch/edit/delete/write_file/remove_file, `scope: global|project`; write-gated; per-session cap)
+- [x] end-of-turn creation-trigger prompt (5+ tool calls succeeded / user correction / error→working path / non-trivial workflow) with embedded authoring rules + dedup-before-create + ≤2 staged writes/session
+- [x] approval gate `skills.write_approval` (default true): staging under `<data>/pending/skills/`, `/skills pending|diff|approve|reject`
+- [x] REPL invocation: `/skill-name` loads SKILL.md; `/skills list`
+- [x] L0 budget: skills_list in system prompt capped (~3k tokens / 40 skills, evict by `last_used`); activation respects L1 budget
+- [x] tests: fake-LLM scripted skill_manage flows, gate on/off, patch ambiguity, path traversal, frontmatter validation retry, dedup rejection, session cap, scanner block/flag, project-store write
 
-Acceptance:
-- [ ] scripted 5+ tool-call task → agent proposes a skill → staged → approved → `skills_list` shows it next session
-- [ ] "Remember how I fixed the Ollama ROCm env issue" → skill created, recalled and followed later
-- [ ] user correction → existing skill patched via `skill_manage patch`, never applied without approval
-- [ ] duplicate skill proposal merged into the existing skill; ≤2 staged writes per session enforced
-- [ ] `rm -rf /` skill blocked at write; "ignore previous instructions" skill loads with a visible warning
-- [ ] project-scoped skill in `.yagent/skills/` available in any session on that repo
-- [ ] `write_approval: false` writes immediately; 100-skill store stays under the L0 cap (40 most recently used)
+Acceptance: *(real-hardware verified on Qwythos-9B on :8089 — a skill was created by the model, rejected once for `#` instead of `##` section headers, corrected, staged, approved via `/skills`, listed in the next session, and loaded via `/skill-name`. Note this server's template accepts only ONE system message; `assembleContext` merges system content. The dev server runs `--embeddings --pooling mean`, so semantic recall works with Qwythos as the embedder.)*
+- [x] scripted 5+ tool-call task → agent proposes a skill → staged → approved → `skills_list` shows it next session
+- [x] "Remember how I fixed the Ollama ROCm env issue" → skill created, recalled and followed later
+- [x] user correction → existing skill patched via `skill_manage patch`, never applied without approval
+- [x] duplicate skill proposal merged into the existing skill; ≤2 staged writes per session enforced
+- [x] `rm -rf /` skill blocked at write; "ignore previous instructions" skill loads with a visible warning
+- [x] project-scoped skill in `.yagent/skills/` available in any session on that repo
+- [x] `write_approval: false` writes immediately; 100-skill store stays under the L0 cap (40 most recently used)
 
 ## M4 — Codebase index
 

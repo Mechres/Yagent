@@ -23,7 +23,7 @@ func argsJSON(t *testing.T, v any) json.RawMessage {
 func fakeWorkspace(t *testing.T) (ws string, reg *Registry) {
 	t.Helper()
 	ws = t.TempDir()
-	reg = NewRegistry(ws, nil, "")
+	reg = NewRegistry(ws, nil, "", nil, true)
 	return ws, reg
 }
 

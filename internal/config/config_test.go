@@ -150,3 +150,73 @@ func TestDefaultPath(t *testing.T) {
 		t.Errorf("DefaultPath = %q, want %q", p, want)
 	}
 }
+
+func TestSkillsWriteApprovalDefaultsTrue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarServerURL, "")
+	t.Setenv(EnvVarModel, "")
+	t.Setenv(EnvVarEmbeddingModel, "")
+	t.Setenv(EnvVarDataDir, "")
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.Skills.WriteApproval {
+		t.Error("skills.write_approval should default to true")
+	}
+}
+
+func TestSkillsWriteApprovalFromFile(t *testing.T) {
+	path := writeConfig(t, "skills:\n  write_approval: false\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Skills.WriteApproval {
+		t.Error("skills.write_approval should be false from the file")
+	}
+}
+
+func TestSetWriteApprovalPersists(t *testing.T) {
+	path := writeConfig(t, "server_url: http://example.test\nmodel: some-model\n")
+
+	if err := SetWriteApproval(path, false); err != nil {
+		t.Fatalf("SetWriteApproval: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Skills.WriteApproval {
+		t.Error("write_approval not set to false")
+	}
+	if cfg.ServerURL != "http://example.test" || cfg.Model != "some-model" {
+		t.Errorf("unrelated config keys were clobbered: %+v", cfg)
+	}
+
+	if err := SetWriteApproval(path, true); err != nil {
+		t.Fatalf("SetWriteApproval: %v", err)
+	}
+	cfg2, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg2.Skills.WriteApproval {
+		t.Error("write_approval not restored to true")
+	}
+}
+
+func TestSetWriteApprovalCreatesMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "config.yaml")
+	if err := SetWriteApproval(path, false); err != nil {
+		t.Fatalf("SetWriteApproval: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Skills.WriteApproval {
+		t.Error("write_approval should be false in the created file")
+	}
+}

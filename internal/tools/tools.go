@@ -16,6 +16,7 @@ import (
 
 	"yagent/internal/llm"
 	"yagent/internal/memory"
+	"yagent/internal/skills"
 )
 
 // RiskLevel classifies a tool's side effects; Write/Destructive tools go
@@ -61,14 +62,18 @@ type Tool interface {
 type Registry struct {
 	workspace string
 	tools     map[string]Tool
+	skills    *skills.Store
 }
 
 // NewRegistry builds the M2+ tool set scoped to workspace. vectors and
-// sessionID enable the semantic-memory tools (may be nil/empty).
-func NewRegistry(workspace string, vectors *memory.VectorStore, sessionID string) *Registry {
+// sessionID enable the semantic-memory tools (may be nil/empty); sk enables
+// the skills tools (may be nil); skillsWriteApproval gates skill writes
+// (stage instead of apply).
+func NewRegistry(workspace string, vectors *memory.VectorStore, sessionID string, sk *skills.Store, skillsWriteApproval bool) *Registry {
 	r := &Registry{
 		workspace: filepath.Clean(workspace),
 		tools:     make(map[string]Tool),
+		skills:    sk,
 	}
 	reg := map[string]Tool{
 		"fs_read":       &fsReadTool{ws: r.workspace},
@@ -83,10 +88,23 @@ func NewRegistry(workspace string, vectors *memory.VectorStore, sessionID string
 		"memory_save":   &memorySaveTool{vectors: vectors, sessionID: sessionID},
 		"memory_search": &memorySearchTool{vectors: vectors},
 	}
+	if sk != nil {
+		reg["skills_list"] = &skillsListTool{store: sk}
+		reg["skill_view"] = &skillViewTool{store: sk}
+		reg["skill_manage"] = &skillManageTool{store: sk, writeApproval: skillsWriteApproval}
+	}
 	for name, t := range reg {
 		r.tools[name] = t
 	}
 	return r
+}
+
+// SetSkillsWriteApproval toggles the skill write gate at runtime (/skills
+// approval on|off).
+func (r *Registry) SetSkillsWriteApproval(on bool) {
+	if t, ok := r.tools["skill_manage"].(*skillManageTool); ok {
+		t.writeApproval = on
+	}
 }
 
 // Get returns a tool by name.
@@ -112,6 +130,18 @@ func (r *Registry) Schemas() []llm.ToolSchema {
 		schemas = append(schemas, r.tools[n].Schema())
 	}
 	return schemas
+}
+
+// SchemasFor returns the schemas of the named tools (used by the skills
+// creation-opportunity pass, which offers only the skills tools).
+func (r *Registry) SchemasFor(names []string) []llm.ToolSchema {
+	out := make([]llm.ToolSchema, 0, len(names))
+	for _, n := range names {
+		if t, ok := r.tools[n]; ok {
+			out = append(out, t.Schema())
+		}
+	}
+	return out
 }
 
 // fnSchema builds a compact OpenAI function schema. properties and required

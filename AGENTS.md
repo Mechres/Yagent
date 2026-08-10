@@ -8,13 +8,15 @@ Yagent is a **local-first AI agent** (code / audit / review / web search / resea
 
 ## Current status
 
-**Milestone M3 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
+**Milestone M3.5 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
 
 - M1: streaming chat CLI. M2: tool loop (9 fs/shell/git tools, approvals, validation retry). Both accepted on real hardware (Qwythos-9B on :8089).
 - M3 shipped: `internal/memory` — L2 SQLite session store (`yagent sessions`, `chat --continue <id>`, auto-titles, `HistoryAfter` for resumes), L1 token budget (summarizes oldest half into a running summary before every request; `context_window`/`YAGENT_CONTEXT_WINDOW` knob), L3 chromem vector memory with real `/v1/embeddings` wiring (`nomic-embed-text`), `memory_save`/`memory_search` tools, per-turn top-5 recall injection (budgeted, session-deduped), session-end summary job. Data dir: `$XDG_DATA_HOME/yagent` (deleting it = forget everything).
-- All M3 tasks ticked; acceptance verified: 60-turn bounded session with running-summary injection + resume, remember→recall across sessions (e2e, fake servers), clean-slate store. `go build`/`vet`/`test`/`gofmt` clean.
-- **Real-hardware note**: embeddings on the dev llama.cpp server are off (`--embeddings` flag); chat acceptance is verified on Qwythos-9B, semantic recall needs an embeddings-capable server (llama.cpp `--embeddings` or Ollama `nomic-embed-text`). See [`docs/models.md`](docs/models.md).
-- Next: **M3.5 — skills (procedural memory)**, design in `docs/design/skills.md`, then M4 (codebase index).
+- M3.5 shipped: `internal/skills` — procedural memory. Filesystem SKILL.md store (global `<data>/skills/` + project `<workspace>/.yagent/skills/`, project shadows global), agentskills.io frontmatter via `yaml.v3` with store-managed lifecycle metadata, `skills_list`/`skill_view`/`skill_manage` tools, progressive disclosure (L0 index in the system context, capped 40/~3k tokens, evicted by `last_used`), end-of-turn autonomous-creation prompt (trigger: 5+ tool calls; ≤2 staged writes/session), write approval gate `skills.write_approval` (default ON → stage under `<data>/pending/skills/`; `/skills pending|diff|approve|reject|approval`), dangerous-pattern scanner (block `rm -rf /`/exfil; flag prompt-injection/eval), dedup-on-create (suggests patch), `/skill-name` to load a skill into context.
+- **Hardware constraint discovered in M3.5**: the Qwythos llama.cpp template accepts **only one system message** per request — `assembleContext` therefore merges system prompt + L0 index + running summary + recall + injected skills into a single leading system message. Keep it that way. See [`docs/models.md`](docs/models.md).
+- All M3/M3.5 tasks ticked; acceptance verified: 60-turn bounded session + resume, remember→recall across sessions (e2e, fake servers), clean-slate store, and on real hardware (Qwythos-9B on :8089): model-proposed skill → corrected after a validation error → staged → approved via `/skills` → listed next session → loaded via `/skill-name`. `go build`/`vet`/`test`/`gofmt` clean.
+- **Real-hardware note**: the dev llama.cpp server now runs `--embeddings --pooling mean`, so L3 semantic recall works on :8089 with Qwythos as the embedder (chat + embeddings share one server; the requested embedding model name is ignored). Ollama remains an alternative (`nomic-embed-text`). See [`docs/models.md`](docs/models.md).
+- Next: **M4 — codebase index** (tree-sitter chunking, `index_repo`/`index_search`, incremental re-embed).
 
 ## Commands
 
@@ -69,8 +71,8 @@ Keep packages acyclic: `ui → agent → {llm, tools, memory, index} → config`
 
 ## Environment notes
 
-- Dev server in use: llama.cpp `llama-server` (Vulkan) on **port 8089**, model `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` — set `YAGENT_SERVER_URL=http://localhost:8089` and `YAGENT_MODEL=Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`. See [`docs/models.md`](docs/models.md) for its quirks.
-- **Embeddings**: the server must serve `/v1/embeddings`. llama.cpp requires the `--embeddings` flag at startup (currently off on :8089); Ollama serves `nomic-embed-text` out of the box. Config: `YAGENT_EMBEDDING_MODEL` (default `nomic-embed-text`).
+- Dev server in use: llama.cpp `llama-server` (Vulkan) on **port 8089**, model `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`, started with `--embeddings --pooling mean --jinja` — set `YAGENT_SERVER_URL=http://localhost:8089` and `YAGENT_MODEL=Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`. See [`docs/models.md`](docs/models.md) for its quirks.
+- **Embeddings**: served by the same llama.cpp server (the loaded model embeds; the requested model name is ignored), so `YAGENT_EMBEDDING_MODEL` (default `nomic-embed-text`) is cosmetic on this setup. Ollama serves `nomic-embed-text` out of the box as an alternative.
 - Ollama on RX 6700 XT (gfx1031) needs `HSA_OVERRIDE_GFX_VERSION=10.3.0`; default config targets Ollama at `http://localhost:11434`.
 - Context window: `YAGENT_CONTEXT_WINDOW` / `context_window` (default 16384). Data lives under `YAGENT_DATA_DIR` / `data_dir` (default `$XDG_DATA_HOME/yagent`); deleting it is a complete "forget everything".
 - If SearXNG is used for web search, enable `format: json` in its settings.yml.
