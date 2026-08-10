@@ -11,6 +11,7 @@ import (
 
 	"yagent/internal/agent"
 	"yagent/internal/config"
+	"yagent/internal/index"
 	"yagent/internal/llm"
 	"yagent/internal/memory"
 	"yagent/internal/skills"
@@ -58,6 +59,11 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	if err != nil {
 		return fmt.Errorf("open skills store: %w", err)
 	}
+	idx, err := index.Open(ws, cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+	if err != nil {
+		return fmt.Errorf("open code index: %w", err)
+	}
+	defer idx.Close()
 
 	sessionID, initialHistory, initialSummary, err := resolveSession(ctx, st, ws, continueID)
 	if err != nil {
@@ -65,9 +71,18 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	}
 
 	writeApproval := cfg.Skills.WriteApproval
-	registry := tools.NewRegistry(ws, vs, sessionID, sk, writeApproval)
-	reader := bufio.NewReader(os.Stdin)
 	w := os.Stdout
+	registry := tools.NewRegistry(ws, tools.Options{
+		Vectors:             vs,
+		SessionID:           sessionID,
+		Skills:              sk,
+		Index:               idx,
+		SkillsWriteApproval: writeApproval,
+		IndexProgress: func(line string) {
+			fmt.Fprintf(w, "  [index] %s\n", line)
+		},
+	})
+	reader := bufio.NewReader(os.Stdin)
 	ap := &replApprover{reader: reader, writer: w}
 
 	ag := agent.New(client, registry, ap, agent.Config{
@@ -75,13 +90,15 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		OnTool: func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
 		},
-		Store:          st,
-		SessionID:      sessionID,
-		Vectors:        vs,
-		Skills:         sk,
-		InitialHistory: initialHistory,
-		InitialSummary: initialSummary,
-		Window:         cfg.ContextWindow,
+		Store:           st,
+		SessionID:       sessionID,
+		Vectors:         vs,
+		Skills:          sk,
+		Index:           idx,
+		IndexAutoInject: true,
+		InitialHistory:  initialHistory,
+		InitialSummary:  initialSummary,
+		Window:          cfg.ContextWindow,
 	}, ws)
 
 	skillsCmd := &skillsHandler{

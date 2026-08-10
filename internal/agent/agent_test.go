@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"yagent/internal/index"
 	"yagent/internal/llm"
 	"yagent/internal/memory"
 	"yagent/internal/skills"
@@ -127,7 +128,7 @@ func (c *captureTokens) all() string {
 func setup(t *testing.T, s *scriptedLLM, allow bool, maxIter int) (*Agent, *stubApprover, *captureTokens, string) {
 	t.Helper()
 	ws := t.TempDir()
-	reg := tools.NewRegistry(ws, nil, "", nil, true)
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
 	ap := &stubApprover{allow: allow}
 	tok := &captureTokens{}
 	client := llm.NewClient(s.ts.URL, "test-model")
@@ -400,7 +401,7 @@ func TestBudgetSummarizesOldestHalf(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "big.txt", strings.Repeat("x", 800)+"\n")
-	reg := tools.NewRegistry(ws, nil, "", nil, true)
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
 	summ := &fixedSummaryLLM{summary: "SUM: user prefers tabs"}
 
 	client := llm.NewClient(s.ts.URL, "test-model")
@@ -447,7 +448,7 @@ func TestRunPersistsMessages(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "a.txt", "data")
-	reg := tools.NewRegistry(ws, nil, "", nil, true)
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true},
 		Config{MaxIterations: 10, Store: st, SessionID: sess.ID}, ws)
@@ -483,7 +484,7 @@ func TestBudgetPersistsSummary(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "big.txt", strings.Repeat("y", 800)+"\n")
-	reg := tools.NewRegistry(ws, nil, "", nil, true)
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
 	summ := &fixedSummaryLLM{summary: "persisted summary text"}
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true},
@@ -518,7 +519,7 @@ func TestRecallInjectedAndSessionDedup(t *testing.T) {
 
 	s := newScriptedLLM(t, [][]string{finalContent("ok")})
 	ws := t.TempDir()
-	reg := tools.NewRegistry(ws, nil, "", nil, true)
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true},
 		Config{MaxIterations: 10, Vectors: vs, SessionID: "s-current"}, ws)
@@ -574,7 +575,7 @@ func TestRunOffersSkillCreationAfterComplexTurn(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "a.go", "package main\n")
-	reg := tools.NewRegistry(ws, nil, "", sk, true)
+	reg := tools.NewRegistry(ws, tools.Options{Skills: sk, SkillsWriteApproval: true})
 	ap := &stubApprover{allow: true}
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, ap, Config{MaxIterations: 10, Skills: sk}, ws)
@@ -610,7 +611,7 @@ func TestRunNoSkillOpportunityForSimpleTurn(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "a.go", "x")
-	reg := tools.NewRegistry(ws, nil, "", sk, true)
+	reg := tools.NewRegistry(ws, tools.Options{Skills: sk, SkillsWriteApproval: true})
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 10, Skills: sk}, ws)
 
@@ -635,7 +636,7 @@ func TestRunInjectsSkillIndex(t *testing.T) {
 	}
 	s := newScriptedLLM(t, [][]string{finalContent("ok")})
 	ws := t.TempDir()
-	reg := tools.NewRegistry(ws, nil, "", sk, true)
+	reg := tools.NewRegistry(ws, tools.Options{Skills: sk, SkillsWriteApproval: true})
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 5, Skills: sk}, ws)
 
@@ -663,7 +664,7 @@ func TestFinishOffersSkillCreation(t *testing.T) {
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "a.go", "x")
-	reg := tools.NewRegistry(ws, nil, "", sk, true)
+	reg := tools.NewRegistry(ws, tools.Options{Skills: sk, SkillsWriteApproval: true})
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 10, Skills: sk}, ws)
 
@@ -692,5 +693,71 @@ func TestInjectSystemAppearsInNextRequest(t *testing.T) {
 	req := string(s.requests[0])
 	if !strings.Contains(req, "SKILL CONTENT: run the checklist") {
 		t.Error("injected skill content missing from the request")
+	}
+}
+
+// ---------- M4: code index ----------
+
+func TestRunInjectsCodeIndex(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceFile(t, ws, "pkg/tool.go", `package pkg
+
+// validateToolInput checks tool arguments before dispatch.
+func validateToolInput(name string) error {
+	return nil
+}
+`)
+	idx, err := index.Open(ws, t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	if _, err := idx.Index(context.Background()); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	s := newScriptedLLM(t, [][]string{finalContent("ok")})
+	reg := tools.NewRegistry(ws, tools.Options{Index: idx})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 5, Index: idx, IndexAutoInject: true}, ws)
+
+	if _, err := a.Run(context.Background(), "where is tool validation implemented?"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req := string(s.requests[0])
+	if !strings.Contains(req, "Relevant code from the workspace index") || !strings.Contains(req, "pkg/tool.go") {
+		t.Errorf("code index not injected: %q", req[:400])
+	}
+}
+
+func TestRunSkipsEmptyIndexInjection(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	ws := t.TempDir()
+	idx, err := index.Open(ws, t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newScriptedLLM(t, [][]string{finalContent("ok")})
+	reg := tools.NewRegistry(ws, tools.Options{Index: idx})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 5, Index: idx, IndexAutoInject: true}, ws)
+
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req := string(s.requests[0])
+	if strings.Contains(req, "Relevant code from the workspace index") {
+		t.Error("empty index must not be injected")
 	}
 }

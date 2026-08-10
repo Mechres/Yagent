@@ -59,7 +59,7 @@ func TestMemoryTools(t *testing.T) {
 		t.Fatalf("OpenVectorStore: %v", err)
 	}
 	defer vs.Close()
-	reg := NewRegistry(ws, vs, "sess-1", nil, true)
+	reg := NewRegistry(ws, Options{Vectors: vs, SessionID: "sess-1", SkillsWriteApproval: true})
 
 	// save
 	if got := execTool(t, reg, "memory_save", map[string]any{"text": "user prefers tabs over spaces"}); !strings.Contains(got, "remembered") {
@@ -92,7 +92,7 @@ func TestMemoryTools(t *testing.T) {
 }
 
 func TestMemoryToolsUnconfigured(t *testing.T) {
-	reg := NewRegistry(t.TempDir(), nil, "", nil, true)
+	reg := NewRegistry(t.TempDir(), Options{SkillsWriteApproval: true})
 	if got := execTool(t, reg, "memory_save", map[string]any{"text": "x"}); !strings.Contains(got, "not configured") {
 		t.Errorf("memory_save unconfigured = %q", got)
 	}

@@ -103,14 +103,16 @@ Acceptance: *(real-hardware verified on Qwythos-9B on :8089 — a skill was crea
 **Goal**: L4 — semantic code search over the workspace.
 
 Tasks:
-- [ ] `internal/index`: walker (`.gitignore`-aware, size/binary filters), tree-sitter chunker (Go first, then python/ts/js; line-window fallback), content-hash incremental re-embed
-- [ ] `index_repo` (background, progress to ui) and `index_search` tools
-- [ ] per-turn index retrieval injection (top-6, 2000-token budget, `path:start-end` prefixes)
-- [ ] tests: chunker on real files of each supported language; hash-skip on re-index; search relevance on a fixture repo
+- [x] `internal/index`: walker (`.gitignore`-aware incl. nested files + negation, size/binary/hidden/lock-file filters), tree-sitter chunker (go/py/js/ts/tsx via `github.com/tree-sitter/go-tree-sitter`, cgo; line-window fallback capped at ~1200 chars/80 lines), content-hash incremental re-embed (only changed files re-embedded, stale files pruned)
+- [x] `index_repo` (RiskWrite, synchronous with progress lines to the UI) and `index_search` tools
+- [x] per-turn index retrieval injection (top-6, 2000-token budget, `path:start-end` prefixes; `agent.Config.Index` + `IndexAutoInject`)
+- [x] tests: chunker on real fixtures of Go/md, gitignore matcher, hash-skip on re-index (embed-request counting), incremental rebuild on edit/delete, search relevance
 
-Acceptance:
-- [ ] index this very repo; "where is tool validation implemented?" → `index_search` returns the right chunk without any grep
-- [ ] edit one file → re-index → only that file re-embedded (log lines prove it)
+Acceptance: *(real-hardware verified on Qwythos-9B :8089 — the repo indexed in-place: 51 files / 632 chunks; "where is tool argument validation implemented?" → the model opened with `index_search` and landed on `internal/tools/tools.go`; a one-line edit re-embedded only that file (progress lines + summary counts prove it))*
+- [x] index this very repo; "where is tool validation implemented?" → `index_search` returns the right chunk without any grep
+- [x] edit one file → re-index → only that file re-embedded (log lines prove it)
+
+> Note: tree-sitter needs **cgo** (approved dependency). A C toolchain is now a build requirement; `go build` uses it automatically.
 
 ## M5 — Web tools
 

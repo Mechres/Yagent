@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"yagent/internal/index"
 	"yagent/internal/llm"
 	"yagent/internal/memory"
 	"yagent/internal/skills"
@@ -47,6 +48,9 @@ const (
 	maxL0Skills = 40
 	// maxL0Tokens caps the L0 index budget (heuristic chars = tokens*4).
 	maxL0Tokens = 3000
+	// maxIndexChunks / maxIndexTokens cap per-turn code retrieval (M4).
+	maxIndexChunks = 6
+	maxIndexTokens = 2000
 )
 
 // skillCreationPrompt is the one-shot end-of-turn opportunity: it offers only
@@ -108,6 +112,11 @@ type Config struct {
 	// Skills enables the L0 skills index and the autonomous skill-creation
 	// opportunity (M3.5). May be nil.
 	Skills *skills.Store
+
+	// Index enables per-turn code retrieval (M4); set IndexAutoInject to
+	// inject the top matching chunks into context each turn.
+	Index           *index.Store
+	IndexAutoInject bool
 
 	// InitialHistory/InitialSummary seed a resumed session (chat --continue).
 	InitialHistory []llm.Message
@@ -199,6 +208,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		return "", err
 	}
 	recall := a.recall(ctx, input)
+	code := a.codeIndex(ctx, input)
 
 	valFails := make(map[string]int)
 	blocked := make(map[string]bool)
@@ -210,7 +220,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		if err := a.budget(ctx); err != nil {
 			return "", err
 		}
-		resp, err := a.llm.ChatStream(ctx, a.assembleContext(recall), a.registry.Schemas(), a.cfg.OnToken)
+		resp, err := a.llm.ChatStream(ctx, a.assembleContext(recall, code), a.registry.Schemas(), a.cfg.OnToken)
 		if err != nil {
 			return "", err
 		}
@@ -279,7 +289,7 @@ func (a *Agent) offerSkillCreation(ctx context.Context) error {
 		return nil // best-effort; a full window must not break the turn
 	}
 	prompt := llm.Message{Role: "user", Content: skillCreationPrompt}
-	msgs := append(a.assembleContext(""), prompt)
+	msgs := append(a.assembleContext("", ""), prompt)
 	resp, err := a.llm.ChatStream(ctx, msgs, a.registry.SchemasFor(skillToolNames), func(string) {})
 	if err != nil {
 		return nil // best-effort: a dead server must not break the turn
@@ -353,16 +363,20 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 }
 
 // assembleContext prepends ONE system message — system prompt + L0 skills
-// index + running summary + recall + injected chunks — then the history. All
-// system content is merged into a single leading system message because the
-// llama.cpp chat templates in use (Qwythos-9B) reject a request whose system
-// messages are not contiguous at the start (see docs/models.md). Tool schemas
-// are sent via the API's tools field, never in the prompt.
-func (a *Agent) assembleContext(recall string) []llm.Message {
+// index + code retrieval + running summary + recall + injected chunks — then
+// the history. All system content is merged into a single leading system
+// message because the llama.cpp chat templates in use (Qwythos-9B) reject a
+// request whose system messages are not contiguous at the start (see
+// docs/models.md). Tool schemas are sent via the API's tools field, never in
+// the prompt.
+func (a *Agent) assembleContext(recall, code string) []llm.Message {
 	var sys strings.Builder
 	sys.WriteString(a.systemPrompt)
 	if l0 := a.skillIndex(); l0 != "" {
 		sys.WriteString("\n\n" + l0)
+	}
+	if code != "" {
+		sys.WriteString("\n\n" + code)
 	}
 	if a.runningSummary != "" {
 		sys.WriteString("\n\nSummary of the earlier part of this conversation:\n" + a.runningSummary)
@@ -378,6 +392,34 @@ func (a *Agent) assembleContext(recall string) []llm.Message {
 		msgs = append(msgs, h.msg)
 	}
 	return msgs
+}
+
+// codeIndex retrieves the top chunks matching the user input from the codebase
+// index (M4) and formats them as path:start-end blocks, budget-capped. Skipped
+// when the index is empty or auto-injection is off.
+func (a *Agent) codeIndex(ctx context.Context, input string) string {
+	if a.cfg.Index == nil || !a.cfg.IndexAutoInject || a.cfg.Index.Count() == 0 {
+		return ""
+	}
+	results, err := a.cfg.Index.Search(ctx, input, maxIndexChunks)
+	if err != nil || len(results) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Relevant code from the workspace index (path:start-end):\n")
+	for _, r := range results {
+		fmt.Fprintf(&b, "- %s:%d-%d\n", r.Path, r.StartLine, r.EndLine)
+		snippet := r.Content
+		if len(snippet) > 300 {
+			snippet = snippet[:300] + "…"
+		}
+		b.WriteString("  " + strings.ReplaceAll(snippet, "\n", "\n  ") + "\n")
+	}
+	if b.Len() > maxIndexTokens*4 {
+		s := b.String()[:maxIndexTokens*4]
+		return s + "\n…"
+	}
+	return b.String()
 }
 
 // skillIndex renders the L0 list (skills.md progressive disclosure): name +
@@ -412,6 +454,9 @@ func (a *Agent) estTokens() int {
 	total := len(a.systemPrompt)/4 + len(a.runningSummary)/4
 	if a.cfg.Skills != nil {
 		total += maxL0Tokens // L0 skills index is always in context
+	}
+	if a.cfg.Index != nil && a.cfg.IndexAutoInject {
+		total += maxIndexTokens // per-turn code retrieval
 	}
 	for _, chunk := range a.injected {
 		total += len(chunk) / 4
@@ -553,7 +598,7 @@ func buildSystemPrompt(workspace string) string {
 
 Rules:
 - Be concise. Answer in the fewest words that fully address the request.
-- Inspect the workspace with tools instead of guessing: use fs_read / grep / glob to read code, git_status / git_diff / git_log for git state.
+- Inspect the workspace with tools instead of guessing: use fs_read / grep / glob to read code, index_search for semantic code search, git_status / git_diff / git_log for git state.
 - All tool arguments must be valid JSON matching the tool schema; paths are relative to the workspace root.
 - To use a tool, emit the tool call now. Never just describe a tool call you intend to make; if your turn ends without a tool call, that text is treated as your final answer.
 - If a tool returns an error, read it, fix your arguments, and retry — do not repeat the same failing call.

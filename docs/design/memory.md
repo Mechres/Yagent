@@ -84,11 +84,12 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(text);
 
 ## L4 — Codebase index
 
-Specified in `tools.md` (`index_search`) and built in M4. Retrieval at turn start: embed user input → top-6 chunks → inject under the index budget (2000 tok), each chunk prefixed with `path:start-end`.
+Specified in `tools.md` (`index_repo`/`index_search`) and built in M4 (`internal/index`). Retrieval at turn start: embed user input → top-6 chunks → inject under the index budget (2000 tok), each chunk prefixed with `path:start-end`.
 
-- **Chunking**: tree-sitter per-language — split on top-level declarations (functions, types, classes); fall back to ~80-line windows for unsupported file types. Max chunk ~1200 chars.
-- **Freshness**: re-embed only files whose content hash changed (hash stored in SQLite).
-- **Scope**: respect `.gitignore`; skip binaries, lock files, files > 512 KiB.
+- **Chunking**: tree-sitter per-language (go/py/js/ts/tsx, cgo) — split on top-level declarations (functions, types, classes, doc comments attached); fall back to line windows for unsupported file types. Chunks capped at ~1200 chars / 80 lines.
+- **Freshness**: sha256 content hash per file stored in SQLite; re-embed only files whose hash changed; files that disappear are pruned.
+- **Scope**: gitignore-aware (nested `.gitignore` files, negation, dir-only rules), skip hidden files, binaries, lock files and files > 512 KiB.
+- **Search**: hybrid like L3 — candidates = vector pool (cosine ≥ 0.30, top 25) ∪ FTS5 keyword pool; score `0.4·cos + 0.3·bm25 + 0.3·recency`, so keyword overlap rescues weak embeddings.
 
 ## Interface sketch
 

@@ -29,7 +29,7 @@ func newSkillsTest(t *testing.T, writeApproval bool) (reg *Registry, store *skil
 	if err != nil {
 		t.Fatalf("open skills: %v", err)
 	}
-	reg = NewRegistry(ws, nil, "", store, writeApproval)
+	reg = NewRegistry(ws, Options{Skills: store, SkillsWriteApproval: writeApproval})
 	return reg, store, ws
 }
 

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"yagent/internal/index"
 	"yagent/internal/llm"
 	"yagent/internal/memory"
 	"yagent/internal/skills"
@@ -58,6 +59,21 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// Options wires optional subsystems into the registry.
+type Options struct {
+	// Vectors + SessionID enable the semantic-memory tools (may be nil/empty).
+	Vectors   *memory.VectorStore
+	SessionID string
+	// Skills enables the skills tools (may be nil).
+	Skills *skills.Store
+	// Index enables the codebase-index tools (may be nil).
+	Index *index.Store
+	// SkillsWriteApproval gates skill writes (stage instead of apply).
+	SkillsWriteApproval bool
+	// IndexProgress reports index_repo progress lines to the UI (optional).
+	IndexProgress func(string)
+}
+
 // Registry holds the tool set bound to one workspace root.
 type Registry struct {
 	workspace string
@@ -65,15 +81,12 @@ type Registry struct {
 	skills    *skills.Store
 }
 
-// NewRegistry builds the M2+ tool set scoped to workspace. vectors and
-// sessionID enable the semantic-memory tools (may be nil/empty); sk enables
-// the skills tools (may be nil); skillsWriteApproval gates skill writes
-// (stage instead of apply).
-func NewRegistry(workspace string, vectors *memory.VectorStore, sessionID string, sk *skills.Store, skillsWriteApproval bool) *Registry {
+// NewRegistry builds the M2+ tool set scoped to workspace.
+func NewRegistry(workspace string, opts Options) *Registry {
 	r := &Registry{
 		workspace: filepath.Clean(workspace),
 		tools:     make(map[string]Tool),
-		skills:    sk,
+		skills:    opts.Skills,
 	}
 	reg := map[string]Tool{
 		"fs_read":       &fsReadTool{ws: r.workspace},
@@ -85,13 +98,17 @@ func NewRegistry(workspace string, vectors *memory.VectorStore, sessionID string
 		"git_status":    &gitStatusTool{ws: r.workspace},
 		"git_diff":      &gitDiffTool{ws: r.workspace},
 		"git_log":       &gitLogTool{ws: r.workspace},
-		"memory_save":   &memorySaveTool{vectors: vectors, sessionID: sessionID},
-		"memory_search": &memorySearchTool{vectors: vectors},
+		"memory_save":   &memorySaveTool{vectors: opts.Vectors, sessionID: opts.SessionID},
+		"memory_search": &memorySearchTool{vectors: opts.Vectors},
 	}
-	if sk != nil {
-		reg["skills_list"] = &skillsListTool{store: sk}
-		reg["skill_view"] = &skillViewTool{store: sk}
-		reg["skill_manage"] = &skillManageTool{store: sk, writeApproval: skillsWriteApproval}
+	if opts.Skills != nil {
+		reg["skills_list"] = &skillsListTool{store: opts.Skills}
+		reg["skill_view"] = &skillViewTool{store: opts.Skills}
+		reg["skill_manage"] = &skillManageTool{store: opts.Skills, writeApproval: opts.SkillsWriteApproval}
+	}
+	if opts.Index != nil {
+		reg["index_repo"] = &indexRepoTool{store: opts.Index, onProgress: opts.IndexProgress}
+		reg["index_search"] = &indexSearchTool{store: opts.Index}
 	}
 	for name, t := range reg {
 		r.tools[name] = t

@@ -1,0 +1,262 @@
+package index
+
+import (
+	"fmt"
+	"strings"
+
+	sitter "github.com/tree-sitter/go-tree-sitter"
+	tsgo "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tsjs "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
+	tspy "github.com/tree-sitter/tree-sitter-python/bindings/go"
+	tstypescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
+)
+
+// Chunk limits from docs/PLAN.md M4.
+const (
+	// maxChunkChars caps a single chunk; larger declarations are split on
+	// line windows.
+	maxChunkChars = 1200
+	// fallbackWindow is the line-window size for unsupported files and
+	// files that fail to parse.
+	fallbackWindow = 80
+	// minDeclChars groups adjacent tiny declarations into one chunk so the
+	// index doesn't fill with one-line stubs.
+	minDeclChars = 60
+	// maxFileBytes caps files the walker will index.
+	maxFileBytes = 512 << 10
+)
+
+// Chunk is one indexed unit of source text.
+type Chunk struct {
+	Path      string
+	StartLine int // 1-based, inclusive
+	EndLine   int // 1-based, inclusive
+	Content   string
+}
+
+// language binds a tree-sitter grammar to the file extensions and the node
+// kinds that count as top-level declarations.
+type language struct {
+	name string
+	ext  []string
+	lang *sitter.Language
+	decl map[string]bool
+}
+
+var languages = []language{
+	{
+		name: "go",
+		ext:  []string{".go"},
+		lang: sitter.NewLanguage(tsgo.Language()),
+		decl: map[string]bool{
+			"function_declaration": true, "method_declaration": true,
+			"type_declaration": true, "var_declaration": true, "const_declaration": true,
+		},
+	},
+	{
+		name: "python",
+		ext:  []string{".py"},
+		lang: sitter.NewLanguage(tspy.Language()),
+		decl: map[string]bool{
+			"function_definition": true, "class_definition": true, "decorated_definition": true,
+		},
+	},
+	{
+		name: "javascript",
+		ext:  []string{".js", ".jsx", ".mjs", ".cjs"},
+		lang: sitter.NewLanguage(tsjs.Language()),
+		decl: map[string]bool{
+			"function_declaration": true, "class_declaration": true, "generator_function_declaration": true,
+		},
+	},
+	{
+		name: "typescript",
+		ext:  []string{".ts", ".mts", ".cts"},
+		lang: sitter.NewLanguage(tstypescript.LanguageTypescript()),
+		decl: map[string]bool{
+			"function_declaration": true, "class_declaration": true, "interface_declaration": true,
+			"type_alias_declaration": true, "method_definition": true, "generator_function_declaration": true,
+		},
+	},
+	{
+		name: "tsx",
+		ext:  []string{".tsx"},
+		lang: sitter.NewLanguage(tstypescript.LanguageTSX()),
+		decl: map[string]bool{
+			"function_declaration": true, "class_declaration": true, "interface_declaration": true,
+			"type_alias_declaration": true, "arrow_function": true, "generator_function_declaration": true,
+		},
+	},
+}
+
+// languageFor returns the grammar for a path, or nil for unsupported files.
+func languageFor(path string) *language {
+	lower := strings.ToLower(path)
+	for i := range languages {
+		for _, ext := range languages[i].ext {
+			if strings.HasSuffix(lower, ext) {
+				return &languages[i]
+			}
+		}
+	}
+	return nil
+}
+
+// chunkSource splits file content into chunks. Supported languages are split
+// on top-level declarations (doc comments attached); unsupported files or
+// parse failures fall back to fixed-size line windows.
+func chunkSource(path, content string) []Chunk {
+	if lang := languageFor(path); lang != nil {
+		if chunks := structuralChunks(path, content, lang); len(chunks) > 0 {
+			return chunks
+		}
+	}
+	return lineWindowChunks(path, content, fallbackWindow)
+}
+
+// structuralChunks splits on top-level declarations. Returns nil when the
+// file is empty or yields no declarations (caller falls back to line windows).
+func structuralChunks(path, content string, lang *language) []Chunk {
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(lang.lang); err != nil {
+		return nil
+	}
+	tree := parser.Parse([]byte(content), nil)
+	if tree == nil {
+		return nil
+	}
+	defer tree.Close()
+	root := tree.RootNode()
+
+	// Collect top-level children so we can attach adjacent doc-comment runs
+	// to the declarations that follow them.
+	var kids []*sitter.Node
+	for i := uint(0); i < root.NamedChildCount(); i++ {
+		kids = append(kids, root.NamedChild(i))
+	}
+
+	var decls []string
+	var declLines []int
+	for i, k := range kids {
+		if !lang.decl[k.Kind()] {
+			continue
+		}
+		startByte := int(k.StartByte())
+		sp := k.StartPosition()
+		startLine := int(sp.Row) + 1
+		// Walk back over consecutive comment siblings immediately above the
+		// declaration and pull them into the chunk.
+		for j := i - 1; j >= 0 && kids[j].Kind() == "comment"; j-- {
+			if int(sp.Row)-int(kids[j].EndPosition().Row) > 1 {
+				break
+			}
+			startByte = int(kids[j].StartByte())
+			startLine = int(kids[j].StartPosition().Row) + 1
+		}
+		decls = append(decls, content[startByte:k.EndByte()])
+		declLines = append(declLines, startLine)
+	}
+	if len(decls) == 0 {
+		return nil
+	}
+
+	// Tiny files become one chunk.
+	if len(content) < minDeclChars*2 {
+		sp, ep := kids[0].StartPosition(), kids[len(kids)-1].EndPosition()
+		return []Chunk{{
+			Path:      path,
+			StartLine: int(sp.Row) + 1,
+			EndLine:   int(ep.Row) + 1,
+			Content:   content,
+		}}
+	}
+
+	var chunks []Chunk
+	var pending []Chunk
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		var b strings.Builder
+		for i, c := range pending {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(c.Content)
+		}
+		chunks = append(chunks, Chunk{
+			Path:      path,
+			StartLine: pending[0].StartLine,
+			EndLine:   pending[len(pending)-1].EndLine,
+			Content:   b.String(),
+		})
+		pending = nil
+	}
+
+	for i, raw := range decls {
+		text := string(raw)
+		startLine := declLines[i]
+		endLine := startLine + strings.Count(text, "\n")
+		if len(text) < minDeclChars {
+			pending = append(pending, Chunk{Path: path, StartLine: startLine, EndLine: endLine, Content: text})
+			continue
+		}
+		flush()
+		if len(text) > maxChunkChars {
+			chunks = append(chunks, splitChunk(path, text, startLine)...)
+			continue
+		}
+		chunks = append(chunks, Chunk{Path: path, StartLine: startLine, EndLine: endLine, Content: text})
+	}
+	flush()
+	return chunks
+}
+
+// splitChunk splits an oversized chunk into windows bounded by both
+// fallbackWindow lines and maxChunkChars (whichever hits first).
+func splitChunk(path, content string, startLine int) []Chunk {
+	return windowChunks(path, content, startLine, fallbackWindow)
+}
+
+// lineWindowChunks is the fallback for unsupported or unparsable files.
+func lineWindowChunks(path, content string, window int) []Chunk {
+	return windowChunks(path, content, 1, window)
+}
+
+func windowChunks(path, content string, startLine, window int) []Chunk {
+	lines := strings.Split(content, "\n")
+	var chunks []Chunk
+	start := 0
+	for start < len(lines) {
+		end := start
+		size := 0
+		for end < len(lines) && end-start < window {
+			lineLen := len(lines[end]) + 1
+			if end > start && size+lineLen > maxChunkChars {
+				break // keep chunks within the ~1200-char cap
+			}
+			size += lineLen
+			end++
+		}
+		if end == start {
+			end = start + 1 // a single line longer than the cap still gets chunked
+		}
+		chunks = append(chunks, Chunk{
+			Path:      path,
+			StartLine: startLine + start,
+			EndLine:   startLine + end - 1,
+			Content:   strings.Join(lines[start:end], "\n"),
+		})
+		start = end
+	}
+	return chunks
+}
+
+// displayPath renders the chunk location as path:start-end.
+func displayPath(c Chunk) string {
+	if c.EndLine == c.StartLine {
+		return fmt.Sprintf("%s:%d", c.Path, c.StartLine)
+	}
+	return fmt.Sprintf("%s:%d-%d", c.Path, c.StartLine, c.EndLine)
+}
