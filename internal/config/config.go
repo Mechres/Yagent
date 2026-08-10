@@ -4,27 +4,37 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config contains runtime configuration for the agent.
 type Config struct {
-	ServerURL string `yaml:"server_url"`
-	Model     string `yaml:"model"`
+	ServerURL      string `yaml:"server_url"`
+	Model          string `yaml:"model"`
+	EmbeddingModel string `yaml:"embedding_model"`
+	DataDir        string `yaml:"data_dir"`
+	ContextWindow  int    `yaml:"context_window"`
 }
 
 // Defaults applied when no config file and no env override is present.
 const (
-	DefaultServerURL = "http://localhost:11434"
-	DefaultModel     = "qwen2.5-coder:14b"
+	DefaultServerURL      = "http://localhost:11434"
+	DefaultModel          = "qwen2.5-coder:14b"
+	DefaultEmbeddingModel = "nomic-embed-text"
+	DefaultContextWindow  = 16384
 )
 
-// EnvVarServerURL / EnvVarModel are the environment variable overrides,
-// applied on top of whatever the config file (or defaults) resolved to.
+// EnvVarServerURL / EnvVarModel / EnvVarEmbeddingModel / EnvVarDataDir are the
+// environment variable overrides, applied on top of whatever the config file
+// (or defaults) resolved to.
 const (
-	EnvVarServerURL = "YAGENT_SERVER_URL"
-	EnvVarModel     = "YAGENT_MODEL"
+	EnvVarServerURL      = "YAGENT_SERVER_URL"
+	EnvVarModel          = "YAGENT_MODEL"
+	EnvVarEmbeddingModel = "YAGENT_EMBEDDING_MODEL"
+	EnvVarDataDir        = "YAGENT_DATA_DIR"
+	EnvVarContextWindow  = "YAGENT_CONTEXT_WINDOW"
 )
 
 // DefaultPath is the config file used when no explicit path is given.
@@ -38,11 +48,34 @@ func DefaultPath() (string, error) {
 	return filepath.Join(dir, "yagent", "config.yaml"), nil
 }
 
+// DefaultDataDir is where sessions, vector memory and skills live:
+// $XDG_DATA_HOME/yagent, falling back to ~/.local/share/yagent.
+func DefaultDataDir() (string, error) {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "yagent"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "yagent"), nil
+}
+
 // LoadConfig loads configuration from path, or the default path when path
 // is empty. An explicit path that does not exist is an error; a missing
 // default path silently falls back to built-in defaults.
 func LoadConfig(path string) (*Config, error) {
-	cfg := &Config{ServerURL: DefaultServerURL, Model: DefaultModel}
+	cfg := &Config{
+		ServerURL:      DefaultServerURL,
+		Model:          DefaultModel,
+		EmbeddingModel: DefaultEmbeddingModel,
+		ContextWindow:  DefaultContextWindow,
+	}
+	dataDir, err := DefaultDataDir()
+	if err != nil {
+		return nil, err
+	}
+	cfg.DataDir = dataDir
 
 	usePath := path
 	if usePath == "" {
@@ -75,12 +108,38 @@ func LoadConfig(path string) (*Config, error) {
 	if v := os.Getenv(EnvVarModel); v != "" {
 		cfg.Model = v
 	}
+	if v := os.Getenv(EnvVarEmbeddingModel); v != "" {
+		cfg.EmbeddingModel = v
+	}
+	if v := os.Getenv(EnvVarDataDir); v != "" {
+		cfg.DataDir = v
+	}
+	if v := os.Getenv(EnvVarContextWindow); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 100 {
+			return nil, fmt.Errorf("%s must be an integer >= 100, got %q", EnvVarContextWindow, v)
+		}
+		cfg.ContextWindow = n
+	}
 
 	if cfg.ServerURL == "" {
 		cfg.ServerURL = DefaultServerURL
 	}
 	if cfg.Model == "" {
 		cfg.Model = DefaultModel
+	}
+	if cfg.EmbeddingModel == "" {
+		cfg.EmbeddingModel = DefaultEmbeddingModel
+	}
+	if cfg.ContextWindow <= 0 {
+		cfg.ContextWindow = DefaultContextWindow
+	}
+	if cfg.DataDir == "" {
+		dataDir, err := DefaultDataDir()
+		if err != nil {
+			return nil, err
+		}
+		cfg.DataDir = dataDir
 	}
 	return cfg, nil
 }

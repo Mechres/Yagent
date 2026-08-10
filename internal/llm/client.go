@@ -212,12 +212,47 @@ func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta func(s
 	return respMessage, nil
 }
 
-// Embed returns a fixed stub embedding; real embeddings (nomic-embed-text)
-// arrive in M3.
-func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
-	if ctx == nil {
-		return nil, fmt.Errorf("nil context")
+// Embed requests embeddings for texts from /v1/embeddings (e.g. the
+// nomic-embed-text model) and returns them in input order.
+func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
 	}
-	_ = text
-	return []float32{0, 0, 0}, nil
+	reqBody, err := json.Marshal(map[string]any{"model": model, "input": texts})
+	if err != nil {
+		return nil, fmt.Errorf("marshal embed request: %w", err)
+	}
+	url := strings.TrimRight(c.ServerURL, "/") + "/v1/embeddings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("build embed request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embed request %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, &httpStatusError{status: resp.StatusCode, body: strings.TrimSpace(string(msg))}
+	}
+
+	var out struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode embed response: %w", err)
+	}
+	if len(out.Data) != len(texts) {
+		return nil, fmt.Errorf("embed response has %d vectors for %d inputs", len(out.Data), len(texts))
+	}
+	vectors := make([][]float32, 0, len(out.Data))
+	for _, d := range out.Data {
+		vectors = append(vectors, d.Embedding)
+	}
+	return vectors, nil
 }

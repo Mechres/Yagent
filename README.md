@@ -27,7 +27,7 @@ Developed and tuned for a single **AMD RX 6700 XT (12 GB, RDNA2 / gfx1031)**:
 
 ## Status
 
-**M1 + M2 complete** — streaming chat CLI plus the tool loop: 9 workspace-scoped tools (fs read/write/edit, glob, grep, shell_exec with secret scrubbing, git status/diff/log), risk-gated approvals in the REPL, agent loop with validation retry and max-iteration guard. Acceptance verified on real hardware (llama.cpp :8089, `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`) — read→answer, edit→approval, git tools all worked; model quirks in [`docs/models.md`](docs/models.md). Next: **M3 — memory: sessions, summarization, semantic recall** per [`docs/PLAN.md`](docs/PLAN.md).
+**M1–M3 complete** — streaming chat CLI, tool loop (9 workspace-scoped tools with risk-gated approvals), and memory: SQLite sessions (`yagent sessions`, `chat --continue <id>`), running-summary context budget, chromem semantic recall with `memory_save`/`memory_search`, session-end summaries. Acceptance verified: 60-turn bounded session + cross-session recall e2e; chat runs on Qwythos-9B via llama.cpp :8089, semantic recall needs an embeddings-capable server (llama.cpp `--embeddings` or Ollama `nomic-embed-text`). Next: **M3.5 — skills (procedural memory)** per [`docs/PLAN.md`](docs/PLAN.md).
 
 - Start here: [`AGENTS.md`](AGENTS.md) (contributor/agent guide)
 - Execution plan: [`docs/PLAN.md`](docs/PLAN.md)
@@ -59,3 +59,4 @@ go build ./cmd/yagent
 | [`docs/design/memory.md`](docs/design/memory.md) | Memory layers, storage schema, retrieval |
 | [`docs/design/skills.md`](docs/design/skills.md) | Hermes-style skills: procedural memory, `SKILL.md` format, approval gate |
 | [`docs/design/tools.md`](docs/design/tools.md) | Tool specifications and safety model |
+| [`docs/models.md`](docs/models.md) | Model quirks from acceptance runs (tool-call reliability, embeddings) |

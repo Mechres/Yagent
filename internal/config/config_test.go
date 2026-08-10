@@ -21,6 +21,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(EnvVarServerURL, "")
 	t.Setenv(EnvVarModel, "")
+	t.Setenv(EnvVarEmbeddingModel, "")
+	t.Setenv(EnvVarDataDir, "")
 
 	cfg, err := LoadConfig("")
 	if err != nil {
@@ -31,6 +33,49 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.Model != DefaultModel {
 		t.Errorf("Model = %q, want %q", cfg.Model, DefaultModel)
+	}
+	if cfg.EmbeddingModel != DefaultEmbeddingModel {
+		t.Errorf("EmbeddingModel = %q, want %q", cfg.EmbeddingModel, DefaultEmbeddingModel)
+	}
+	if cfg.DataDir == "" {
+		t.Error("DataDir should default to a non-empty path")
+	}
+}
+
+func TestLoadConfigContextWindowEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarContextWindow, "4096")
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ContextWindow != 4096 {
+		t.Errorf("ContextWindow = %d, want 4096", cfg.ContextWindow)
+	}
+	// invalid value → error
+	t.Setenv(EnvVarContextWindow, "abc")
+	if _, err := LoadConfig(""); err == nil {
+		t.Error("expected error for non-integer YAGENT_CONTEXT_WINDOW")
+	}
+	t.Setenv(EnvVarContextWindow, "50")
+	if _, err := LoadConfig(""); err == nil {
+		t.Error("expected error for YAGENT_CONTEXT_WINDOW < 100")
+	}
+}
+
+func TestLoadConfigEnvOverrides(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarServerURL, "http://env.test")
+	t.Setenv(EnvVarModel, "env-model")
+	t.Setenv(EnvVarEmbeddingModel, "env-embed")
+	t.Setenv(EnvVarDataDir, "/tmp/env-data")
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ServerURL != "http://env.test" || cfg.Model != "env-model" ||
+		cfg.EmbeddingModel != "env-embed" || cfg.DataDir != "/tmp/env-data" {
+		t.Errorf("cfg = %+v", cfg)
 	}
 }
 

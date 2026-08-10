@@ -23,7 +23,7 @@ func argsJSON(t *testing.T, v any) json.RawMessage {
 func fakeWorkspace(t *testing.T) (ws string, reg *Registry) {
 	t.Helper()
 	ws = t.TempDir()
-	reg = NewRegistry(ws)
+	reg = NewRegistry(ws, nil, "")
 	return ws, reg
 }
 
@@ -197,8 +197,8 @@ func TestStrictArgValidation(t *testing.T) {
 func TestRegistrySchemas(t *testing.T) {
 	_, reg := fakeWorkspace(t)
 	names := reg.Names()
-	if len(names) != 9 {
-		t.Fatalf("registry has %d tools: %v", len(names), names)
+	if len(names) != 11 {
+		t.Fatalf("registry has %d tools (want 11): %v", len(names), names)
 	}
 	schemas := reg.Schemas()
 	for i, s := range schemas {

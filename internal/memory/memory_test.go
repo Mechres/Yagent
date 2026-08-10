@@ -1,0 +1,201 @@
+package memory
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"yagent/internal/llm"
+)
+
+func TestStoreRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	sess, err := st.NewSession(ctx, "/tmp/repo")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if sess.ID == "" {
+		t.Fatal("empty session id")
+	}
+
+	msgs := []Message{
+		{Role: "user", Content: "remember that I prefer tabs"},
+		{Role: "assistant", Content: "ok", ToolCalls: []llm.ToolCall{{ID: "c1", Type: "function", Function: llm.ToolCallFunction{Name: "fs_read", Arguments: []byte(`{"path":"a"}`)}}}},
+		{Role: "tool", Content: "result", ToolCallID: "c1"},
+	}
+	for _, m := range msgs {
+		if _, err := st.Append(ctx, sess.ID, m); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	got, err := st.History(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("history len = %d, want 3", len(got))
+	}
+	if got[0].Content != "remember that I prefer tabs" {
+		t.Errorf("msg0 = %q", got[0].Content)
+	}
+	// tool_calls round-trip
+	if len(got[1].ToolCalls) != 1 || got[1].ToolCalls[0].Function.Name != "fs_read" {
+		t.Errorf("msg1 tool_calls = %+v", got[1].ToolCalls)
+	}
+	if got[2].ToolCallID != "c1" {
+		t.Errorf("msg2 tool_call_id = %q", got[2].ToolCallID)
+	}
+
+	sessions, err := st.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Messages != 3 {
+		t.Errorf("sessions = %+v", sessions)
+	}
+	if sessions[0].Title != "remember that I prefer tabs" {
+		t.Errorf("auto title = %q", sessions[0].Title)
+	}
+}
+
+func TestStoreSummary(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	sess, _ := st.NewSession(ctx, "/tmp/repo")
+	for i := 0; i < 5; i++ {
+		if _, err := st.Append(ctx, sess.ID, Message{Role: "user", Content: "msg"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	summary, until, err := st.Summary(ctx, sess.ID)
+	if err != nil || summary != "" || until != 0 {
+		t.Errorf("empty summary = %q/%d/%v", summary, until, err)
+	}
+
+	if err := st.SetSummary(ctx, sess.ID, "decided X", 3); err != nil {
+		t.Fatalf("SetSummary: %v", err)
+	}
+	summary, until, err = st.Summary(ctx, sess.ID)
+	if err != nil || summary != "decided X" || until != 3 {
+		t.Errorf("summary = %q/%d/%v", summary, until, err)
+	}
+
+	// HistoryAfter skips covered messages (ids ≤ 3); ids 4,5 remain
+	after, err := st.HistoryAfter(ctx, sess.ID, 3)
+	if err != nil || len(after) != 2 {
+		t.Errorf("HistoryAfter = %d msgs, err %v", len(after), err)
+	}
+}
+
+func TestStoreCleanSlate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "yagent-data")
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ctx := context.Background()
+	sess, _ := st.NewSession(ctx, "/tmp/repo")
+	if _, err := st.Append(ctx, sess.ID, Message{Role: "user", Content: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	// deleting the data dir = complete "forget everything"
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("dir still exists")
+	}
+
+	st2, err := Open(dir) // recreates cleanly
+	if err != nil {
+		t.Fatalf("reopen after delete: %v", err)
+	}
+	defer st2.Close()
+	sessions, err := st2.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions after clean slate: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("expected empty store, got %+v", sessions)
+	}
+}
+
+func TestVectorStoreSaveSearch(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+
+	dir := t.TempDir()
+	vs, err := OpenVectorStore(dir, ts.URL, "test-embed")
+	if err != nil {
+		t.Fatalf("OpenVectorStore: %v", err)
+	}
+	defer vs.Close()
+
+	ctx := context.Background()
+	if err := vs.Save(ctx, "user prefers tabs over spaces", "tool", "s1"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := vs.Save(ctx, "the deploy script lives in scripts/deploy.sh", "tool", "s1"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := vs.Search(ctx, "what about tabs?", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d memories, want 1 (only the tabs one is above threshold)", len(got))
+	}
+	if !strings.Contains(got[0].Text, "tabs") {
+		t.Errorf("recalled = %q", got[0].Text)
+	}
+	if got[0].Source != "tool" || got[0].SessionID != "s1" {
+		t.Errorf("metadata = %+v", got[0])
+	}
+}
+
+func TestVectorStoreCleanSlate(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+
+	dir := filepath.Join(t.TempDir(), "vdata")
+	vs, err := OpenVectorStore(dir, ts.URL, "test-embed")
+	if err != nil {
+		t.Fatalf("OpenVectorStore: %v", err)
+	}
+	if err := vs.Save(context.Background(), "fact one", "tool", "s1"); err != nil {
+		t.Fatal(err)
+	}
+	vs.Close()
+
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	vs2, err := OpenVectorStore(dir, ts.URL, "test-embed")
+	if err != nil {
+		t.Fatalf("reopen after delete: %v", err)
+	}
+	defer vs2.Close()
+	if vs2.Count() != 0 {
+		t.Errorf("count = %d, want 0 after clean slate", vs2.Count())
+	}
+}

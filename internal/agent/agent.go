@@ -1,7 +1,8 @@
 // Package agent implements the agent loop: linear, explicit and defensive by
 // design (see docs/design/agent-loop.md). It drives the LLM, dispatches tool
-// calls through the registry with validation/approval/truncation, and never
-// grows history without a budget check.
+// calls through the registry with validation/approval/truncation, persists
+// messages to the session store, budgets context with a running summary, and
+// injects recalled semantic memories.
 package agent
 
 import (
@@ -12,6 +13,7 @@ import (
 	"sync"
 
 	"yagent/internal/llm"
+	"yagent/internal/memory"
 	"yagent/internal/tools"
 )
 
@@ -19,12 +21,28 @@ import (
 // final answer.
 var ErrMaxIterations = errors.New("reached max iterations without a final answer")
 
-// DefaultMaxIterations caps a single Run when Config.MaxIterations is 0.
-const DefaultMaxIterations = 25
+// Defaults when Config fields are zero.
+const (
+	DefaultMaxIterations = 25
+	DefaultWindow        = 16384
+	DefaultReserve       = 2048
+	DefaultMemoryTokens  = 1000
+	DefaultRecallK       = 5
+)
 
 // maxValidationFails is how many argument-validation failures on the same tool
 // are tolerated before the loop blocks that tool for the rest of the turn.
 const maxValidationFails = 3
+
+// summaryPrompt condenses old history into the running summary (memory.md L1).
+const summaryPrompt = `Condense this conversation segment into at most 400 words. Preserve: decisions made, file paths touched, errors encountered, user preferences, open tasks. Drop: pleasantries, repeated code, verbose tool output.`
+
+// historyEntry pairs a persisted message with its store row id (0 when not
+// persisted), so the budget manager knows which messages a summary covers.
+type historyEntry struct {
+	id  int64
+	msg llm.Message
+}
 
 // Config holds loop knobs.
 type Config struct {
@@ -35,6 +53,25 @@ type Config struct {
 	// OnTool is called before a tool executes (used by the UI to show
 	// activity). Optional.
 	OnTool func(llm.ToolCall)
+
+	// Window and Reserve bound the context budget (tokens, heuristic len/4).
+	Window  int
+	Reserve int
+	// MemoryMaxTokens caps the recall injection (default 1000).
+	MemoryMaxTokens int
+
+	// Summarizer is used to condense old history; when nil, the main LLM is
+	// used. Tools are never offered to the summarizer.
+	Summarizer ChatLLM
+
+	// Store/SessionID enable L2 persistence; Vectors enables L3 recall.
+	Store     *memory.Store
+	SessionID string
+	Vectors   *memory.VectorStore
+
+	// InitialHistory/InitialSummary seed a resumed session (chat --continue).
+	InitialHistory []llm.Message
+	InitialSummary string
 }
 
 // Approver gates Write/Destructive tool calls; implemented by the UI.
@@ -51,12 +88,14 @@ type ChatLLM interface {
 type Agent struct {
 	cfg      Config
 	llm      ChatLLM
+	summ     ChatLLM
 	registry *tools.Registry
 	approver Approver
 
-	workspace    string
-	systemPrompt string
-	history      []llm.Message
+	workspace      string
+	systemPrompt   string
+	history        []historyEntry
+	runningSummary string
 }
 
 // New constructs an Agent bound to a workspace and tool registry.
@@ -64,39 +103,76 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = DefaultMaxIterations
 	}
+	if cfg.Window <= 0 {
+		cfg.Window = DefaultWindow
+	}
+	if cfg.Reserve <= 0 {
+		cfg.Reserve = DefaultReserve
+	}
+	if cfg.MemoryMaxTokens <= 0 {
+		cfg.MemoryMaxTokens = DefaultMemoryTokens
+	}
 	if cfg.OnToken == nil {
 		cfg.OnToken = func(string) {}
 	}
-	return &Agent{
-		cfg:          cfg,
-		llm:          llm,
-		registry:     reg,
-		approver:     approver,
-		workspace:    workspace,
-		systemPrompt: buildSystemPrompt(workspace),
+	if cfg.Summarizer == nil {
+		cfg.Summarizer = llm
 	}
+	a := &Agent{
+		cfg:            cfg,
+		llm:            llm,
+		summ:           cfg.Summarizer,
+		registry:       reg,
+		approver:       approver,
+		workspace:      workspace,
+		systemPrompt:   buildSystemPrompt(workspace),
+		runningSummary: cfg.InitialSummary,
+	}
+	for _, m := range cfg.InitialHistory {
+		a.history = append(a.history, historyEntry{msg: m})
+	}
+	return a
 }
 
-// Reset clears conversation history (the /clear command).
-func (a *Agent) Reset() { a.history = nil }
+// Reset clears conversation history and the running summary (/clear).
+func (a *Agent) Reset() {
+	a.history = nil
+	a.runningSummary = ""
+}
 
 // History exposes the conversation for inspection/tests.
-func (a *Agent) History() []llm.Message { return a.history }
+func (a *Agent) History() []llm.Message {
+	out := make([]llm.Message, 0, len(a.history))
+	for _, h := range a.history {
+		out = append(out, h.msg)
+	}
+	return out
+}
 
 // Run processes one user input through the loop and returns the final answer
 // text (which was also streamed via cfg.OnToken).
 func (a *Agent) Run(ctx context.Context, input string) (string, error) {
-	a.history = append(a.history, llm.Message{Role: "user", Content: input})
+	if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: input}); err != nil {
+		return "", err
+	}
+	recall := a.recall(ctx, input)
 
 	valFails := make(map[string]int)
 	blocked := make(map[string]bool)
 
 	for i := 0; i < a.cfg.MaxIterations; i++ {
-		resp, err := a.llm.ChatStream(ctx, a.assembleContext(), a.registry.Schemas(), a.cfg.OnToken)
+		// Budget before every request: plain chat turns (no tool calls)
+		// would otherwise never trigger summarization.
+		if err := a.budget(ctx); err != nil {
+			return "", err
+		}
+		resp, err := a.llm.ChatStream(ctx, a.assembleContext(recall), a.registry.Schemas(), a.cfg.OnToken)
 		if err != nil {
 			return "", err
 		}
-		a.history = append(a.history, resp.Message)
+		if _, err := a.appendMessage(ctx, resp.Message); err != nil {
+			return "", err
+		}
 
 		if len(resp.ToolCalls) == 0 {
 			return resp.Message.Content, nil // final answer, done
@@ -104,25 +180,133 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 
 		results := a.dispatchAll(ctx, resp.ToolCalls, valFails, blocked)
 		for i, call := range resp.ToolCalls {
-			a.history = append(a.history, llm.Message{
+			if _, err := a.appendMessage(ctx, llm.Message{
 				Role:       "tool",
 				Content:    results[i],
 				ToolCallID: call.ID,
-			})
-		}
-		if err := a.budget(ctx); err != nil {
-			return "", err
+			}); err != nil {
+				return "", err
+			}
 		}
 	}
 	return "", ErrMaxIterations
 }
 
-// assembleContext prepends the system prompt to the raw history. Tool schemas
-// are sent via the API's tools field, never in the prompt.
-func (a *Agent) assembleContext() []llm.Message {
-	msgs := make([]llm.Message, 0, len(a.history)+1)
-	msgs = append(msgs, llm.Message{Role: "system", Content: a.systemPrompt})
-	return append(msgs, a.history...)
+// appendMessage records a message in memory and persists it when a store is
+// configured, returning its store row id (0 when not persisted).
+func (a *Agent) appendMessage(ctx context.Context, msg llm.Message) (int64, error) {
+	a.history = append(a.history, historyEntry{msg: msg})
+	if a.cfg.Store == nil || a.cfg.SessionID == "" {
+		return 0, nil
+	}
+	id, err := a.cfg.Store.Append(ctx, a.cfg.SessionID, msg)
+	if err != nil {
+		return 0, fmt.Errorf("persist message: %w", err)
+	}
+	a.history[len(a.history)-1].id = id
+	return id, nil
+}
+
+// recall injects the top-k semantic memories for the user input (L3),
+// budgeted and deduplicated against the current session.
+func (a *Agent) recall(ctx context.Context, input string) string {
+	if a.cfg.Vectors == nil {
+		return ""
+	}
+	memories, err := a.cfg.Vectors.Search(ctx, input, DefaultRecallK)
+	if err != nil {
+		// Recall is best-effort; a broken memory store must not kill the turn.
+		return ""
+	}
+	var b strings.Builder
+	for _, m := range memories {
+		if m.SessionID != "" && m.SessionID == a.cfg.SessionID {
+			continue // dedupe against this session's own messages
+		}
+		fmt.Fprintf(&b, "- [%.2f] %s\n", m.Score, m.Text)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	// Cap at the memory budget (heuristic tokens = chars/4).
+	maxChars := a.cfg.MemoryMaxTokens * 4
+	if b.Len() > maxChars {
+		return "Relevant memories:\n" + b.String()[:maxChars] + "\n…"
+	}
+	return "Relevant memories:\n" + b.String()
+}
+
+// assembleContext prepends system, running summary and recall to the history.
+// Tool schemas are sent via the API's tools field, never in the prompt.
+func (a *Agent) assembleContext(recall string) []llm.Message {
+	msgs := []llm.Message{{Role: "system", Content: a.systemPrompt}}
+	if a.runningSummary != "" {
+		msgs = append(msgs, llm.Message{
+			Role:    "system",
+			Content: "Summary of the earlier part of this conversation:\n" + a.runningSummary,
+		})
+	}
+	if recall != "" {
+		msgs = append(msgs, llm.Message{Role: "system", Content: recall})
+	}
+	for _, h := range a.history {
+		msgs = append(msgs, h.msg)
+	}
+	return msgs
+}
+
+// estTokens is the heuristic len/4 token estimate for the whole context.
+func (a *Agent) estTokens() int {
+	total := len(a.systemPrompt)/4 + len(a.runningSummary)/4
+	for _, h := range a.history {
+		total += len(h.msg.Content)/4 + len(h.msg.ToolCallID)/4
+	}
+	return total
+}
+
+// budget summarizes the oldest half of history when the window is exceeded,
+// so context never grows unbounded (memory.md L1). The summarized segment is
+// replaced by the running summary, and the store records what is covered.
+func (a *Agent) budget(ctx context.Context) error {
+	limit := a.cfg.Window - a.cfg.Reserve
+	if limit < a.cfg.Window/2 {
+		limit = a.cfg.Window / 2 // keep the limit sane for tiny windows
+	}
+	if a.estTokens() <= limit {
+		return nil
+	}
+	// summarize the oldest half of history (excluding the current user turn
+	// is unnecessary — half by count is what memory.md prescribes)
+	seg := a.history[:len(a.history)/2]
+	if len(seg) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	if a.runningSummary != "" {
+		fmt.Fprintf(&b, "Previous summary:\n%s\n\n", a.runningSummary)
+	}
+	for _, h := range seg {
+		fmt.Fprintf(&b, "%s: %s\n", h.msg.Role, h.msg.Content)
+	}
+	prompt := []llm.Message{
+		{Role: "system", Content: "You are a conversation summarizer. " + summaryPrompt},
+		{Role: "user", Content: b.String()},
+	}
+	resp, err := a.summ.ChatStream(ctx, prompt, nil, func(string) {})
+	if err != nil {
+		return fmt.Errorf("summarize history: %w", err)
+	}
+	a.runningSummary = strings.TrimSpace(resp.Message.Content)
+	a.history = append([]historyEntry{}, a.history[len(seg):]...)
+
+	if a.cfg.Store != nil && a.cfg.SessionID != "" && len(seg) > 0 {
+		until := seg[len(seg)-1].id
+		if err := a.cfg.Store.SetSummary(ctx, a.cfg.SessionID, a.runningSummary, until); err != nil {
+			return fmt.Errorf("persist summary: %w", err)
+		}
+	}
+	return nil
 }
 
 // dispatchAll runs tool calls: read-only batches execute concurrently, any
@@ -197,10 +381,6 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	}
 	return result
 }
-
-// budget guards history growth. M2 relies on per-tool result caps; real
-// summarization (memory.md L1) lands in M3.
-func (a *Agent) budget(ctx context.Context) error { return nil }
 
 func buildSystemPrompt(workspace string) string {
 	return fmt.Sprintf(`You are Yagent, a local-first AI coding agent running in the workspace:

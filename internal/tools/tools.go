@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"yagent/internal/llm"
+	"yagent/internal/memory"
 )
 
 // RiskLevel classifies a tool's side effects; Write/Destructive tools go
@@ -62,22 +63,25 @@ type Registry struct {
 	tools     map[string]Tool
 }
 
-// NewRegistry builds the M2 tool set scoped to workspace.
-func NewRegistry(workspace string) *Registry {
+// NewRegistry builds the M2+ tool set scoped to workspace. vectors and
+// sessionID enable the semantic-memory tools (may be nil/empty).
+func NewRegistry(workspace string, vectors *memory.VectorStore, sessionID string) *Registry {
 	r := &Registry{
 		workspace: filepath.Clean(workspace),
 		tools:     make(map[string]Tool),
 	}
 	reg := map[string]Tool{
-		"fs_read":    &fsReadTool{ws: r.workspace},
-		"fs_write":   &fsWriteTool{ws: r.workspace},
-		"fs_edit":    &fsEditTool{ws: r.workspace},
-		"glob":       &globTool{ws: r.workspace},
-		"grep":       &grepTool{ws: r.workspace},
-		"shell_exec": &shellExecTool{ws: r.workspace},
-		"git_status": &gitStatusTool{ws: r.workspace},
-		"git_diff":   &gitDiffTool{ws: r.workspace},
-		"git_log":    &gitLogTool{ws: r.workspace},
+		"fs_read":       &fsReadTool{ws: r.workspace},
+		"fs_write":      &fsWriteTool{ws: r.workspace},
+		"fs_edit":       &fsEditTool{ws: r.workspace},
+		"glob":          &globTool{ws: r.workspace},
+		"grep":          &grepTool{ws: r.workspace},
+		"shell_exec":    &shellExecTool{ws: r.workspace},
+		"git_status":    &gitStatusTool{ws: r.workspace},
+		"git_diff":      &gitDiffTool{ws: r.workspace},
+		"git_log":       &gitLogTool{ws: r.workspace},
+		"memory_save":   &memorySaveTool{vectors: vectors, sessionID: sessionID},
+		"memory_search": &memorySearchTool{vectors: vectors},
 	}
 	for name, t := range reg {
 		r.tools[name] = t

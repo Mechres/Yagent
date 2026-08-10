@@ -261,6 +261,50 @@ func TestChatStreamRetriesTransportErrors(t *testing.T) {
 	}
 }
 
+func TestEmbed(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req["model"] != "nomic-embed-text" {
+			t.Errorf("model = %v", req["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[
+			{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]},
+			{"object":"embedding","index":1,"embedding":[0.4,0.5,0.6]}]}`)
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "chat-model")
+	got, err := client.Embed(context.Background(), "nomic-embed-text", []string{"alpha", "beta"})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(got) != 2 || len(got[0]) != 3 || got[0][0] != 0.1 || got[1][2] != 0.6 {
+		t.Errorf("vectors = %v", got)
+	}
+}
+
+func TestEmbedHTTPError(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "embedding model not loaded", http.StatusNotFound)
+	}))
+	defer ts.Close()
+	client := NewClient(ts.URL, "m")
+	_, err := client.Embed(context.Background(), "nomic-embed-text", []string{"x"})
+	if err == nil || !strings.Contains(err.Error(), "Not Found") {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestChatStreamGivesUpAfterMaxRetries(t *testing.T) {
 	t.Parallel()
 	ts := sseServer(t, chunkData("never"), "[DONE]") // never reached

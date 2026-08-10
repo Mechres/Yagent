@@ -19,6 +19,7 @@ Observed behavior (M1/M2 acceptance, 2025-06):
 | Tool-call format | Uses the standard OpenAI `tools` API correctly when it does call | — |
 | Verbose persona | Self-identifies as "Qwythos…" and is chatty despite "be concise" | keep the concise bias in the system prompt |
 | llama.cpp schema strictness | Server returns 400 `"type must be array, but is null"` when a function schema has `"required": null` (Go `nil` slice) | `fnSchema` normalizes `properties`/`required` to `{}`/`[]` |
+| Embeddings endpoint | `/v1/embeddings` returns 501 unless the server was started with `--embeddings` (currently off on :8089) | memory_save/search and recall fail gracefully ("not configured"/embed error); restart llama-server with `--embeddings` or use Ollama `nomic-embed-text` |
 
 Tool-calling reliability is moderate; the reference model for tool-heavy work
 remains `qwen2.5-coder:14b` (see README). If you switch models, append a row

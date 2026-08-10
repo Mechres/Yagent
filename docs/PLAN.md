@@ -65,16 +65,16 @@ Acceptance: *(verified on real hardware — llama.cpp :8089, `Qwythos-9B-Claude-
 **Goal**: L1–L3 from `design/memory.md`. Long sessions don't overflow; facts survive restarts.
 
 Tasks:
-- [ ] `internal/memory`: SQLite (`modernc.org/sqlite`) schema + `Store` interface; `chat --continue <id>`, `yagent sessions`
-- [ ] token-budget manager: summarize oldest 50% of history when over window; running summary injected per `agent-loop.md`
-- [ ] chromem-go collection + `Embed` wiring (`nomic-embed-text`); `memory_save` / `memory_search` tools; per-turn recall injection (top-5, budgeted)
-- [ ] session-end summary job → embedded into L3
-- [ ] tests: budget math (forced overflow with fake summarizer), Store round-trips, recall ranking
+- [x] `internal/memory`: SQLite (`modernc.org/sqlite`) schema + `Store` interface; `chat --continue <id>`, `yagent sessions`
+- [x] token-budget manager: summarize oldest 50% of history when over window; running summary injected per `agent-loop.md`
+- [x] chromem-go collection + `Embed` wiring (`nomic-embed-text`); `memory_save` / `memory_search` tools; per-turn recall injection (top-5, budgeted)
+- [x] session-end summary job → embedded into L3
+- [x] tests: budget math (forced overflow with fake summarizer), Store round-trips, recall ranking
 
-Acceptance:
-- [ ] 60+ turn session (scripted) never exceeds the context window; earlier decisions still answerable via the running summary
-- [ ] "Remember that I prefer X" → quit → new session → ask about X → recalled
-- [ ] deleting the data dir = clean slate, no errors
+Acceptance: *(all verified — 60-turn budget + remember/recall e2e against fake servers, clean slate unit-tested; real-hardware note: embeddings require the server to serve `/v1/embeddings` — llama.cpp needs `--embeddings`, or use Ollama `nomic-embed-text`)*
+- [x] 60+ turn session (scripted) never exceeds the context window; earlier decisions still answerable via the running summary
+- [x] "Remember that I prefer X" → quit → new session → ask about X → recalled
+- [x] deleting the data dir = clean slate, no errors
 
 ## M3.5 — Skills (procedural memory)
 

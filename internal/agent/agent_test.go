@@ -15,8 +15,17 @@ import (
 	"testing"
 
 	"yagent/internal/llm"
+	"yagent/internal/memory"
 	"yagent/internal/tools"
 )
+
+// memoryOpen / memoryOpenVector are thin wrappers so agent tests can use the
+// memory package without cluttering call sites.
+func memoryOpen(dir string) (*memory.Store, error) { return memory.Open(dir) }
+
+func memoryOpenVector(dir, url, model string) (*memory.VectorStore, error) {
+	return memory.OpenVectorStore(dir, url, model)
+}
 
 // ---------- fake LLM server ----------
 
@@ -76,6 +85,18 @@ type chatCompletionRequest struct {
 
 // ---------- helpers ----------
 
+// fixedSummaryLLM is a ChatLLM that always returns a fixed message; used as
+// the summarizer so budget math is deterministic.
+type fixedSummaryLLM struct {
+	summary string
+	calls   int
+}
+
+func (f *fixedSummaryLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error) {
+	f.calls++
+	return &llm.Response{Message: llm.Message{Role: "assistant", Content: f.summary}}, nil
+}
+
 type stubApprover struct {
 	allow bool
 	n     int
@@ -105,7 +126,7 @@ func (c *captureTokens) all() string {
 func setup(t *testing.T, s *scriptedLLM, allow bool, maxIter int) (*Agent, *stubApprover, *captureTokens, string) {
 	t.Helper()
 	ws := t.TempDir()
-	reg := tools.NewRegistry(ws)
+	reg := tools.NewRegistry(ws, nil, "")
 	ap := &stubApprover{allow: allow}
 	tok := &captureTokens{}
 	client := llm.NewClient(s.ts.URL, "test-model")
@@ -325,5 +346,195 @@ func TestRunFeedsToolResultsBack(t *testing.T) {
 	}
 	if !sawError {
 		t.Error("validation error was not fed back to the model in request 2")
+	}
+}
+
+// ---------- M3: budget, persistence, recall ----------
+
+// newEmbedServer returns an httptest server with deterministic 2-d embeddings:
+// "tab" → (0,1), else (1,0); accepts input as string or array.
+func newEmbedServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input json.RawMessage `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var inputs []string
+		if err := json.Unmarshal(req.Input, &inputs); err != nil {
+			var one string
+			if err2 := json.Unmarshal(req.Input, &one); err2 != nil {
+				http.Error(w, "bad input", http.StatusBadRequest)
+				return
+			}
+			inputs = []string{one}
+		}
+		type item struct {
+			Object    string    `json:"object"`
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		}
+		data := make([]item, 0, len(inputs))
+		for i, text := range inputs {
+			vec := []float32{1, 0}
+			if strings.Contains(text, "tab") {
+				vec = []float32{0, 1}
+			}
+			data = append(data, item{Object: "embedding", Index: i, Embedding: vec})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+	}))
+}
+
+func TestBudgetSummarizesOldestHalf(t *testing.T) {
+	// Tiny window so the tool result forces a summarization after turn 1.
+	// Turn 1: tool call fs_read on a file with a big-ish content; turn 2: final.
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "big.txt"}`),
+		finalContent("done"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "big.txt", strings.Repeat("x", 800)+"\n")
+	reg := tools.NewRegistry(ws, nil, "")
+	summ := &fixedSummaryLLM{summary: "SUM: user prefers tabs"}
+
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, Window: 300, Reserve: 50, Summarizer: summ},
+		ws)
+
+	if _, err := a.Run(context.Background(), "first message that must disappear"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if summ.calls == 0 {
+		t.Fatal("summarizer was never called")
+	}
+	// The summarized message must be gone and the summary present in turn 2.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) < 2 {
+		t.Fatalf("only %d requests captured", len(s.requests))
+	}
+	req2 := string(s.requests[1])
+	if !strings.Contains(req2, "SUM: user prefers tabs") {
+		t.Errorf("turn 2 missing running summary: %q", req2[:200])
+	}
+	if strings.Contains(req2, "first message that must disappear") {
+		t.Error("summarized message still in turn 2 context")
+	}
+}
+
+func TestRunPersistsMessages(t *testing.T) {
+	st, err := memoryOpen(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	sess, err := st.NewSession(ctx, "/tmp/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
+		finalContent("ok"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "data")
+	reg := tools.NewRegistry(ws, nil, "")
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, Store: st, SessionID: sess.ID}, ws)
+
+	if _, err := a.Run(ctx, "read a.txt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	hist, err := st.History(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// user, assistant (tool call), tool result, assistant (final answer)
+	if len(hist) != 4 {
+		t.Fatalf("persisted %d messages, want 4", len(hist))
+	}
+	if hist[0].Content != "read a.txt" || hist[1].Role != "assistant" || hist[2].Role != "tool" || hist[3].Role != "assistant" {
+		t.Errorf("history = %+v", hist)
+	}
+	if hist[2].ToolCallID != "c1" {
+		t.Errorf("tool result tool_call_id = %q", hist[2].ToolCallID)
+	}
+}
+
+func TestBudgetPersistsSummary(t *testing.T) {
+	st, _ := memoryOpen(t.TempDir())
+	defer st.Close()
+	ctx := context.Background()
+	sess, _ := st.NewSession(ctx, "/tmp/ws")
+
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "big.txt"}`),
+		finalContent("done"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "big.txt", strings.Repeat("y", 800)+"\n")
+	reg := tools.NewRegistry(ws, nil, "")
+	summ := &fixedSummaryLLM{summary: "persisted summary text"}
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, Window: 300, Reserve: 50, Summarizer: summ, Store: st, SessionID: sess.ID}, ws)
+
+	if _, err := a.Run(ctx, "turn one"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got, until, err := st.Summary(ctx, sess.ID)
+	if err != nil || got != "persisted summary text" || until == 0 {
+		t.Errorf("stored summary = %q/%d/%v", got, until, err)
+	}
+}
+
+func TestRecallInjectedAndSessionDedup(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	dir := t.TempDir()
+	vs, err := memoryOpenVector(dir, ts.URL, "test-embed")
+	if err != nil {
+		t.Fatalf("open vector store: %v", err)
+	}
+	ctx := context.Background()
+	// memory from a past session
+	if err := vs.Save(ctx, "user prefers tabs over spaces", "tool", "s-past"); err != nil {
+		t.Fatal(err)
+	}
+	// memory from THIS session must be deduped out of the injection
+	if err := vs.Save(ctx, "current session fact", "tool", "s-current"); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newScriptedLLM(t, [][]string{finalContent("ok")})
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, nil, "")
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, Vectors: vs, SessionID: "s-current"}, ws)
+
+	if _, err := a.Run(ctx, "what about tabs?"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) != 1 {
+		t.Fatalf("requests = %d", len(s.requests))
+	}
+	req := string(s.requests[0])
+	if !strings.Contains(req, "Relevant memories") || !strings.Contains(req, "tabs") {
+		t.Errorf("recall not injected: %q", req[:300])
+	}
+	if strings.Contains(req, "current session fact") {
+		t.Error("current-session memory was not deduped")
 	}
 }

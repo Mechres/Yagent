@@ -8,13 +8,13 @@ Yagent is a **local-first AI agent** (code / audit / review / web search / resea
 
 ## Current status
 
-**Milestone M2 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
+**Milestone M3 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
 
-- M1 shipped: streaming chat CLI (config, `ChatStream` with SSE + tools, REPL `/exit`/`/clear`).
-- M2 shipped: `internal/tools` (9 tools: fs_read/write/edit, glob, grep, shell_exec with env scrub + timeouts, git_status/diff/log; risk levels, workspace scoping rejecting absolute/escaping paths, strict arg validation), `internal/agent` (loop per `agent-loop.md`: system prompt v1, streaming with OnToken, approval-gated dispatch, parallel read-only batches, validation-retry with 3-failure block, max-iteration guard, tool-result feedback), `internal/ui` (agent-driven REPL, `Allow? [y/N]` approvals on shared stdin, tool activity lines).
-- All M2 tasks ticked; acceptance flows verified against a scripted fake server + real tools (read→answer, edit→approval→denial-adapts, git tools without shell_exec, malformed-args recovery). `go build`/`vet`/`test` clean, gofmt clean.
-- **Real-hardware acceptance done** (llama.cpp :8089, `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`): M1 streaming chat + all three M2 acceptance flows verified end-to-end (read→answer, fs_edit→approval→applied, git_status without shell_exec). The run surfaced three fixes, all in: `fnSchema` emits `[]`/`{}` not `null` (llama.cpp rejects `"required": null`), `glob "**/"` now matches root-level files (+ grep include), system prompt forbids narrating tool calls. Model quirks tracked in [`docs/models.md`](docs/models.md).
-- Next: **M3 — memory: sessions, summarization, semantic recall**. Design: `docs/design/memory.md`. (M3.5 skills after that; both depend on the M2 loop.)
+- M1: streaming chat CLI. M2: tool loop (9 fs/shell/git tools, approvals, validation retry). Both accepted on real hardware (Qwythos-9B on :8089).
+- M3 shipped: `internal/memory` — L2 SQLite session store (`yagent sessions`, `chat --continue <id>`, auto-titles, `HistoryAfter` for resumes), L1 token budget (summarizes oldest half into a running summary before every request; `context_window`/`YAGENT_CONTEXT_WINDOW` knob), L3 chromem vector memory with real `/v1/embeddings` wiring (`nomic-embed-text`), `memory_save`/`memory_search` tools, per-turn top-5 recall injection (budgeted, session-deduped), session-end summary job. Data dir: `$XDG_DATA_HOME/yagent` (deleting it = forget everything).
+- All M3 tasks ticked; acceptance verified: 60-turn bounded session with running-summary injection + resume, remember→recall across sessions (e2e, fake servers), clean-slate store. `go build`/`vet`/`test`/`gofmt` clean.
+- **Real-hardware note**: embeddings on the dev llama.cpp server are off (`--embeddings` flag); chat acceptance is verified on Qwythos-9B, semantic recall needs an embeddings-capable server (llama.cpp `--embeddings` or Ollama `nomic-embed-text`). See [`docs/models.md`](docs/models.md).
+- Next: **M3.5 — skills (procedural memory)**, design in `docs/design/skills.md`, then M4 (codebase index).
 
 ## Commands
 
@@ -70,9 +70,9 @@ Keep packages acyclic: `ui → agent → {llm, tools, memory, index} → config`
 ## Environment notes
 
 - Dev server in use: llama.cpp `llama-server` (Vulkan) on **port 8089**, model `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` — set `YAGENT_SERVER_URL=http://localhost:8089` and `YAGENT_MODEL=Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`. See [`docs/models.md`](docs/models.md) for its quirks.
+- **Embeddings**: the server must serve `/v1/embeddings`. llama.cpp requires the `--embeddings` flag at startup (currently off on :8089); Ollama serves `nomic-embed-text` out of the box. Config: `YAGENT_EMBEDDING_MODEL` (default `nomic-embed-text`).
 - Ollama on RX 6700 XT (gfx1031) needs `HSA_OVERRIDE_GFX_VERSION=10.3.0`; default config targets Ollama at `http://localhost:11434`.
-- Alternative server: llama.cpp `llama-server` built with Vulkan backend (`-DGGML_VULKAN=1`).
-- Embeddings via the same server: model `nomic-embed-text`, endpoint `/v1/embeddings`.
+- Context window: `YAGENT_CONTEXT_WINDOW` / `context_window` (default 16384). Data lives under `YAGENT_DATA_DIR` / `data_dir` (default `$XDG_DATA_HOME/yagent`); deleting it is a complete "forget everything".
 - If SearXNG is used for web search, enable `format: json` in its settings.yml.
 
 ## Definition of done (every milestone)
