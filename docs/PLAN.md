@@ -119,13 +119,15 @@ Acceptance: *(real-hardware verified on Qwythos-9B :8089 — the repo indexed in
 **Goal**: research capability.
 
 Tasks:
-- [ ] `web_search` against SearXNG (`format=json`; document the settings.yml requirement); fallback: configurable Brave API key via env
-- [ ] `web_fetch`: GET → HTML→markdown extraction → 16 KiB cap; 15s timeout; redirect limit
-- [ ] system-prompt guidance: cite URLs when using web results
-- [ ] tests: fake SearXNG + fake HTML pages (no network in tests)
+- [x] `internal/web`: pluggable `web_search` backends — **DuckDuckGo HTML** (`html.duckduckgo.com/html/?q=`, default, no key/server; parses `result__a`/`result__snippet`, decodes the `uddg` redirect) and **SearXNG** (`format=json`, via `web_search.provider` + `web_search.searxng_url` / env)
+- [x] `web_fetch`: GET → HTML→text extraction (scripts/nav/footer stripped, links preserved) via `golang.org/x/net/html`; 16 KiB text cap; 15s timeout; redirect limit 5
+- [x] system-prompt guidance: cite URLs when using web results
+- [x] tests: fake DDG HTML page, fake SearXNG JSON, fake fetch page (chrome-strip + truncation + 404), config provider/env, tool wiring
 
-Acceptance:
-- [ ] "Research whether llama.cpp supports ROCm on gfx1031 and summarize with sources" → searches, fetches ≥2 pages, answer contains URLs
+Acceptance: *(real-hardware verified on Qwythos-9B :8089 against live DuckDuckGo — "Research whether llama.cpp supports ROCm on gfx1031" → model ran `web_search`, fetched two pages (rocm.docs.amd.com + github.com/lemonade-sdk/llamacpp-rocm), and summarized with source URLs)*
+- [x] "Research whether llama.cpp supports ROCm on gfx1031 and summarize with sources" → searches, fetches ≥2 pages, answer contains URLs
+
+> Backends are a small `Provider` interface: Mojeek (no-key HTML), Brave (API key), DDG Lite are ~30 lines each if needed later.
 
 ## M6 — TUI + polish
 

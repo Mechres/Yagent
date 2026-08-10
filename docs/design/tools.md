@@ -36,8 +36,8 @@ The ui implements `Approver`; prompts show the tool name, args (command/diff), a
 | `memory_search` | M3 | RO | semantic search over long-term memory |
 | `index_repo` | M4 | Write | (re)index the workspace; runs in background |
 | `index_search` | M4 | RO | semantic code search; returns `path:start-end` + snippet |
-| `web_search` | M5 | RO | SearXNG `GET /search?q=..&format=json`; top-8 results: title, url, snippet |
-| `web_fetch` | M5 | RO | GET url → HTML→markdown (strip scripts/nav) → cap 16 KiB; 15s timeout; honor robots is NOT required, but no POSTs ever |
+| `web_search` | M5 | RO | DuckDuckGo HTML by default (`html.duckduckgo.com/html/?q=`; no key, unofficial scraping — structure can change, rate-limits); SearXNG JSON alternative via `web_search.provider`/`searxng_url` (needs `format: json` in its settings.yml); top-8 results: title, url, snippet |
+| `web_fetch` | M5 | RO | GET url → HTML→text (strip scripts/nav/footer via `x/net/html`) → cap 16 KiB; 15s timeout; redirect limit 5; no POSTs ever |
 
 ## Execution rules
 

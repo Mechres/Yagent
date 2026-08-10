@@ -18,6 +18,7 @@ import (
 	"yagent/internal/llm"
 	"yagent/internal/memory"
 	"yagent/internal/skills"
+	"yagent/internal/web"
 )
 
 // RiskLevel classifies a tool's side effects; Write/Destructive tools go
@@ -68,6 +69,8 @@ type Options struct {
 	Skills *skills.Store
 	// Index enables the codebase-index tools (may be nil).
 	Index *index.Store
+	// Web enables the M5 web tools (may be nil).
+	Web *web.Client
 	// SkillsWriteApproval gates skill writes (stage instead of apply).
 	SkillsWriteApproval bool
 	// IndexProgress reports index_repo progress lines to the UI (optional).
@@ -109,6 +112,10 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	if opts.Index != nil {
 		reg["index_repo"] = &indexRepoTool{store: opts.Index, onProgress: opts.IndexProgress}
 		reg["index_search"] = &indexSearchTool{store: opts.Index}
+	}
+	if opts.Web != nil {
+		reg["web_search"] = &webSearchTool{client: opts.Web}
+		reg["web_fetch"] = &webFetchTool{client: opts.Web}
 	}
 	for name, t := range reg {
 		r.tools[name] = t

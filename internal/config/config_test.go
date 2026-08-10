@@ -206,6 +206,42 @@ func TestLoadConfigEmbeddingServerURL(t *testing.T) {
 	}
 }
 
+func TestLoadConfigWebSearch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarServerURL, "")
+	t.Setenv(EnvVarModel, "")
+	t.Setenv(EnvVarEmbeddingModel, "")
+	t.Setenv(EnvVarDataDir, "")
+	t.Setenv(EnvVarWebProvider, "")
+	t.Setenv(EnvVarSearxngURL, "")
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Web.Provider != "duckduckgo" {
+		t.Errorf("Web.Provider = %q, want default duckduckgo", cfg.Web.Provider)
+	}
+
+	path := writeConfig(t, "web_search:\n  provider: searxng\n  searxng_url: http://searx:8080\n")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Web.Provider != "searxng" || cfg.Web.SearxngURL != "http://searx:8080" {
+		t.Errorf("Web = %+v", cfg.Web)
+	}
+
+	t.Setenv(EnvVarWebProvider, "duckduckgo")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Web.Provider != "duckduckgo" {
+		t.Errorf("env override failed: %+v", cfg.Web)
+	}
+}
+
 func TestSetWriteApprovalPersists(t *testing.T) {
 	path := writeConfig(t, "server_url: http://example.test\nmodel: some-model\n")
 

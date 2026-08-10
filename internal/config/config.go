@@ -22,6 +22,7 @@ type Config struct {
 	DataDir            string       `yaml:"data_dir"`
 	ContextWindow      int          `yaml:"context_window"`
 	Skills             SkillsConfig `yaml:"skills"`
+	Web                WebConfig    `yaml:"web_search"`
 	// Path is the config file this was loaded from ("" when none existed);
 	// used to persist runtime toggles like skills.write_approval.
 	Path string `yaml:"-"`
@@ -36,6 +37,15 @@ type SkillsConfig struct {
 	DataDir string `yaml:"data_dir"`
 	// ProjectDir overrides the project store (default: <workspace>/.yagent/skills).
 	ProjectDir string `yaml:"project_dir"`
+}
+
+// WebConfig configures the M5 web tools.
+type WebConfig struct {
+	// Provider is the web_search backend: "duckduckgo" (default, no key or
+	// server needed) or "searxng" (self-hosted JSON, requires SearxngURL).
+	Provider string `yaml:"provider"`
+	// SearxngURL is the base URL of a SearXNG instance with format=json enabled.
+	SearxngURL string `yaml:"searxng_url"`
 }
 
 // Defaults applied when no config file and no env override is present.
@@ -56,6 +66,8 @@ const (
 	EnvVarEmbeddingServer = "YAGENT_EMBEDDING_SERVER_URL"
 	EnvVarDataDir         = "YAGENT_DATA_DIR"
 	EnvVarContextWindow   = "YAGENT_CONTEXT_WINDOW"
+	EnvVarWebProvider     = "YAGENT_WEB_SEARCH_PROVIDER"
+	EnvVarSearxngURL      = "YAGENT_SEARXNG_URL"
 )
 
 // DefaultPath is the config file used when no explicit path is given.
@@ -147,6 +159,12 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		cfg.ContextWindow = n
 	}
+	if v := os.Getenv(EnvVarWebProvider); v != "" {
+		cfg.Web.Provider = v
+	}
+	if v := os.Getenv(EnvVarSearxngURL); v != "" {
+		cfg.Web.SearxngURL = v
+	}
 
 	if cfg.ServerURL == "" {
 		cfg.ServerURL = DefaultServerURL
@@ -162,6 +180,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.ContextWindow <= 0 {
 		cfg.ContextWindow = DefaultContextWindow
+	}
+	if cfg.Web.Provider == "" {
+		cfg.Web.Provider = "duckduckgo"
 	}
 	if cfg.DataDir == "" {
 		dataDir, err := DefaultDataDir()

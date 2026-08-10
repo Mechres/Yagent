@@ -16,6 +16,7 @@ import (
 	"yagent/internal/memory"
 	"yagent/internal/skills"
 	"yagent/internal/tools"
+	"yagent/internal/web"
 )
 
 // RunChat runs an agent-driven REPL: user lines go through the agent loop,
@@ -72,11 +73,16 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 
 	writeApproval := cfg.Skills.WriteApproval
 	w := os.Stdout
+	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL})
+	if err != nil {
+		return fmt.Errorf("web search config: %w", err)
+	}
 	registry := tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
 		SessionID:           sessionID,
 		Skills:              sk,
 		Index:               idx,
+		Web:                 webClient,
 		SkillsWriteApproval: writeApproval,
 		IndexProgress: func(line string) {
 			fmt.Fprintf(w, "  [index] %s\n", line)

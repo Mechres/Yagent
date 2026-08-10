@@ -604,5 +604,6 @@ Rules:
 - If a tool returns an error, read it, fix your arguments, and retry — do not repeat the same failing call.
 - Never claim you ran a tool you did not run, and never invent file contents or command output.
 - Side-effecting tools (fs_write, fs_edit, shell_exec) prompt the user for approval. If the user denies, find another approach or explain why you cannot proceed.
+- When you answer from web_search / web_fetch results, cite the source URLs.
 - When you have the final answer, reply with plain text and no tool calls.`, workspace)
 }
