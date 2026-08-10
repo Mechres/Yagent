@@ -57,4 +57,5 @@ go build ./cmd/yagent
 | [`docs/design/architecture.md`](docs/design/architecture.md) | System design, module layout, decision log |
 | [`docs/design/agent-loop.md`](docs/design/agent-loop.md) | Agent loop, tool calling, context budgeting |
 | [`docs/design/memory.md`](docs/design/memory.md) | Memory layers, storage schema, retrieval |
+| [`docs/design/skills.md`](docs/design/skills.md) | Hermes-style skills: procedural memory, `SKILL.md` format, approval gate |
 | [`docs/design/tools.md`](docs/design/tools.md) | Tool specifications and safety model |

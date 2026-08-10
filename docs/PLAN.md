@@ -76,6 +76,25 @@ Acceptance:
 - [ ] "Remember that I prefer X" → quit → new session → ask about X → recalled
 - [ ] deleting the data dir = clean slate, no errors
 
+## M3.5 — Skills (procedural memory)
+
+**Goal**: Hermes-style autonomous skill creation — the agent saves reusable workflows as `SKILL.md` files it can load on demand. Design: [`docs/design/skills.md`](docs/design/skills.md). Depends on the M2 tool loop.
+
+Tasks:
+- [ ] `internal/skills`: filesystem store (`<data>/skills/<category>/<name>/SKILL.md`), agentskills.io-compatible frontmatter subset via `yaml.v3`, validation (slug regex, ≤60-char description, required sections, size caps), path hardening for `references/`
+- [ ] tools: `skills_list` / `skill_view` (read), `skill_manage` (create/patch/edit/delete/write_file/remove_file; write-gated)
+- [ ] end-of-turn creation-trigger prompt (5+ tool calls succeeded / user correction / error→working path / non-trivial workflow)
+- [ ] approval gate `skills.write_approval` (default true): staging under `<data>/pending/skills/`, `/skills pending|diff|approve|reject`
+- [ ] REPL invocation: `/skill-name` loads SKILL.md; `/skills list`
+- [ ] L0 budget: skills_list in system prompt capped (~3k tokens); activation respects L1 budget
+- [ ] tests: fake-LLM scripted skill_manage flows, gate on/off, patch ambiguity, path traversal, frontmatter validation retry
+
+Acceptance:
+- [ ] scripted 5+ tool-call task → agent proposes a skill → staged → approved → `skills_list` shows it next session
+- [ ] "Remember how I fixed the Ollama ROCm env issue" → skill created, recalled and followed later
+- [ ] user correction → existing skill patched via `skill_manage patch`, never applied without approval
+- [ ] `write_approval: false` writes immediately; 100-skill store stays under the L0 cap
+
 ## M4 — Codebase index
 
 **Goal**: L4 — semantic code search over the workspace.

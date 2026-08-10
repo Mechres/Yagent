@@ -37,6 +37,7 @@ internal/
   agent/           the agent loop, context assembly, budget management
   tools/           tool registry + implementations (fs, shell, git, web, memory, index)
   memory/          conversation store, summarization, vector memory
+  skills/          procedural memory: SKILL.md store, progressive disclosure (M3.5)
   index/           repo indexer: chunking + embeddings + semantic search
   ui/              CLI REPL first; bubbletea TUI in M6
 ```
