@@ -13,7 +13,7 @@ Yagent is a **local-first AI agent** (code / audit / review / web search / resea
 - M1 shipped: streaming chat CLI (config, `ChatStream` with SSE + tools, REPL `/exit`/`/clear`).
 - M2 shipped: `internal/tools` (9 tools: fs_read/write/edit, glob, grep, shell_exec with env scrub + timeouts, git_status/diff/log; risk levels, workspace scoping rejecting absolute/escaping paths, strict arg validation), `internal/agent` (loop per `agent-loop.md`: system prompt v1, streaming with OnToken, approval-gated dispatch, parallel read-only batches, validation-retry with 3-failure block, max-iteration guard, tool-result feedback), `internal/ui` (agent-driven REPL, `Allow? [y/N]` approvals on shared stdin, tool activity lines).
 - All M2 tasks ticked; acceptance flows verified against a scripted fake server + real tools (read→answer, edit→approval→denial-adapts, git tools without shell_exec, malformed-args recovery). `go build`/`vet`/`test` clean, gofmt clean.
-- **Real-hardware acceptance pending**: same M1 + M2 flows against Ollama on the RX 6700 XT (`go run ./cmd/yagent chat` once `ollama serve` + `qwen2.5-coder:14b` are up).
+- **Real-hardware acceptance done** (llama.cpp :8089, `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`): M1 streaming chat + all three M2 acceptance flows verified end-to-end (read→answer, fs_edit→approval→applied, git_status without shell_exec). The run surfaced three fixes, all in: `fnSchema` emits `[]`/`{}` not `null` (llama.cpp rejects `"required": null`), `glob "**/"` now matches root-level files (+ grep include), system prompt forbids narrating tool calls. Model quirks tracked in [`docs/models.md`](docs/models.md).
 - Next: **M3 — memory: sessions, summarization, semantic recall**. Design: `docs/design/memory.md`. (M3.5 skills after that; both depend on the M2 loop.)
 
 ## Commands
@@ -69,7 +69,8 @@ Keep packages acyclic: `ui → agent → {llm, tools, memory, index} → config`
 
 ## Environment notes
 
-- Ollama on RX 6700 XT (gfx1031) needs `HSA_OVERRIDE_GFX_VERSION=10.3.0`.
+- Dev server in use: llama.cpp `llama-server` (Vulkan) on **port 8089**, model `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` — set `YAGENT_SERVER_URL=http://localhost:8089` and `YAGENT_MODEL=Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`. See [`docs/models.md`](docs/models.md) for its quirks.
+- Ollama on RX 6700 XT (gfx1031) needs `HSA_OVERRIDE_GFX_VERSION=10.3.0`; default config targets Ollama at `http://localhost:11434`.
 - Alternative server: llama.cpp `llama-server` built with Vulkan backend (`-DGGML_VULKAN=1`).
 - Embeddings via the same server: model `nomic-embed-text`, endpoint `/v1/embeddings`.
 - If SearXNG is used for web search, enable `format: json` in its settings.yml.

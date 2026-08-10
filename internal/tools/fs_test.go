@@ -117,6 +117,7 @@ func TestGlob(t *testing.T) {
 	writeFile(t, ws, "a/util_test.go", "")
 	writeFile(t, ws, "b/deep/x.go", "")
 	writeFile(t, ws, "b/readme.md", "")
+	writeFile(t, ws, "README.md", "") // root-level: **/ must match it too
 
 	got := execTool(t, reg, "glob", map[string]any{"pattern": "**/*.go"})
 	for _, want := range []string{"a/main.go", "a/util_test.go", "b/deep/x.go"} {
@@ -126,6 +127,11 @@ func TestGlob(t *testing.T) {
 	}
 	if strings.Contains(got, "readme.md") {
 		t.Errorf("glob matched readme.md: %q", got)
+	}
+	// root-level match regression (real-model run exposed this)
+	got = execTool(t, reg, "glob", map[string]any{"pattern": "**/README*"})
+	if !strings.Contains(got, "README.md") {
+		t.Errorf("glob **/README* missed root README.md: %q", got)
 	}
 }
 
@@ -141,10 +147,16 @@ func TestGrep(t *testing.T) {
 	if strings.Contains(got, "b.txt") {
 		t.Errorf("grep matched wrong file: %q", got)
 	}
-	// include filter
+	// include filter (basename glob)
 	got = execTool(t, reg, "grep", map[string]any{"pattern": "func", "include": "*.go"})
 	if !strings.Contains(got, "src/a.go:1") {
 		t.Errorf("grep include = %q", got)
+	}
+	// include with **/ must also match root-level files (regression)
+	writeFile(t, ws, "root.txt", "func root\n")
+	got = execTool(t, reg, "grep", map[string]any{"pattern": "func", "include": "**/*.txt"})
+	if !strings.Contains(got, "root.txt:1") {
+		t.Errorf("grep include **/ missed root file = %q", got)
 	}
 	// invalid regex → validation error
 	if got := execTool(t, reg, "grep", map[string]any{"pattern": "(["}); !strings.Contains(got, "validation-error") {

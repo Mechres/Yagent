@@ -287,6 +287,8 @@ func (t *globTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 }
 
 // globToRegex converts a glob with ** support into an anchored regex.
+// "**/" matches zero or more directory levels, so "**/README*" matches
+// "README.md" at the workspace root as well as nested copies.
 func globToRegex(pattern string) string {
 	var b strings.Builder
 	b.WriteString("^")
@@ -295,8 +297,13 @@ func globToRegex(pattern string) string {
 		switch c {
 		case '*':
 			if i+1 < len(pattern) && pattern[i+1] == '*' {
-				b.WriteString(".*")
-				i++
+				if i+2 < len(pattern) && pattern[i+2] == '/' {
+					b.WriteString("(?:.*/)?")
+					i += 2 // consume "**" and the following "/"
+				} else {
+					b.WriteString(".*")
+					i++
+				}
 			} else {
 				b.WriteString("[^/]*")
 			}
@@ -363,8 +370,13 @@ func (t *grepTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 			}
 			return nil
 		}
-		if includeRe != nil && !includeRe.MatchString(d.Name()) {
-			return nil
+		if includeRe != nil {
+			// Match against the basename ("*.go") or the relative path
+			// ("**/README*"); a root-level file must match "**/..." too.
+			rel, _ := filepath.Rel(t.ws, path)
+			if !includeRe.MatchString(d.Name()) && !includeRe.MatchString(filepath.ToSlash(rel)) {
+				return nil
+			}
 		}
 		f, err := os.Open(path)
 		if err != nil {

@@ -110,8 +110,16 @@ func (r *Registry) Schemas() []llm.ToolSchema {
 	return schemas
 }
 
-// fnSchema builds a compact OpenAI function schema.
+// fnSchema builds a compact OpenAI function schema. properties and required
+// are normalized to non-null values: llama.cpp rejects "required": null when
+// building a tool-call grammar.
 func fnSchema(name, description string, properties map[string]any, required []string) llm.ToolSchema {
+	if properties == nil {
+		properties = map[string]any{}
+	}
+	if required == nil {
+		required = []string{}
+	}
 	s := llm.ToolSchema{Type: "function"}
 	s.Function.Name = name
 	s.Function.Description = description

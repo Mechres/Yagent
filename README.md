@@ -27,7 +27,7 @@ Developed and tuned for a single **AMD RX 6700 XT (12 GB, RDNA2 / gfx1031)**:
 
 ## Status
 
-**M1 + M2 complete** — streaming chat CLI plus the tool loop: 9 workspace-scoped tools (fs read/write/edit, glob, grep, shell_exec with secret scrubbing, git status/diff/log), risk-gated approvals in the REPL, agent loop with validation retry and max-iteration guard. Acceptance flows verified against a scripted fake server; the same flows against Ollama on the target GPU are pending (see [`AGENTS.md`](AGENTS.md) → *Current status*). Next: **M3 — memory: sessions, summarization, semantic recall** per [`docs/PLAN.md`](docs/PLAN.md).
+**M1 + M2 complete** — streaming chat CLI plus the tool loop: 9 workspace-scoped tools (fs read/write/edit, glob, grep, shell_exec with secret scrubbing, git status/diff/log), risk-gated approvals in the REPL, agent loop with validation retry and max-iteration guard. Acceptance verified on real hardware (llama.cpp :8089, `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`) — read→answer, edit→approval, git tools all worked; model quirks in [`docs/models.md`](docs/models.md). Next: **M3 — memory: sessions, summarization, semantic recall** per [`docs/PLAN.md`](docs/PLAN.md).
 
 - Start here: [`AGENTS.md`](AGENTS.md) (contributor/agent guide)
 - Execution plan: [`docs/PLAN.md`](docs/PLAN.md)

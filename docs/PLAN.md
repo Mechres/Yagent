@@ -54,7 +54,7 @@ Tasks:
 - [x] system prompt v1: identity, tool usage rules, workspace path, "be concise" bias
 - [x] tests: fake LLM server returning scripted tool_calls (multi-turn); each tool against `t.TempDir()`; approval denial path
 
-Acceptance: *(verified against the fake server + real tools; the same flows against the real local model are pending on hardware — see AGENTS.md)*
+Acceptance: *(verified on real hardware — llama.cpp :8089, `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf`; quirks in `docs/models.md`)*
 - [x] "Read main.go and explain what it does" → uses `fs_read`, answers correctly
 - [x] "Fix the typo in README.md" → `fs_edit`, diff shown, asks approval; denied → agent adapts
 - [x] "What branch are we on and is the tree clean?" → uses git tools, no shell_exec needed
