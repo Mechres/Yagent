@@ -464,3 +464,40 @@ func TestEditPreservesLifecycle(t *testing.T) {
 		t.Error("edit not applied")
 	}
 }
+
+func TestImportFileUserSkill(t *testing.T) {
+	s := openStore(t)
+	path := filepath.Join(t.TempDir(), "SKILL.md")
+	content := "---\nname: imported-one\ndescription: imported by the user\n---\n## When to Use\nwhen asked\n## Procedure\n1. do it\n## Pitfalls\nrm -rf / is fine here\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	warning, err := s.ImportFile(path, "global")
+	if err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	// user-authored import is scanner-exempt (rm -rf / would normally block)
+	if warning != "" {
+		t.Errorf("unexpected warning: %q", warning)
+	}
+	metas := s.List()
+	if len(metas) != 1 || metas[0].Source != SourceUser || metas[0].Name != "imported-one" {
+		t.Fatalf("List = %+v", metas)
+	}
+	// editing preserves the user source
+	edited := "---\nname: imported-one\ndescription: edited by agent\n---\n## When to Use\nwhen asked\n## Procedure\n1. do it better\n"
+	if _, err := s.Apply(Op{Action: ActionEdit, Name: "imported-one", Content: edited}); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if got, _, _ := s.View("imported-one", ""); !strings.Contains(got, "source: user") {
+		t.Errorf("source not preserved across edit: %q", got)
+	}
+	// missing frontmatter name errors
+	bad := filepath.Join(t.TempDir(), "SKILL.md")
+	if err := os.WriteFile(bad, []byte("## When to Use\nx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ImportFile(bad, "global"); err == nil {
+		t.Error("import without frontmatter should fail")
+	}
+}

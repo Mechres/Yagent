@@ -212,8 +212,8 @@ Tests (no network — fake LLM server pattern from M2):
 
 ## Follow-ups (deferred, same staging/approval machinery)
 
+- **`yagent skills` CLI** — **shipped (M6.5)**: `yagent skills list` and `yagent skills import <SKILL.md> [--scope global|project]`. Imports are user-authored: `source: user`, exempt from the dangerous-pattern scanner (the user wrote them), and edits preserve the original source.
 - **Staleness/retirement**: `skill_view` records a failure flag when a skill's procedure errors during use; after N failures (or when superseded) surface "looks stale" at L0 or stage a deprecation
 - **Verification harness**: run a new skill's own `## Verification` section once via existing tools before approval, so garbage skills are caught pre-landing
-- **`yagent skills` CLI**: `yagent skills list|import <file>` for managing skills outside chat
 - **Background self-improvement review**: after each session, review suggests staged skill changes (Hermes does this post-turn)
 - **`/learn` from large corpora**: knowledge-base skills with a `references/` index (Hermes `/learn`)

@@ -146,6 +146,12 @@ Acceptance:
 
 > TUI v1 notes: transcript is a tailing list (no full scroll-back yet); `skill_manage` stays self-gated and `/skills` slash-commands remain REPL-only for now.
 
+**M6.5 polish (shipped, all tested):**
+- TUI transcript is a scrollable viewport (mouse wheel, PgUp/PgDn); `/skills` + `/skill-name` handled inside the TUI
+- `web_search` Mojeek backend (`web_search.provider: mojeek`; independent index; may serve a JS challenge from datacenter IPs — Brave's free API has closed)
+- `yagent skills list|import <file> [--scope global|project]` CLI (imports are `source: user`, dangerous-pattern-scanner-exempt, source preserved across edits)
+- `yagent chat --yolo`: auto-approves every write/destructive tool and applies skill writes immediately
+
 ## M7 — Orchestration (optional; only if M1–M6 show a real need)
 
 Subagent primitive: spawn a child `Agent` with a narrowed system prompt and tool subset (e.g., read-only "researcher"), run to completion, return its final message as a tool result to the parent. Requires evidence (eval failures) that the single loop is the bottleneck before starting.

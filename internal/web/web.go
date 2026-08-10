@@ -50,13 +50,15 @@ func New(cfg Config) (*Client, error) {
 	switch strings.ToLower(cfg.Provider) {
 	case "", "duckduckgo":
 		provider = &DuckDuckGo{http: defaultHTTP()}
+	case "mojeek":
+		provider = &Mojeek{http: defaultHTTP()}
 	case "searxng":
 		if cfg.SearxngURL == "" {
 			return nil, fmt.Errorf("web_search.provider searxng requires web_search.searxng_url")
 		}
 		provider = &SearXNG{baseURL: strings.TrimRight(cfg.SearxngURL, "/"), http: defaultHTTP()}
 	default:
-		return nil, fmt.Errorf("unknown web_search.provider %q (duckduckgo | searxng)", cfg.Provider)
+		return nil, fmt.Errorf("unknown web_search.provider %q (duckduckgo | mojeek | searxng)", cfg.Provider)
 	}
 	return &Client{
 		provider: provider, http: defaultHTTP(), fetchTimeout: 15 * time.Second,

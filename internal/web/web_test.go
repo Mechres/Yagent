@@ -191,3 +191,37 @@ func TestFetchHTTPError(t *testing.T) {
 		t.Error("404 should error")
 	}
 }
+
+func TestMojeekSearch(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><ul class="results-standard">
+<li><a class="ob" href="https://example.com/one">First result</a><p class="s">Snippet for the first result.</p></li>
+<li><a class="ob" href="https://example.com/two">Second result</a><p class="s">Snippet two.</p></li>
+</ul></body></html>`))
+	}))
+	defer ts.Close()
+	m := &Mojeek{http: ts.Client(), endpoint: ts.URL + "/search?q="}
+	res, err := m.Search(context.Background(), "go programming", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("results = %d, want 2", len(res))
+	}
+	if res[0].Title != "First result" || res[0].URL != "https://example.com/one" || !strings.Contains(res[0].Snippet, "first result") {
+		t.Errorf("res[0] = %+v", res[0])
+	}
+	// k caps
+	res2, _ := m.Search(context.Background(), "x", 1)
+	if len(res2) != 1 {
+		t.Errorf("k=1 gave %d results", len(res2))
+	}
+}
+
+func TestNewMojeekConfig(t *testing.T) {
+	c, err := New(Config{Provider: "mojeek"})
+	if err != nil || c.ProviderName() != "mojeek" {
+		t.Fatalf("mojeek = %v / %v", c, err)
+	}
+}

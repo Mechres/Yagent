@@ -31,10 +31,13 @@ const (
 )
 
 // Op is one skill mutation. scope is "global" (default) or "project".
+// Source (default "agent") marks who authored the skill; user-authored skills
+// are exempt from the dangerous-pattern scanner.
 type Op struct {
 	Action      string
 	Name        string
 	Scope       string
+	Source      string
 	Content     string // create/edit: full SKILL.md
 	Category    string // create: category when not in the frontmatter
 	OldString   string // patch
@@ -106,7 +109,7 @@ func (s *Store) validate(op Op) (string, error) {
 		if dup, ok := s.findDuplicate(op.Name, fm.Description, fm.Category); ok {
 			return "", vf("skill %q already covers this procedure; propose a patch to it instead of creating a duplicate", dup)
 		}
-		return scanWarning(op.Content)
+		return s.scanWarning(op, op.Content)
 
 	case ActionEdit:
 		if _, _, ok := s.findSkill(op.Name); !ok {
@@ -131,7 +134,7 @@ func (s *Store) validate(op Op) (string, error) {
 		if len(op.Content) > MaxSkillBytes {
 			return "", vf("SKILL.md is %d bytes; cap is %d", len(op.Content), MaxSkillBytes)
 		}
-		return scanWarning(op.Content)
+		return s.scanWarning(op, op.Content)
 
 	case ActionPatch:
 		dir, _, ok := s.findSkill(op.Name)
@@ -169,7 +172,7 @@ func (s *Store) validate(op Op) (string, error) {
 		if len(patched) > MaxSkillBytes {
 			return "", vf("patched SKILL.md is %d bytes; cap is %d", len(patched), MaxSkillBytes)
 		}
-		return scanWarning(patched)
+		return s.scanWarning(op, patched)
 
 	case ActionDelete:
 		return "", nil
@@ -191,7 +194,7 @@ func (s *Store) validate(op Op) (string, error) {
 		if len(op.FileContent) > MaxRefBytes {
 			return "", vf("reference file is %d bytes; cap is %d", len(op.FileContent), MaxRefBytes)
 		}
-		return scanWarning(op.FileContent)
+		return s.scanWarning(op, op.FileContent)
 
 	case ActionRemoveFile:
 		if op.FilePath == "" {
@@ -207,8 +210,13 @@ func (s *Store) validate(op Op) (string, error) {
 	}
 }
 
-// scanWarning turns a scanner verdict into the flag warning text.
-func scanWarning(content string) (string, error) {
+// scanWarning turns a scanner verdict into the flag warning text. User-authored
+// skills (imported by the user) are exempt: the user wrote them, so the guard
+// is not applied.
+func (s *Store) scanWarning(op Op, content string) (string, error) {
+	if op.Source == SourceUser {
+		return "", nil
+	}
 	v := Scan(content)
 	if v.Blocked {
 		return "", vf("content blocked by the safety scanner: %s", strings.Join(v.Reasons, "; "))
@@ -318,7 +326,10 @@ func (s *Store) apply(op Op) error {
 			fm.Category = op.Category
 		}
 		// Store-managed fields: never taken from the model.
-		fm.Source = SourceAgent
+		if op.Source == "" {
+			op.Source = SourceAgent
+		}
+		fm.Source = op.Source
 		fm.CreatedAt = time.Now().Unix()
 		fm.LastUsed = time.Now().Unix()
 		dir := s.skillTarget(op)
@@ -338,7 +349,7 @@ func (s *Store) apply(op Op) error {
 		if err != nil {
 			return err
 		}
-		fm.Source = SourceAgent
+		fm.Source = s.preserveSource(op.Name, SourceAgent)
 		fm.CreatedAt = s.preserveCreatedAt(op.Name, fm.CreatedAt)
 		fm.LastUsed = time.Now().Unix()
 		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(renderSkill(fm, body)), 0o644); err != nil {
@@ -360,6 +371,7 @@ func (s *Store) apply(op Op) error {
 		if err != nil {
 			return err
 		}
+		fm.Source = s.preserveSource(op.Name, SourceAgent)
 		fm.CreatedAt = s.preserveCreatedAt(op.Name, fm.CreatedAt)
 		fm.LastUsed = time.Now().Unix()
 		if err := os.WriteFile(path, []byte(renderSkill(fm, body)), 0o644); err != nil {
@@ -421,6 +433,34 @@ func (s *Store) preserveCreatedAt(name string, fallback int64) int64 {
 		return fallback
 	}
 	return time.Now().Unix()
+}
+
+// preserveSource keeps the original author of an existing skill across edits.
+func (s *Store) preserveSource(name, fallback string) string {
+	if dir, _, ok := s.findSkill(name); ok {
+		if fm, _, err := parseFrontmatter(readFile(filepath.Join(dir, "SKILL.md"))); err == nil && fm.Source != "" {
+			return fm.Source
+		}
+	}
+	return fallback
+}
+
+// ImportFile reads a SKILL.md file and stores it in scope as a user-authored
+// skill (dangerous-pattern scanner exempt). Used by `yagent skills import`.
+func (s *Store) ImportFile(path, scope string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	fm, _, err := parseFrontmatter(string(content))
+	if err != nil {
+		return "", err
+	}
+	if fm.Name == "" {
+		return "", vf("SKILL.md %s has no name in its frontmatter", path)
+	}
+	op := Op{Action: ActionCreate, Name: fm.Name, Scope: scope, Source: SourceUser, Content: string(content)}
+	return s.Apply(op)
 }
 
 // Stage validates an op, computes a review diff and writes it to

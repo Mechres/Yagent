@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -28,9 +29,9 @@ func isTerminal(f *os.File) bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// RunTUI drives the bubbletea interface: streaming answers, tool cards,
-// approval prompts and a status line.
-func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string) error {
+// RunTUI drives the bubbletea interface: streaming answers, a scrollable
+// transcript, tool lines, approval prompts and a status line.
+func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, yolo bool) error {
 	env, err := newChatEnv(ctx, cfg, continueID)
 	if err != nil {
 		return err
@@ -43,13 +44,16 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	inputCh := make(chan string, 1)
 	runnerCtx, runnerCancel := context.WithCancel(ctx)
 	runnerDone := make(chan struct{})
-	approver := &tuiApprover{incoming: incoming, ctx: runnerCtx}
+	var approver agent.Approver = &tuiApprover{incoming: incoming, ctx: runnerCtx}
+	if yolo {
+		approver = autoApprover{}
+		env.registry.SetSkillsWriteApproval(false)
+	}
 
 	ag := newAgent(client, cfg, env, approver,
 		func(delta string) { incoming <- tokenMsg{delta: delta} },
 		func(call llm.ToolCall) { incoming <- toolMsg{call: call} })
 	env.registry.SetIndexProgress(func(line string) {
-		incoming <- toolMsg{call: llm.ToolCall{Function: llm.ToolCallFunction{Name: "index_repo"}, ID: "progress", Type: "function"}}
 		incoming <- progressMsg{text: line}
 	})
 
@@ -59,8 +63,6 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		for {
 			select {
 			case <-runnerCtx.Done():
-				// Session-end summary is best-effort and must not block the
-				// TUI exit for long.
 				wrapCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				if err := ag.Finish(wrapCtx); err != nil {
 					slog.Warn("session-end skill review", "error", err)
@@ -83,7 +85,11 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		runnerCancel: runnerCancel, runnerDone: runnerDone,
 		input: newInput(),
 	}
-	p := tea.NewProgram(&m, tea.WithAltScreen())
+	m.viewport = viewport.New(80, 20)
+	m.viewport.MouseWheelEnabled = true
+	m.viewport.KeyMap.Up.SetEnabled(false) // avoid clashing with the text input
+	m.viewport.KeyMap.Down.SetEnabled(false)
+	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
@@ -106,7 +112,6 @@ type approvalRequestMsg struct {
 	risk    tools.RiskLevel
 	respond chan bool
 }
-type quitMsg struct{}
 
 // tuiApprover prompts for approval through the TUI and blocks for the answer.
 type tuiApprover struct {
@@ -141,15 +146,17 @@ type tuiModel struct {
 	runnerCancel context.CancelFunc
 	runnerDone   chan struct{}
 
-	input       textinput.Model
-	lines       []string
-	busy        bool
-	stream      strings.Builder
-	turnTokens  int
-	toolCalls   int
-	pending     chan bool
-	approveCall string
-	err         error
+	input    textinput.Model
+	viewport viewport.Model
+
+	transcript []string
+	stream     strings.Builder
+	busy       bool
+	turnTokens int
+	toolCalls  int
+	pending    chan bool
+	approveArg string
+	err        error
 }
 
 func newInput() textinput.Model {
@@ -166,22 +173,45 @@ func (m *tuiModel) Init() tea.Cmd {
 	)
 }
 
+// append adds a transcript line and re-renders the viewport, following the
+// bottom unless the user has scrolled up.
+func (m *tuiModel) append(line string) {
+	m.transcript = append(m.transcript, line)
+	m.refreshViewport()
+}
+
+func (m *tuiModel) refreshViewport() {
+	atBottom := m.viewport.AtBottom()
+	m.viewport.SetContent(strings.Join(m.transcript, "\n"))
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
+}
+
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.viewport.Width = msg.Width
+		m.viewport.Height = max(5, msg.Height-4)
+		m.refreshViewport()
+		return m, nil
+
+	case tea.MouseMsg:
+		m.viewport, _ = m.viewport.Update(msg)
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.pending != nil {
 			switch msg.String() {
 			case "y", "Y":
 				m.pending <- true
 				m.pending = nil
-				m.lines = append(m.lines, "  ✓ approved "+m.approveCall)
-				m.approveCall = ""
+				m.append("  ✓ approved " + m.approveArg)
 				return m, waitIncoming(m.incoming)
 			case "n", "N":
 				m.pending <- false
 				m.pending = nil
-				m.lines = append(m.lines, "  ✗ rejected "+m.approveCall)
-				m.approveCall = ""
+				m.append("  ✗ rejected " + m.approveArg)
 				return m, waitIncoming(m.incoming)
 			}
 		}
@@ -189,17 +219,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "enter":
-			text := m.input.Value()
-			if strings.TrimSpace(text) == "" || m.busy {
-				return m, nil
-			}
-			m.input.Reset()
-			m.lines = append(m.lines, "> "+text)
-			m.busy = true
-			m.stream.Reset()
-			m.turnTokens = 0
-			m.toolCalls = 0
-			m.inputCh <- text
+			return m.submitLine()
+		case "pgup", "pgdown", "ctrl+u", "ctrl+d":
+			m.viewport, _ = m.viewport.Update(msg)
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -209,44 +231,95 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenMsg:
 		m.stream.WriteString(msg.delta)
 		m.turnTokens += len(msg.delta) / 4
+		m.refreshViewport()
 		return m, waitIncoming(m.incoming)
 
 	case toolMsg:
 		m.flushStream()
 		m.toolCalls++
-		m.lines = append(m.lines, "  → "+msg.call.Function.Name+" "+previewArgs(msg.call.Function.Arguments))
+		m.append("  → " + msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments))
 		return m, waitIncoming(m.incoming)
 
 	case progressMsg:
 		m.flushStream()
-		m.lines = append(m.lines, "  [index] "+msg.text)
+		m.append("  [index] " + msg.text)
 		return m, waitIncoming(m.incoming)
 
 	case approvalRequestMsg:
 		m.flushStream()
 		m.pending = msg.respond
-		m.approveCall = msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments)
-		m.lines = append(m.lines, fmt.Sprintf("  ⚠ [%s] %s — allow? (y/n)", msg.risk, m.approveCall))
+		m.approveArg = msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments)
+		m.append(fmt.Sprintf("  ⚠ [%s] %s — allow? (y/n)", msg.risk, m.approveArg))
 		return m, waitIncoming(m.incoming)
 
 	case turnDoneMsg:
 		m.flushStream()
 		m.busy = false
 		if msg.err != nil {
-			m.lines = append(m.lines, fmt.Sprintf("  error: %v", msg.err))
+			m.append(fmt.Sprintf("  error: %v", msg.err))
 		}
 		return m, waitIncoming(m.incoming)
-
-	case quitMsg:
-		return m, tea.Quit
 	}
 	return m, waitIncoming(m.incoming)
+}
+
+// submitLine handles the submitted line: local slash commands (/exit, /clear,
+// /help, /skills, /skill-name) or a normal agent turn.
+func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
+	text := strings.TrimSpace(m.input.Value())
+	if text == "" {
+		return m, nil
+	}
+	switch text {
+	case "/exit":
+		return m, tea.Quit
+	case "/help":
+		m.input.Reset()
+		m.append("commands: /exit /clear /help /skills list|pending|diff|approve|reject|approval /skill-name")
+		return m, waitIncoming(m.incoming)
+	case "/clear":
+		m.input.Reset()
+		m.ag.Reset()
+		m.transcript = nil
+		m.refreshViewport()
+		m.append("history cleared")
+		return m, waitIncoming(m.incoming)
+	}
+	if strings.HasPrefix(text, "/") {
+		m.input.Reset()
+		skillsCmd := &skillsHandler{
+			store:    m.env.sk,
+			reg:      m.env.registry,
+			cfg:      m.cfg,
+			w:        &appendWriter{m: m},
+			approval: &m.cfg.Skills.WriteApproval,
+		}
+		if handled, err := skillsCmd.handle(text, m.ag); handled || err != nil {
+			if err != nil {
+				m.append("error: " + err.Error())
+			}
+			return m, waitIncoming(m.incoming)
+		}
+		// unknown slash command: fall through and let the model see it
+		m.append("> " + text)
+	}
+	if m.busy {
+		return m, nil
+	}
+	m.input.Reset()
+	m.append("> " + text)
+	m.busy = true
+	m.stream.Reset()
+	m.turnTokens = 0
+	m.toolCalls = 0
+	m.inputCh <- text
+	return m, nil
 }
 
 // flushStream commits the current streamed answer into the transcript.
 func (m *tuiModel) flushStream() {
 	if m.stream.Len() > 0 {
-		m.lines = append(m.lines, strings.TrimRight(m.stream.String(), "\n"))
+		m.append(strings.TrimRight(m.stream.String(), "\n"))
 		m.stream.Reset()
 	}
 }
@@ -255,31 +328,21 @@ func (m *tuiModel) View() string {
 	if m.err != nil {
 		return m.err.Error() + "\n"
 	}
-	height := m.viewHeight()
-	transcript := m.renderLines(height)
+	// viewport content already carries the transcript; add the streaming tail
+	if m.stream.Len() > 0 {
+		content := strings.Join(m.transcript, "\n")
+		if content != "" {
+			content += "\n"
+		}
+		content += strings.TrimRight(m.stream.String(), "\n")
+		m.viewport.SetContent(content)
+		m.viewport.GotoBottom()
+	}
 	status := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("212")).
-		Render(fmt.Sprintf(" %-24s │ %s ", m.cfg.Model, m.statusText()))
-	return transcript + "\n" + m.input.View() + "\n" + status
-}
-
-func (m *tuiModel) viewHeight() int {
-	return 20
-}
-
-func (m *tuiModel) renderLines(height int) string {
-	all := m.lines
-	// show the streaming tail on top of the transcript
-	var tail []string
-	if m.stream.Len() > 0 {
-		tail = append(tail, strings.TrimRight(m.stream.String(), "\n"))
-	}
-	total := append(all, tail...)
-	if len(total) > height {
-		total = total[len(total)-height:]
-	}
-	return strings.Join(total, "\n")
+		Render(fmt.Sprintf(" %-28s │ %s ", m.cfg.Model, m.statusText()))
+	return m.viewport.View() + "\n" + m.input.View() + "\n" + status
 }
 
 func (m *tuiModel) statusText() string {
@@ -291,6 +354,19 @@ func (m *tuiModel) statusText() string {
 		state = "awaiting approval"
 	}
 	return fmt.Sprintf("session %s  │ %s  │ %d tok  │ %d tools", m.env.sessionID[:8], state, m.turnTokens, m.toolCalls)
+}
+
+// appendWriter routes an io.Writer's output into the transcript (used by the
+// /skills handler in the TUI).
+type appendWriter struct{ m *tuiModel }
+
+func (a *appendWriter) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		if strings.TrimSpace(line) != "" {
+			a.m.append(line)
+		}
+	}
+	return len(p), nil
 }
 
 // waitIncoming re-arms the channel watcher.

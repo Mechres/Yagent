@@ -23,6 +23,16 @@ import (
 type Options struct {
 	// Plain forces the streaming REPL instead of the TUI (useful for pipes).
 	Plain bool
+	// YOLO auto-approves every write/destructive tool and applies skill
+	// writes immediately instead of staging them. Use at your own risk.
+	YOLO bool
+}
+
+// autoApprover grants every approval without prompting (--yolo).
+type autoApprover struct{}
+
+func (autoApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
+	return true, nil
 }
 
 // RunChat runs an agent-driven REPL: user lines go through the agent loop,
@@ -46,7 +56,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	// TUI by default on a real terminal; --plain (or piped stdin) falls back
 	// to the streaming REPL.
 	if !opts.Plain && isTerminal(os.Stdin) {
-		return RunTUI(ctx, client, cfg, continueID)
+		return RunTUI(ctx, client, cfg, continueID, opts.YOLO)
 	}
 	env, err := newChatEnv(ctx, cfg, continueID)
 	if err != nil {
@@ -61,7 +71,11 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		fmt.Fprintf(w, "  [index] %s\n", line)
 	})
 	reader := bufio.NewReader(os.Stdin)
-	ap := &replApprover{reader: reader, writer: w}
+	var ap agent.Approver = &replApprover{reader: reader, writer: w}
+	if opts.YOLO {
+		ap = autoApprover{}
+		env.registry.SetSkillsWriteApproval(false)
+	}
 
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
