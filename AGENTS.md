@@ -8,12 +8,12 @@ Yagent is a **local-first AI agent** (code / audit / review / web search / resea
 
 ## Current status
 
-**Milestone M1 in progress** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
+**Milestone M1 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
 
-- Done: module layout, `cmd/yagent` (`chat` subcommand, `--version`, `--config`), SSE parser (`internal/llm/sse.go`, tested via `httptest`), stdin/stdout REPL scaffold (`internal/ui/repl.go`, `/exit` only — `/clear` and streaming still missing).
-- Stubs (next M1 tasks): `internal/config` ignores YAML/env (returns hardcoded defaults); `internal/llm.Client.Chat` returns `"[stub reply] ..."` — no `/v1/chat/completions` call, no retry, no `Embed` stub.
-- `go build ./...`, `go vet ./...`, `go test ./...` are clean. Git repo exists but **no commits yet**.
-- Milestone checklist in `docs/PLAN.md` is unchecked; tick boxes and keep docs in sync as you go.
+- M1 shipped: `cmd/yagent chat` (streams from `/v1/chat/completions` via own SSE parser), `internal/config` (yaml at `~/.config/yagent/config.yaml` + `YAGENT_SERVER_URL`/`YAGENT_MODEL` env overrides, precedence: flag > env > file > defaults), REPL with `/exit` + `/clear` + history, 3× backoff retry on transport errors, `Embed` stub, `httptest`-based tests (no network).
+- All M1 tasks ticked in `docs/PLAN.md`. `go build ./...`, `go vet ./...`, `go test ./...` clean; tree gofmt-clean.
+- **M1 acceptance pending on real hardware**: the streaming chat smoke test was verified end-to-end against a fake OpenAI-compatible server, not yet against Ollama on the RX 6700 XT (`go run ./cmd/yagent chat` once `ollama serve` + `qwen2.5-coder:14b` are up).
+- Next: **M2 — tool loop + fs/shell/git tools**. Design docs: `docs/design/agent-loop.md`, `docs/design/tools.md`.
 
 ## Commands
 
@@ -60,7 +60,7 @@ Keep packages acyclic: `ui → agent → {llm, tools, memory, index} → config`
 
 ## Hard constraints (do not violate)
 
-1. **Local-first**: LLM and embedding requests go only to the configured server URL. Current code default (config stub): `http://localhost:11434` — the `/v1` path is appended by the API calls themselves (`/v1/chat/completions`, `/v1/embeddings`); reconcile when implementing `ChatStream`. Never add cloud provider SDKs.
+1. **Local-first**: LLM and embedding requests go only to the configured server URL. Config default: `http://localhost:11434`; the client appends `/v1/chat/completions` and `/v1/embeddings` (see `internal/llm`). Never add cloud provider SDKs.
 2. **Safety**: destructive tools (shell exec, git mutations, writes outside the workspace) require explicit user approval per `docs/design/tools.md`. Never auto-approve.
 3. **No git mutations** (commit/push/reset/rebase) unless the user explicitly asks — this applies to the agent's tools AND to you while developing.
 4. **Small-model discipline**: few tools, compact schemas, strict argument validation, feed validation errors back to the model for retry. See `docs/design/agent-loop.md`.

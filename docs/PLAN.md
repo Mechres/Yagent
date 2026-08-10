@@ -31,11 +31,11 @@ Prereqs: Go 1.22+, a running server from above, `git` on PATH.
 
 Tasks:
 - [x] `go mod init yagent`; create the module layout from `AGENTS.md`
-- [ ] `internal/config`: yaml config (`~/.config/yagent/config.yaml`), defaults, env overrides (`YAGENT_SERVER_URL`, `YAGENT_MODEL`) — *stub returns hardcoded defaults*
-- [ ] `internal/llm`: `ChatStream` against `/v1/chat/completions`; own SSE parser (`data:` lines, `[DONE]`); typed `Message`/`Response`; backoff-retry (3×) on transport errors; `Embed` stub — *SSE parser done (`sse.go`, tested); ChatStream/retry/Embed pending*
-- [ ] `internal/ui`: stdin/stdout REPL; tokens print as they arrive; `/exit` quits, `/clear` resets history — *REPL + `/exit` done; streaming + `/clear` pending*
+- [x] `internal/config`: yaml config (`~/.config/yagent/config.yaml`), defaults, env overrides (`YAGENT_SERVER_URL`, `YAGENT_MODEL`)
+- [x] `internal/llm`: `ChatStream` against `/v1/chat/completions`; own SSE parser (`data:` lines, `[DONE]`); typed `Message`/`Response`; backoff-retry (3×) on transport errors; `Embed` stub (implemented, unused until M3)
+- [x] `internal/ui`: stdin/stdout REPL; tokens print as they arrive; `/exit` quits, `/clear` resets history
 - [x] `cmd/yagent`: `chat` subcommand, `--version`, `--config` flag
-- [ ] tests: SSE parser and client against `httptest.Server` (no network) — *SSE parser test done; client test pending*
+- [x] tests: SSE parser and client against `httptest.Server` (no network)
 
 Acceptance:
 ```bash
