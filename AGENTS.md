@@ -8,12 +8,13 @@ Yagent is a **local-first AI agent** (code / audit / review / web search / resea
 
 ## Current status
 
-**Milestone M1 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
+**Milestone M2 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
 
-- M1 shipped: `cmd/yagent chat` (streams from `/v1/chat/completions` via own SSE parser), `internal/config` (yaml at `~/.config/yagent/config.yaml` + `YAGENT_SERVER_URL`/`YAGENT_MODEL` env overrides, precedence: flag > env > file > defaults), REPL with `/exit` + `/clear` + history, 3× backoff retry on transport errors, `Embed` stub, `httptest`-based tests (no network).
-- All M1 tasks ticked in `docs/PLAN.md`. `go build ./...`, `go vet ./...`, `go test ./...` clean; tree gofmt-clean.
-- **M1 acceptance pending on real hardware**: the streaming chat smoke test was verified end-to-end against a fake OpenAI-compatible server, not yet against Ollama on the RX 6700 XT (`go run ./cmd/yagent chat` once `ollama serve` + `qwen2.5-coder:14b` are up).
-- Next: **M2 — tool loop + fs/shell/git tools**. Design docs: `docs/design/agent-loop.md`, `docs/design/tools.md`.
+- M1 shipped: streaming chat CLI (config, `ChatStream` with SSE + tools, REPL `/exit`/`/clear`).
+- M2 shipped: `internal/tools` (9 tools: fs_read/write/edit, glob, grep, shell_exec with env scrub + timeouts, git_status/diff/log; risk levels, workspace scoping rejecting absolute/escaping paths, strict arg validation), `internal/agent` (loop per `agent-loop.md`: system prompt v1, streaming with OnToken, approval-gated dispatch, parallel read-only batches, validation-retry with 3-failure block, max-iteration guard, tool-result feedback), `internal/ui` (agent-driven REPL, `Allow? [y/N]` approvals on shared stdin, tool activity lines).
+- All M2 tasks ticked; acceptance flows verified against a scripted fake server + real tools (read→answer, edit→approval→denial-adapts, git tools without shell_exec, malformed-args recovery). `go build`/`vet`/`test` clean, gofmt clean.
+- **Real-hardware acceptance pending**: same M1 + M2 flows against Ollama on the RX 6700 XT (`go run ./cmd/yagent chat` once `ollama serve` + `qwen2.5-coder:14b` are up).
+- Next: **M3 — memory: sessions, summarization, semantic recall**. Design: `docs/design/memory.md`. (M3.5 skills after that; both depend on the M2 loop.)
 
 ## Commands
 

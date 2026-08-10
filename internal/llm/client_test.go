@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-// sseServer returns an httptest server that streams the given events as SSE.
 func sseServer(t *testing.T, events ...string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,12 +31,37 @@ func sseServer(t *testing.T, events ...string) *httptest.Server {
 func chunkData(content string) string {
 	b, _ := json.Marshal(chatChunk{Choices: []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"delta"`
 	}{{Delta: struct {
-		Content string `json:"content"`
+		Content   string `json:"content"`
+		ToolCalls []struct {
+			Index    int    `json:"index"`
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
 	}{Content: content}}}})
 	return string(b)
+}
+
+// toolCallChunk builds a raw SSE data payload for a tool_calls delta fragment.
+func toolCallChunk(index int, id, name, argsFrag string) string {
+	raw := fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":%d,"id":%q,"type":"function","function":{"name":%q,"arguments":%q}}]}}]}`,
+		index, id, name, argsFrag)
+	return raw
 }
 
 func TestChatStreamCollectsDeltas(t *testing.T) {
@@ -63,15 +87,21 @@ func TestChatStreamCollectsDeltas(t *testing.T) {
 
 	client := NewClient(ts.URL, "test-model")
 	var deltas []string
-	err := client.ChatStream(context.Background(), []Message{
+	resp, err := client.ChatStream(context.Background(), []Message{
 		{Role: "system", Content: "be brief"},
 		{Role: "user", Content: "hi"},
-	}, func(d string) { deltas = append(deltas, d) })
+	}, nil, func(d string) { deltas = append(deltas, d) })
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
 	if got := strings.Join(deltas, ""); got != "Hello world" {
 		t.Errorf("streamed text = %q, want %q", got, "Hello world")
+	}
+	if resp.Message.Content != "Hello world" || resp.Message.Role != "assistant" {
+		t.Errorf("resp.Message = %+v", resp.Message)
+	}
+	if len(resp.ToolCalls) != 0 {
+		t.Errorf("ToolCalls = %+v, want none", resp.ToolCalls)
 	}
 
 	var req chatCompletionRequest
@@ -89,6 +119,80 @@ func TestChatStreamCollectsDeltas(t *testing.T) {
 	}
 }
 
+func TestChatStreamSendsToolSchemas(t *testing.T) {
+	t.Parallel()
+	var gotReq atomic.Value
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotReq.Store(string(body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}},
+		[]ToolSchema{{Type: "function", Function: struct {
+			Name        string         `json:"name"`
+			Description string         `json:"description"`
+			Parameters  map[string]any `json:"parameters"`
+		}{Name: "fs_read", Description: "read a file", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}},
+		}}}}, func(string) {})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	var req chatCompletionRequest
+	if err := json.Unmarshal([]byte(gotReq.Load().(string)), &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "fs_read" {
+		t.Fatalf("Tools = %+v", req.Tools)
+	}
+}
+
+func TestChatStreamAccumulatesFragmentedToolCalls(t *testing.T) {
+	t.Parallel()
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"fs_read","arguments":""}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"main.go\"}"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"grep","arguments":"{\"pattern\":\"func \"}"}}]}}]}`,
+		"[DONE]",
+	)
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if len(resp.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls = %+v, want 2", resp.ToolCalls)
+	}
+	first := resp.ToolCalls[0]
+	if first.ID != "call_1" || first.Function.Name != "fs_read" {
+		t.Errorf("call 0 = %+v", first)
+	}
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(first.Function.Arguments, &args); err != nil {
+		t.Fatalf("call 0 args %q: %v", first.Function.Arguments, err)
+	}
+	if args.Path != "main.go" {
+		t.Errorf("call 0 path = %q, want main.go", args.Path)
+	}
+	if resp.ToolCalls[1].Function.Name != "grep" {
+		t.Errorf("call 1 = %+v", resp.ToolCalls[1])
+	}
+	if !json.Valid(first.Function.Arguments) {
+		t.Errorf("call 0 arguments %q are not valid JSON", first.Function.Arguments)
+	}
+}
+
 func TestChatStreamHTTPErrorNotRetried(t *testing.T) {
 	t.Parallel()
 	var hits atomic.Int32
@@ -99,7 +203,7 @@ func TestChatStreamHTTPErrorNotRetried(t *testing.T) {
 	defer ts.Close()
 
 	client := NewClient(ts.URL, "test-model")
-	err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, func(string) {})
+	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -137,7 +241,7 @@ func TestChatStreamRetriesTransportErrors(t *testing.T) {
 
 	var deltas []string
 	start := time.Now()
-	err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, func(d string) {
+	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(d string) {
 		deltas = append(deltas, d)
 	})
 	if err != nil {
@@ -145,6 +249,9 @@ func TestChatStreamRetriesTransportErrors(t *testing.T) {
 	}
 	if got := strings.Join(deltas, ""); got != "ok" {
 		t.Errorf("streamed text = %q, want %q", got, "ok")
+	}
+	if resp.Message.Content != "ok" {
+		t.Errorf("Message.Content = %q", resp.Message.Content)
 	}
 	if rt.failed.Load() != 3 {
 		t.Errorf("total attempts = %d, want 3 (2 failures + success)", rt.failed.Load())
@@ -163,7 +270,7 @@ func TestChatStreamGivesUpAfterMaxRetries(t *testing.T) {
 	client := NewClient(ts.URL, "test-model")
 	client.HTTP = &http.Client{Transport: rt}
 
-	err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, func(string) {})
+	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {})
 	if err == nil {
 		t.Fatal("expected error after max retries")
 	}

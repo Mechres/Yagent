@@ -27,7 +27,7 @@ Developed and tuned for a single **AMD RX 6700 XT (12 GB, RDNA2 / gfx1031)**:
 
 ## Status
 
-**Milestone M1 complete** — skeleton + streaming chat CLI: `yagent chat` streams replies from a local OpenAI-compatible server, `--version`/`--config` flags, yaml config + env overrides, 3× retry, REPL with `/exit` and `/clear`. Verified against a fake server in CI-style tests; final smoke test against Ollama on the target GPU is pending (see [`AGENTS.md`](AGENTS.md) → *Current status*). Next: **M2 — tool loop + fs/shell/git tools** per [`docs/PLAN.md`](docs/PLAN.md).
+**M1 + M2 complete** — streaming chat CLI plus the tool loop: 9 workspace-scoped tools (fs read/write/edit, glob, grep, shell_exec with secret scrubbing, git status/diff/log), risk-gated approvals in the REPL, agent loop with validation retry and max-iteration guard. Acceptance flows verified against a scripted fake server; the same flows against Ollama on the target GPU are pending (see [`AGENTS.md`](AGENTS.md) → *Current status*). Next: **M3 — memory: sessions, summarization, semantic recall** per [`docs/PLAN.md`](docs/PLAN.md).
 
 - Start here: [`AGENTS.md`](AGENTS.md) (contributor/agent guide)
 - Execution plan: [`docs/PLAN.md`](docs/PLAN.md)
