@@ -178,6 +178,34 @@ func TestSkillsWriteApprovalFromFile(t *testing.T) {
 	}
 }
 
+func TestLoadConfigEmbeddingServerURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarServerURL, "http://chat.test")
+	t.Setenv(EnvVarEmbeddingServer, "")
+	t.Setenv(EnvVarEmbeddingModel, "")
+	t.Setenv(EnvVarDataDir, "")
+	t.Setenv(EnvVarModel, "")
+
+	// defaults to server_url
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.EmbeddingServerURL != "http://chat.test" {
+		t.Errorf("EmbeddingServerURL = %q, want server_url fallback", cfg.EmbeddingServerURL)
+	}
+
+	// explicit env override wins
+	t.Setenv(EnvVarEmbeddingServer, "http://embed.test")
+	cfg, err = LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.EmbeddingServerURL != "http://embed.test" {
+		t.Errorf("EmbeddingServerURL = %q, want env override", cfg.EmbeddingServerURL)
+	}
+}
+
 func TestSetWriteApprovalPersists(t *testing.T) {
 	path := writeConfig(t, "server_url: http://example.test\nmodel: some-model\n")
 

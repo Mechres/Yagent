@@ -1,6 +1,7 @@
 // Package memory implements the L2 session store (SQLite) and L3 semantic
-// memory (chromem-go), per docs/design/memory.md. All data lives under the
-// data dir; deleting it is a complete "forget everything".
+// memory (SQLite-backed hybrid retrieval: vector + FTS5 keyword + importance
+// + recency), per docs/design/memory.md. All data lives under the data dir;
+// deleting it is a complete "forget everything".
 package memory
 
 import (

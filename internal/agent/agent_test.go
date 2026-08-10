@@ -508,11 +508,11 @@ func TestRecallInjectedAndSessionDedup(t *testing.T) {
 	}
 	ctx := context.Background()
 	// memory from a past session
-	if err := vs.Save(ctx, "user prefers tabs over spaces", "tool", "s-past"); err != nil {
+	if err := vs.Save(ctx, "user prefers tabs over spaces", "tool", "s-past", 0.5); err != nil {
 		t.Fatal(err)
 	}
 	// memory from THIS session must be deduped out of the injection
-	if err := vs.Save(ctx, "current session fact", "tool", "s-current"); err != nil {
+	if err := vs.Save(ctx, "current session fact", "tool", "s-current", 0.5); err != nil {
 		t.Fatal(err)
 	}
 

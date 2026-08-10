@@ -5,7 +5,7 @@ Four layers, each with a single job. L1/L2 ship in M3, L3 in M3, L4 in M4.
 ```
 L1 working context   in-memory []Message + token counter      (agent pkg)
 L2 session history   SQLite: every message, resumable         (memory pkg)
-L3 semantic memory   embeddings of facts/summaries, chromem   (memory pkg)
+L3 semantic memory   SQLite hybrid: vectors + FTS5 + weights  (memory pkg)
 L4 codebase index    tree-sitter chunks + embeddings          (index pkg)
 ```
 
@@ -51,12 +51,36 @@ CLI: `yagent chat` (new), `yagent chat --continue <id>`, `yagent sessions`.
 
 Purpose: recall across sessions — user preferences, project decisions, past findings, reusable facts.
 
-- **Storage**: chromem-go collection `memories`, persisted to disk. Embeddings: `nomic-embed-text` via `llm.Embed` (OpenAI-compat endpoint).
-- **Writes** (two paths):
-  1. Explicit: model calls the `memory_save` tool when it judges something worth keeping (the tool description must say *what* is worth keeping: preferences, decisions, gotchas — not code, not chit-chat).
-  2. Implicit: at session end (or on `--continue` resume of an old session), a background job summarizes the session and embeds the summary.
-- **Reads**: every turn, embed the user input, top-5 by cosine similarity, filter score < 0.35, inject under the memory budget (1000 tok). Deduplicate against the current session's own messages.
-- **Schema**: `{id, text, source: "tool"|"summary", session_id, created_at}`.
+**Storage**: SQLite tables `memories` (text, `source`, `session_id`, `importance`, `created_at`, float32 vector BLOB) plus an FTS5 virtual table `memories_fts` for keyword search — same `sessions.db` file as L2, pure Go, no chromem/ANN (post-M3.5 rewrite; vectors O(N) scanned, fine at this scale). Embeddings come from the configured server (`embedding_server_url`, defaults to `server_url`).
+
+**Hybrid retrieval** (modeled on Hermes/Mnemosyne's approach): candidates = vector pool (cosine ≥ 0.35, top 50) ∪ FTS5 keyword pool (top 50), scored
+
+```
+score = 0.4·norm(cosine) + 0.3·norm(bm25) + 0.2·importance + 0.1·recency
+```
+
+with cosine and bm25 normalized within the candidate set and recency decaying by a 168 h halflife. The keyword axis keeps recall useful even when the embedding model is weak (e.g. a chat model serving as embedder) — a memory that matches the words but not the vector still surfaces.
+
+**Writes** (two paths):
+1. Explicit: model calls `memory_save` (optional `importance` 0–1, default 0.5) when it judges something worth keeping (the tool description must say *what* is worth keeping: preferences, decisions, gotchas — not code, not chit-chat).
+2. Implicit: at session end (or on `--continue` resume of an old session), a background job summarizes the session and stores the summary (importance 0.5).
+
+**Reads**: every turn, embed the user input, hybrid top-5, inject under the memory budget (1000 tok). Deduplicate against the current session's own messages.
+
+**Schema**:
+
+```sql
+CREATE TABLE memories (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    text        TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT '',
+    session_id  TEXT NOT NULL DEFAULT '',
+    importance  REAL NOT NULL DEFAULT 0.5,
+    created_at  INTEGER NOT NULL,
+    vector      BLOB NOT NULL               -- float32 LE
+);
+CREATE VIRTUAL TABLE memories_fts USING fts5(text);
+```
 
 ## L4 — Codebase index
 
@@ -85,5 +109,5 @@ type Store interface {
 
 - The model never sees L3/L4 raw — only the budgeted injections, clearly delimited.
 - Memory writes are never silent to the user: `memory_save` calls show up in the UI like any tool call.
-- All memory is local (SQLite + chromem files under the data dir). Deleting the data dir must be a complete, working "forget everything".
+- All memory is local (one SQLite file under the data dir). Deleting the data dir must be a complete, working "forget everything".
 - No memory of tool *outputs* beyond what summarization keeps — raw outputs are too big and too low-value.

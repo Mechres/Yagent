@@ -12,12 +12,16 @@ import (
 
 // Config contains runtime configuration for the agent.
 type Config struct {
-	ServerURL      string       `yaml:"server_url"`
-	Model          string       `yaml:"model"`
-	EmbeddingModel string       `yaml:"embedding_model"`
-	DataDir        string       `yaml:"data_dir"`
-	ContextWindow  int          `yaml:"context_window"`
-	Skills         SkillsConfig `yaml:"skills"`
+	ServerURL      string `yaml:"server_url"`
+	Model          string `yaml:"model"`
+	EmbeddingModel string `yaml:"embedding_model"`
+	// EmbeddingServerURL is where /v1/embeddings is served; defaults to
+	// ServerURL. Set it to a dedicated embedding server (e.g. a second
+	// llama-server running bge-m3) for better recall.
+	EmbeddingServerURL string       `yaml:"embedding_server_url"`
+	DataDir            string       `yaml:"data_dir"`
+	ContextWindow      int          `yaml:"context_window"`
+	Skills             SkillsConfig `yaml:"skills"`
 	// Path is the config file this was loaded from ("" when none existed);
 	// used to persist runtime toggles like skills.write_approval.
 	Path string `yaml:"-"`
@@ -46,11 +50,12 @@ const (
 // environment variable overrides, applied on top of whatever the config file
 // (or defaults) resolved to.
 const (
-	EnvVarServerURL      = "YAGENT_SERVER_URL"
-	EnvVarModel          = "YAGENT_MODEL"
-	EnvVarEmbeddingModel = "YAGENT_EMBEDDING_MODEL"
-	EnvVarDataDir        = "YAGENT_DATA_DIR"
-	EnvVarContextWindow  = "YAGENT_CONTEXT_WINDOW"
+	EnvVarServerURL       = "YAGENT_SERVER_URL"
+	EnvVarModel           = "YAGENT_MODEL"
+	EnvVarEmbeddingModel  = "YAGENT_EMBEDDING_MODEL"
+	EnvVarEmbeddingServer = "YAGENT_EMBEDDING_SERVER_URL"
+	EnvVarDataDir         = "YAGENT_DATA_DIR"
+	EnvVarContextWindow   = "YAGENT_CONTEXT_WINDOW"
 )
 
 // DefaultPath is the config file used when no explicit path is given.
@@ -129,6 +134,9 @@ func LoadConfig(path string) (*Config, error) {
 	if v := os.Getenv(EnvVarEmbeddingModel); v != "" {
 		cfg.EmbeddingModel = v
 	}
+	if v := os.Getenv(EnvVarEmbeddingServer); v != "" {
+		cfg.EmbeddingServerURL = v
+	}
 	if v := os.Getenv(EnvVarDataDir); v != "" {
 		cfg.DataDir = v
 	}
@@ -142,6 +150,9 @@ func LoadConfig(path string) (*Config, error) {
 
 	if cfg.ServerURL == "" {
 		cfg.ServerURL = DefaultServerURL
+	}
+	if cfg.EmbeddingServerURL == "" {
+		cfg.EmbeddingServerURL = cfg.ServerURL
 	}
 	if cfg.Model == "" {
 		cfg.Model = DefaultModel

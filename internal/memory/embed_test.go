@@ -22,7 +22,7 @@ func newEmbedServer(t *testing.T) *httptest.Server {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		// chromem sends input as a single string; accept both shapes.
+		// accept input as string or array; senders differ.
 		var inputs []string
 		if err := json.Unmarshal(req.Input, &inputs); err != nil {
 			var one string

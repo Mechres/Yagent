@@ -44,7 +44,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		return fmt.Errorf("open session store: %w", err)
 	}
 	defer st.Close()
-	vs, err := memory.OpenVectorStore(cfg.DataDir, cfg.ServerURL, cfg.EmbeddingModel)
+	vs, err := memory.OpenVectorStore(cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
 	if err != nil {
 		return fmt.Errorf("open memory store: %w", err)
 	}

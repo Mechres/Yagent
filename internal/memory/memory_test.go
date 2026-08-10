@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"yagent/internal/llm"
 )
@@ -151,10 +152,10 @@ func TestVectorStoreSaveSearch(t *testing.T) {
 	defer vs.Close()
 
 	ctx := context.Background()
-	if err := vs.Save(ctx, "user prefers tabs over spaces", "tool", "s1"); err != nil {
+	if err := vs.Save(ctx, "user prefers tabs over spaces", "tool", "s1", 0.5); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := vs.Save(ctx, "the deploy script lives in scripts/deploy.sh", "tool", "s1"); err != nil {
+	if err := vs.Save(ctx, "the deploy script lives in scripts/deploy.sh", "tool", "s1", 0.5); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -182,7 +183,7 @@ func TestVectorStoreCleanSlate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenVectorStore: %v", err)
 	}
-	if err := vs.Save(context.Background(), "fact one", "tool", "s1"); err != nil {
+	if err := vs.Save(context.Background(), "fact one", "tool", "s1", 0.5); err != nil {
 		t.Fatal(err)
 	}
 	vs.Close()
@@ -197,5 +198,97 @@ func TestVectorStoreCleanSlate(t *testing.T) {
 	defer vs2.Close()
 	if vs2.Count() != 0 {
 		t.Errorf("count = %d, want 0 after clean slate", vs2.Count())
+	}
+}
+
+// ---------- L3 hybrid retrieval (Mnemosyne-style) ----------
+
+// The fake embedder maps "tab" → (0,1), everything else → (1,0), so cosine is
+// a poor signal. Hybrid keyword search must rescue memories that share query
+// words but not embedding direction.
+
+func TestHybridRescuesByKeyword(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	vs, err := OpenVectorStore(t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatalf("OpenVectorStore: %v", err)
+	}
+	defer vs.Close()
+	ctx := context.Background()
+	// both embed to (0,1); the query "vault secret" embeds to (1,0), so both
+	// cosines are 0 and pure-vector search would return nothing.
+	if err := vs.Save(ctx, "vault has the tab key", "tool", "s1", 0.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Save(ctx, "the tab container", "tool", "s1", 0.5); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := vs.Search(ctx, "vault secret", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].Text, "vault") {
+		t.Fatalf("got %+v, want the 'vault' memory rescued by keyword overlap", got)
+	}
+	// without any keyword overlap nothing surfaces
+	if got, err := vs.Search(ctx, "quantum teleportation", 5); err != nil || len(got) != 0 {
+		t.Fatalf("no-overlap query = %+v / %v, want empty", got, err)
+	}
+}
+
+func TestHybridImportanceRanking(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	vs, err := OpenVectorStore(t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatalf("OpenVectorStore: %v", err)
+	}
+	defer vs.Close()
+	ctx := context.Background()
+	if err := vs.Save(ctx, "the tab bar config", "tool", "s1", 1.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Save(ctx, "the tab size cache", "tool", "s1", 0.1); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := vs.Search(ctx, "tab", 2)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 2 || got[0].Text != "the tab bar config" {
+		t.Fatalf("got %+v, want the high-importance memory first", got)
+	}
+}
+
+func TestHybridRecencyRanking(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	vs, err := OpenVectorStore(t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatalf("OpenVectorStore: %v", err)
+	}
+	defer vs.Close()
+	ctx := context.Background()
+	if err := vs.Save(ctx, "the tab layout guide", "tool", "s1", 0.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Save(ctx, "the tab style guide", "tool", "s1", 0.5); err != nil {
+		t.Fatal(err)
+	}
+	// age the second memory by 90 days so recency decides the tie
+	old := time.Now().Add(-90 * 24 * time.Hour).Unix()
+	if _, err := vs.db.Exec(`UPDATE memories SET created_at = ? WHERE text = ?`, old, "the tab style guide"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := vs.Search(ctx, "tab", 2)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 2 || got[0].Text != "the tab layout guide" {
+		t.Fatalf("got %+v, want the recent memory first", got)
 	}
 }

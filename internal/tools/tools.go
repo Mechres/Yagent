@@ -173,6 +173,10 @@ func intProp(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
 
+func numProp(description string) map[string]any {
+	return map[string]any{"type": "number", "description": description}
+}
+
 // decodeArgs strictly decodes the model's JSON arguments into v. Unknown
 // fields and malformed JSON produce ValidationErrors the model can fix.
 func decodeArgs(args json.RawMessage, v any) error {

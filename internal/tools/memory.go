@@ -18,11 +18,15 @@ type memorySaveTool struct {
 }
 
 type memorySaveArgs struct {
-	Text string `json:"text"`
+	Text       string  `json:"text"`
+	Importance float64 `json:"importance,omitempty"`
 }
 
 var memorySaveSchema = fnSchema("memory_save", "store a fact worth remembering across sessions: user preferences, project decisions, gotchas, reusable findings. NOT code, NOT chit-chat, NOT tool output.",
-	map[string]any{"text": strProp("the fact or preference to remember, one concise sentence")},
+	map[string]any{
+		"text":       strProp("the fact or preference to remember, one concise sentence"),
+		"importance": numProp("how important this fact is for future recall, 0.0-1.0, default 0.5 (optional)"),
+	},
 	[]string{"text"})
 
 func (t *memorySaveTool) Schema() llm.ToolSchema { return memorySaveSchema }
@@ -36,10 +40,13 @@ func (t *memorySaveTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 	if a.Text == "" {
 		return "", validationErrorf(`argument "text" is required`)
 	}
+	if a.Importance < 0 || a.Importance > 1 {
+		return "", validationErrorf("importance must be between 0 and 1")
+	}
 	if t.vectors == nil {
 		return "error: semantic memory is not configured for this session", nil
 	}
-	if err := t.vectors.Save(ctx, a.Text, "tool", t.sessionID); err != nil {
+	if err := t.vectors.Save(ctx, a.Text, "tool", t.sessionID, a.Importance); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	return "remembered", nil

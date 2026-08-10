@@ -67,11 +67,11 @@ Acceptance: *(verified on real hardware — llama.cpp :8089, `Qwythos-9B-Claude-
 Tasks:
 - [x] `internal/memory`: SQLite (`modernc.org/sqlite`) schema + `Store` interface; `chat --continue <id>`, `yagent sessions`
 - [x] token-budget manager: summarize oldest 50% of history when over window; running summary injected per `agent-loop.md`
-- [x] chromem-go collection + `Embed` wiring (`nomic-embed-text`); `memory_save` / `memory_search` tools; per-turn recall injection (top-5, budgeted)
+- [x] L3 semantic memory. **M3.5 rewrite**: SQLite hybrid — `memories` table (float32 vector BLOB) + FTS5 keyword index, hybrid score `0.4·cos + 0.3·bm25 + 0.2·importance + 0.1·recency`, chromem-go removed; `memory_save` (optional `importance`) / `memory_search` tools; per-turn recall injection (top-5, budgeted, session-deduped)
 - [x] session-end summary job → embedded into L3
-- [x] tests: budget math (forced overflow with fake summarizer), Store round-trips, recall ranking
+- [x] tests: budget math (forced overflow with fake summarizer), Store round-trips, recall ranking + hybrid (keyword rescue, importance, recency)
 
-Acceptance: *(all verified — 60-turn budget + remember/recall e2e against fake servers, clean slate unit-tested; real-hardware note: embeddings require the server to serve `/v1/embeddings` — llama.cpp needs `--embeddings`, or use Ollama `nomic-embed-text`)*
+Acceptance: *(all verified — 60-turn budget + remember/recall e2e against fake servers, clean slate unit-tested; real-hardware note: L3 recall verified on Qwythos-9B :8089 as embedder, remember→recall across sessions; embedding quality improved post-M3.5 by hybrid vector+FTS5 recall, see `docs/design/memory.md`)*
 - [x] 60+ turn session (scripted) never exceeds the context window; earlier decisions still answerable via the running summary
 - [x] "Remember that I prefer X" → quit → new session → ask about X → recalled
 - [x] deleting the data dir = clean slate, no errors

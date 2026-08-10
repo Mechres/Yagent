@@ -55,7 +55,7 @@ func SummarizeSession(ctx context.Context, model ChatLLM, st *Store, vs *VectorS
 	if summary == "" {
 		return nil
 	}
-	if err := vs.Save(ctx, summary, "summary", sessionID); err != nil {
+	if err := vs.Save(ctx, summary, "summary", sessionID, 0.5); err != nil {
 		return fmt.Errorf("store session summary: %w", err)
 	}
 	return nil
