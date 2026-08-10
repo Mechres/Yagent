@@ -481,9 +481,23 @@ func (a *Agent) budget(ctx context.Context) error {
 	if a.estTokens() <= limit {
 		return nil
 	}
-	// summarize the oldest half of history (excluding the current user turn
-	// is unnecessary — half by count is what memory.md prescribes)
-	seg := a.history[:len(a.history)/2]
+	// Never summarize the current user turn (or anything after it): the
+	// Qwythos chat template rejects a request whose message list has no plain
+	// user query, so the running summary must only cover messages that precede
+	// the last user message. Otherwise a long tool-loop turn would leave a
+	// history that starts mid-exchange and the server 400s.
+	cutoff := len(a.history)
+	for i := len(a.history) - 1; i >= 0; i-- {
+		if a.history[i].msg.Role == "user" {
+			cutoff = i
+			break
+		}
+	}
+	if cutoff == 0 {
+		return nil
+	}
+	// summarize the oldest half of the messages before the current user turn
+	seg := a.history[:cutoff/2]
 	if len(seg) == 0 {
 		return nil
 	}

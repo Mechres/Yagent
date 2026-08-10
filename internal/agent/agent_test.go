@@ -393,11 +393,14 @@ func newEmbedServer(t *testing.T) *httptest.Server {
 }
 
 func TestBudgetSummarizesOldestHalf(t *testing.T) {
-	// Tiny window so the tool result forces a summarization after turn 1.
-	// Turn 1: tool call fs_read on a file with a big-ish content; turn 2: final.
+	// Tiny window forces a summarization at the start of turn 2. The budget
+	// must never summarize the current user turn (the Qwythos template 400s on
+	// a request with no plain user message), so the running summary covers
+	// turn 1 while turn 2's user message stays in the request.
 	s := newScriptedLLM(t, [][]string{
 		toolCall("c1", "fs_read", `{"path": "big.txt"}`),
 		finalContent("done"),
+		finalContent("second answer"),
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "big.txt", strings.Repeat("x", 800)+"\n")
@@ -410,7 +413,10 @@ func TestBudgetSummarizesOldestHalf(t *testing.T) {
 		ws)
 
 	if _, err := a.Run(context.Background(), "first message that must disappear"); err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("Run turn 1: %v", err)
+	}
+	if _, err := a.Run(context.Background(), "second message"); err != nil {
+		t.Fatalf("Run turn 2: %v", err)
 	}
 	if summ.calls == 0 {
 		t.Fatal("summarizer was never called")
@@ -418,15 +424,30 @@ func TestBudgetSummarizesOldestHalf(t *testing.T) {
 	// The summarized message must be gone and the summary present in turn 2.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.requests) < 2 {
+	if len(s.requests) < 3 {
 		t.Fatalf("only %d requests captured", len(s.requests))
 	}
-	req2 := string(s.requests[1])
+	req2 := string(s.requests[2]) // turn 2's first request
 	if !strings.Contains(req2, "SUM: user prefers tabs") {
 		t.Errorf("turn 2 missing running summary: %q", req2[:200])
 	}
 	if strings.Contains(req2, "first message that must disappear") {
 		t.Error("summarized message still in turn 2 context")
+	}
+	// regression: the request must still contain a plain user message
+	// (Qwythos rejects tool-only message lists)
+	var req chatCompletionRequest
+	if err := json.Unmarshal([]byte(req2), &req); err != nil {
+		t.Fatalf("decode req2: %v", err)
+	}
+	hasUser := false
+	for _, m := range req.Messages {
+		if m.Role == "user" {
+			hasUser = true
+		}
+	}
+	if !hasUser {
+		t.Error("turn 2 request lost its user message during budgeting")
 	}
 }
 
@@ -481,6 +502,7 @@ func TestBudgetPersistsSummary(t *testing.T) {
 	s := newScriptedLLM(t, [][]string{
 		toolCall("c1", "fs_read", `{"path": "big.txt"}`),
 		finalContent("done"),
+		finalContent("second"),
 	})
 	ws := t.TempDir()
 	writeWorkspaceFile(t, ws, "big.txt", strings.Repeat("y", 800)+"\n")
@@ -491,6 +513,10 @@ func TestBudgetPersistsSummary(t *testing.T) {
 		Config{MaxIterations: 10, Window: 300, Reserve: 50, Summarizer: summ, Store: st, SessionID: sess.ID}, ws)
 
 	if _, err := a.Run(ctx, "turn one"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// turn 2 overflows the tiny window and forces the persistence
+	if _, err := a.Run(ctx, "turn two"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	got, until, err := st.Summary(ctx, sess.ID)
