@@ -1,0 +1,12 @@
+name: web-research
+description: M5 — web_search, fetch a page, answer with the source URL
+web: true
+input: does llama.cpp support ROCm on gfx1031?
+steps:
+  - tool_call: {name: web_search, args: '{"query":"llama.cpp ROCm gfx1031"}'}
+  - tool_call: {name: web_fetch, args: '{"url":"{{WEB_BASE}}/rocm"}'}
+  - answer: "Yes — gfx1031 is supported (source: https://example.com/rocm)."
+assert:
+  min_tool_results: 2
+  tool_results_contain: ["gfx1031 is supported by llama.cpp"]
+  final_answer_contains: "example.com/rocm"

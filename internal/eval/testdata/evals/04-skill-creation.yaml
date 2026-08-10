@@ -1,0 +1,20 @@
+name: skill-creation
+description: M3.5 — a 5+ tool-call turn triggers a gated skill write
+skills: true
+files:
+  a.go: |
+    package main
+    func main() {}
+input: do the five-step task
+steps:
+  - tool_call: {name: fs_read, args: '{"path":"a.go"}'}
+  - tool_call: {name: fs_read, args: '{"path":"a.go"}'}
+  - tool_call: {name: fs_read, args: '{"path":"a.go"}'}
+  - tool_call: {name: fs_read, args: '{"path":"a.go"}'}
+  - tool_call: {name: fs_read, args: '{"path":"a.go"}'}
+  - answer: done with the five-step task
+  - tool_call: {name: skill_manage, args: '{"action":"create","name":"read-a","content":"---\nname: read-a\ndescription: read file a when asked\n---\n## When to Use\nwhen asked\n## Procedure\n1. read a\n"}'}
+assert:
+  min_tool_results: 6
+  final_answer_contains: done
+  staged_skills: 1

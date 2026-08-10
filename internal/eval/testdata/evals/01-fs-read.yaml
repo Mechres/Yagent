@@ -1,0 +1,14 @@
+name: fs-read-flow
+description: M2 — model reads a file and answers from it
+files:
+  main.go: |
+    package main
+
+    func main() { println("hello eval") }
+input: read main.go and tell me what it does
+steps:
+  - tool_call: {name: fs_read, args: '{"path":"main.go"}'}
+  - answer: The file is a Go program that prints "hello eval".
+assert:
+  tool_results_contain: ["println"]
+  final_answer_contains: "hello eval"

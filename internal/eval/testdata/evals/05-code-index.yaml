@@ -1,0 +1,20 @@
+name: code-index
+description: M4 — index_repo then index_search finds the right chunk
+index: true
+files:
+  pkg/tool.go: |
+    package pkg
+
+    // validateToolInput checks tool arguments.
+    func validateToolInput(name string) error {
+        if name == "" { return errEmpty }
+        return nil
+    }
+input: where is tool validation implemented?
+steps:
+  - tool_call: {name: index_repo, args: '{}'}
+  - tool_call: {name: index_search, args: '{"query":"tool validation"}'}
+  - answer: Tool validation lives in pkg/tool.go (validateToolInput).
+assert:
+  tool_results_contain: ["indexed 1 files", "pkg/tool.go", "validateToolInput"]
+  final_answer_contains: "validateToolInput"

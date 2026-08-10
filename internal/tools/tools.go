@@ -131,6 +131,13 @@ func (r *Registry) SetSkillsWriteApproval(on bool) {
 	}
 }
 
+// SetIndexProgress wires a progress sink for index_repo (set by the UI).
+func (r *Registry) SetIndexProgress(fn func(string)) {
+	if t, ok := r.tools["index_repo"].(*indexRepoTool); ok {
+		t.onProgress = fn
+	}
+}
+
 // Get returns a tool by name.
 func (r *Registry) Get(name string) (Tool, bool) {
 	t, ok := r.tools[name]

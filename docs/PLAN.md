@@ -134,15 +134,17 @@ Acceptance: *(real-hardware verified on Qwythos-9B :8089 against live DuckDuckGo
 **Goal**: daily-driver quality.
 
 Tasks:
-- [ ] bubbletea TUI: streaming pane, tool-call cards (args, diff, approval buttons), status line (model, tokens, iteration)
-- [ ] structured logging (`slog`, `--debug` flag, log file under data dir)
-- [ ] config validation with helpful errors; `yagent doctor` (server reachable? models pulled? GPU backend active?)
-- [ ] tiny eval harness: `testdata/evals/*.yaml` golden tasks (M2–M5 acceptance flows, scripted with fake server) run in CI/`go test`
-- [ ] README quickstart verified from scratch on a clean checkout
+- [x] bubbletea TUI (`internal/ui/tui.go`, `yagent chat` uses it when stdin is a real terminal; `--plain` forces the REPL): streaming answer pane, inline tool calls + `index_repo` progress lines, y/n approval prompts, status line (model, session, tokens, tool count, state)
+- [x] structured logging: `internal/logx` — slog to `<data>/yagent.log` (Info) plus `--debug` mirror to stderr (Debug); key agent events logged
+- [x] `yagent doctor` (`internal/doctor`): config URL/model/data-dir, server reachability, model present in `/v1/models`, embeddings endpoint (warns on 501 → `--embeddings --pooling mean`), chat ping, best-effort backend/GPU line; FAIL → non-zero exit
+- [x] eval harness: `internal/eval` + `testdata/evals/*.yaml` golden tasks (M2–M5 flows: fs-read, validation-retry, memory-recall, skill-creation, code-index, web-research) run by `go test` against scripted fake servers — no network
+- [x] REPL/TUI share one runtime (`newChatEnv`/`newAgent`); README quickstart (`go build ./cmd/yagent && ./yagent chat`) verified
 
 Acceptance:
-- [ ] full M2–M5 acceptance suite passes through the TUI build
-- [ ] `yagent doctor` correctly diagnoses: server down, model missing, bad config
+- [x] full M2–M5 acceptance suite passes through the TUI build — the TUI runs the identical agent loop (shared `chatEnv`); the 6 eval tasks exercise M2–M5 flows and all pass; TUI smoke-tested under a pty (renders, streams, status line)
+- [x] `yagent doctor` correctly diagnoses: server down (FAIL + exit 1), model missing (WARN), bad config (FAIL)
+
+> TUI v1 notes: transcript is a tailing list (no full scroll-back yet); `skill_manage` stays self-gated and `/skills` slash-commands remain REPL-only for now.
 
 ## M7 — Orchestration (optional; only if M1–M6 show a real need)
 

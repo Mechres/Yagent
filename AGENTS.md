@@ -8,7 +8,7 @@ Yagent is a **local-first AI agent** (code / audit / review / web search / resea
 
 ## Current status
 
-**Milestone M5 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); work the milestones in order, each acceptance criteria must pass against the real local model. State of the tree:
+**Milestone M6 complete** (see [`docs/PLAN.md`](docs/PLAN.md)); all milestones shipped. State of the tree:
 
 - M1: streaming chat CLI. M2: tool loop (9 fs/shell/git tools, approvals, validation retry). Both accepted on real hardware (Qwythos-9B on :8089).
 - M3 shipped: `internal/memory` — L2 SQLite session store (`yagent sessions`, `chat --continue <id>`, auto-titles, `HistoryAfter` for resumes), L1 token budget (summarizes oldest half into a running summary before every request; `context_window`/`YAGENT_CONTEXT_WINDOW` knob), L3 semantic memory. Since M3.5 L3 is **SQLite hybrid** (vectors + FTS5 keyword + importance + recency, no chromem): `memory_save`/`memory_search` tools, per-turn top-5 recall injection (budgeted, session-deduped), session-end summary job. `embedding_server_url` (defaults to `server_url`) lets you point embeddings at a dedicated model. Data dir: `$XDG_DATA_HOME/yagent` (deleting it = forget everything).
@@ -17,8 +17,9 @@ Yagent is a **local-first AI agent** (code / audit / review / web search / resea
 - M4 shipped: `internal/index` — gitignore-aware walker, tree-sitter structural chunking (go/py/js/ts/tsx; ~1200-char/80-line caps; needs **cgo**), content-hash incremental re-embed in the same SQLite file, `index_repo`/`index_search` tools, per-turn top-6 code injection (2000-token budget, `path:start-end`). Hybrid search (vector + FTS5 + recency) keeps it usable with the Qwythos embedder.
 - All M3/M3.5/M4 tasks ticked; acceptance verified: 60-turn bounded session + resume, remember→recall across sessions (e2e, fake servers), clean-slate store, skills flow on real hardware, and M4 on real hardware (Qwythos-9B on :8089): repo indexed in-place (51 files/632 chunks), "where is tool validation implemented?" answered via `index_search`, one-line edit re-embedded only that file. `go build`/`vet`/`test`/`gofmt` clean.
 - M5 shipped: `internal/web` — pluggable web tools. `web_search` defaults to **DuckDuckGo HTML** (`html.duckduckgo.com/html/?q=`, no API key, no self-hosted server; unofficial scraping — structure can change, rate-limits heavy use) with **SearXNG** as an optional JSON backend (`web_search.provider` / `web_search.searxng_url` / env). `web_fetch` GETs a URL, strips scripts/nav/footer via `golang.org/x/net/html`, caps at 16 KiB, 15s timeout + redirect limit. System prompt requires citing URLs for web-sourced answers. Acceptance verified live on Qwythos-9B :8089: "does llama.cpp support ROCm on gfx1031" → `web_search` → 2× `web_fetch` → summarized with source URLs.
+- M6 shipped: `internal/ui/tui.go` — bubbletea TUI (auto-selected on a real terminal; `--plain` for the REPL) with streaming pane, tool/progress lines, y/n approval prompts, status line; REPL + TUI share one runtime (`newChatEnv`/`newAgent`). `internal/logx` — slog to `<data>/yagent.log` + `--debug` mirror. `yagent doctor` (`internal/doctor`) diagnoses config/server/model/embeddings/chat with non-zero exit on failure. `internal/eval` — golden YAML evals (M2–M5 flows) run by `go test`, no network.
 - **Real-hardware note**: the dev llama.cpp server now runs `--embeddings --pooling mean`, so L3 semantic recall works on :8089 with Qwythos as the embedder (chat + embeddings share one server; the requested embedding model name is ignored). Ollama remains an alternative (`nomic-embed-text`). See [`docs/models.md`](docs/models.md).
-- Next: **M6 — TUI + polish** (bubbletea TUI, slog logging, `yagent doctor`, eval harness).
+- All milestones shipped. M7 (subagent orchestration) is optional — only if eval evidence shows the single loop is the bottleneck.
 
 ## Commands
 
@@ -58,7 +59,7 @@ Keep packages acyclic: `ui → agent → {llm, tools, memory, index} → config`
   - `github.com/tree-sitter/go-tree-sitter` (+ `tree-sitter-go/python/javascript/typescript`) — repo chunking (M4, needs **cgo**; a C toolchain is now required to build)
   - `golang.org/x/net/html` — HTML parsing for the DDG scraper and `web_fetch` extraction (M5)
   - `github.com/tmc/langchaingo` — **NOT approved**; we implement our own loop/memory
-  - `github.com/charmbracelet/bubbletea` + `lipgloss` — TUI (M6 only)
+  - `github.com/charmbracelet/bubbletea` + `lipgloss` (+ `bubbles/textinput`) — TUI (M6)
   - `github.com/philippgille/chromem-go` — **removed in M3.5**; L3 is SQLite hybrid (vector + FTS5), no chromem, no ANN
 - Errors: wrap with `fmt.Errorf("...: %w", err)`, no panics outside `main`, no `log.Fatal` in library code.
 - Tests: table-driven where sensible; no network access in unit tests (use `httptest.Server` to fake the LLM API).

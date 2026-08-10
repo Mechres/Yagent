@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -231,9 +232,11 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		if len(resp.ToolCalls) == 0 {
 			a.totalToolCalls += turnCalls
 			_ = a.maybeOfferSkillCreation(ctx, turnCalls) // best-effort
-			return resp.Message.Content, nil              // final answer, done
+			slog.Debug("final answer", "tokens", len(resp.Message.Content)/4)
+			return resp.Message.Content, nil // final answer, done
 		}
 		turnCalls += len(resp.ToolCalls)
+		slog.Debug("model requested tools", "n", len(resp.ToolCalls), "iteration", i)
 
 		results := a.dispatchAll(ctx, resp.ToolCalls, valFails, blocked)
 		for i, call := range resp.ToolCalls {
@@ -502,6 +505,7 @@ func (a *Agent) budget(ctx context.Context) error {
 	}
 	a.runningSummary = strings.TrimSpace(resp.Message.Content)
 	a.history = append([]historyEntry{}, a.history[len(seg):]...)
+	slog.Info("summarized history", "covered_messages", len(seg), "summary_len", len(a.runningSummary))
 
 	if a.cfg.Store != nil && a.cfg.SessionID != "" && len(seg) > 0 {
 		until := seg[len(seg)-1].id
@@ -581,6 +585,7 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	if err != nil {
 		// Only argument-validation failures land here (tool contract).
 		valFails[name]++
+		slog.Debug("tool validation error", "tool", name, "error", err)
 		if valFails[name] >= maxValidationFails {
 			blocked[name] = true
 			return fmt.Sprintf("error: tool %q failed validation %d times; last error: %v. Do not call %q again this turn.",
@@ -588,6 +593,7 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		}
 		return "error: " + err.Error()
 	}
+	slog.Debug("tool executed", "tool", name)
 	return result
 }
 

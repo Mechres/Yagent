@@ -19,6 +19,12 @@ import (
 	"yagent/internal/web"
 )
 
+// Options tunes the chat UI.
+type Options struct {
+	// Plain forces the streaming REPL instead of the TUI (useful for pipes).
+	Plain bool
+}
+
 // RunChat runs an agent-driven REPL: user lines go through the agent loop,
 // model tokens stream as they arrive, tool activity is shown inline, and
 // Write/Destructive tool calls prompt for approval (y/n) on the same stdin.
@@ -36,84 +42,40 @@ import (
 //	/skills reject <id|all>
 //	/skills approval on|off
 //	/skill-name            load a SKILL.md into context
-func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string) error {
-	ws, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("workspace: %w", err)
+func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, opts Options) error {
+	// TUI by default on a real terminal; --plain (or piped stdin) falls back
+	// to the streaming REPL.
+	if !opts.Plain && isTerminal(os.Stdin) {
+		return RunTUI(ctx, client, cfg, continueID)
 	}
-	st, err := memory.Open(cfg.DataDir)
-	if err != nil {
-		return fmt.Errorf("open session store: %w", err)
-	}
-	defer st.Close()
-	vs, err := memory.OpenVectorStore(cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
-	if err != nil {
-		return fmt.Errorf("open memory store: %w", err)
-	}
-	defer vs.Close()
-
-	skillsRoot := cfg.Skills.DataDir
-	if skillsRoot == "" {
-		skillsRoot = cfg.DataDir
-	}
-	sk, err := skills.OpenProject(skillsRoot, cfg.Skills.ProjectDir)
-	if err != nil {
-		return fmt.Errorf("open skills store: %w", err)
-	}
-	idx, err := index.Open(ws, cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
-	if err != nil {
-		return fmt.Errorf("open code index: %w", err)
-	}
-	defer idx.Close()
-
-	sessionID, initialHistory, initialSummary, err := resolveSession(ctx, st, ws, continueID)
+	env, err := newChatEnv(ctx, cfg, continueID)
 	if err != nil {
 		return err
 	}
+	defer env.st.Close()
+	defer env.vs.Close()
+	defer env.idx.Close()
 
-	writeApproval := cfg.Skills.WriteApproval
 	w := os.Stdout
-	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL})
-	if err != nil {
-		return fmt.Errorf("web search config: %w", err)
-	}
-	registry := tools.NewRegistry(ws, tools.Options{
-		Vectors:             vs,
-		SessionID:           sessionID,
-		Skills:              sk,
-		Index:               idx,
-		Web:                 webClient,
-		SkillsWriteApproval: writeApproval,
-		IndexProgress: func(line string) {
-			fmt.Fprintf(w, "  [index] %s\n", line)
-		},
+	env.registry.SetIndexProgress(func(line string) {
+		fmt.Fprintf(w, "  [index] %s\n", line)
 	})
 	reader := bufio.NewReader(os.Stdin)
 	ap := &replApprover{reader: reader, writer: w}
 
-	ag := agent.New(client, registry, ap, agent.Config{
-		OnToken: func(delta string) { _, _ = io.WriteString(w, delta) },
-		OnTool: func(call llm.ToolCall) {
+	ag := newAgent(client, cfg, env, ap,
+		func(delta string) { _, _ = io.WriteString(w, delta) },
+		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
-		},
-		Store:           st,
-		SessionID:       sessionID,
-		Vectors:         vs,
-		Skills:          sk,
-		Index:           idx,
-		IndexAutoInject: true,
-		InitialHistory:  initialHistory,
-		InitialSummary:  initialSummary,
-		Window:          cfg.ContextWindow,
-	}, ws)
+		})
 
 	skillsCmd := &skillsHandler{
-		store: sk, reg: registry, cfg: cfg, w: w,
-		approval: &writeApproval,
+		store: env.sk, reg: env.registry, cfg: cfg, w: w,
+		approval: &cfg.Skills.WriteApproval,
 	}
 
-	fmt.Printf("yagent chat — session %s (/exit, /clear, /help)\n", sessionID)
-	if initialSummary != "" {
+	fmt.Printf("yagent chat — session %s (/exit, /clear, /help)\n", env.sessionID)
+	if env.initialSummary != "" {
 		fmt.Println("(resumed with running summary of the earlier conversation)")
 	}
 	for {
@@ -167,10 +129,94 @@ done:
 	if err := ag.Finish(ctx); err != nil {
 		fmt.Fprintf(w, "\nwarning: skill review: %v\n", err)
 	}
-	if err := memory.SummarizeSession(ctx, client, st, vs, sessionID); err != nil {
+	if err := memory.SummarizeSession(ctx, client, env.st, env.vs, env.sessionID); err != nil {
 		fmt.Fprintf(w, "\nwarning: session summary: %v\n", err)
 	}
 	return nil
+}
+
+// chatEnv is the shared runtime state for the REPL and TUI.
+type chatEnv struct {
+	st             *memory.Store
+	vs             *memory.VectorStore
+	sk             *skills.Store
+	idx            *index.Store
+	web            *web.Client
+	registry       *tools.Registry
+	sessionID      string
+	initialHistory []llm.Message
+	initialSummary string
+}
+
+// newChatEnv opens all stores and builds the agent runtime shared by the
+// plain REPL and the TUI.
+func newChatEnv(ctx context.Context, cfg *config.Config, continueID string) (*chatEnv, error) {
+	ws, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("workspace: %w", err)
+	}
+	st, err := memory.Open(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("open session store: %w", err)
+	}
+	vs, err := memory.OpenVectorStore(cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+	if err != nil {
+		st.Close()
+		return nil, fmt.Errorf("open memory store: %w", err)
+	}
+	skillsRoot := cfg.Skills.DataDir
+	if skillsRoot == "" {
+		skillsRoot = cfg.DataDir
+	}
+	sk, err := skills.OpenProject(skillsRoot, cfg.Skills.ProjectDir)
+	if err != nil {
+		return nil, fmt.Errorf("open skills store: %w", err)
+	}
+	idx, err := index.Open(ws, cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+	if err != nil {
+		return nil, fmt.Errorf("open code index: %w", err)
+	}
+	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL})
+	if err != nil {
+		return nil, fmt.Errorf("web search config: %w", err)
+	}
+
+	sessionID, initialHistory, initialSummary, err := resolveSession(ctx, st, ws, continueID)
+	if err != nil {
+		return nil, err
+	}
+
+	env := &chatEnv{
+		st: st, vs: vs, sk: sk, idx: idx, web: webClient,
+		sessionID: sessionID, initialHistory: initialHistory, initialSummary: initialSummary,
+	}
+	env.registry = tools.NewRegistry(ws, tools.Options{
+		Vectors:             vs,
+		SessionID:           sessionID,
+		Skills:              sk,
+		Index:               idx,
+		Web:                 webClient,
+		SkillsWriteApproval: cfg.Skills.WriteApproval,
+	})
+	return env, nil
+}
+
+// newAgent builds the agent loop over a chatEnv.
+func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken func(string), onTool func(llm.ToolCall)) *agent.Agent {
+	ws, _ := os.Getwd()
+	return agent.New(client, env.registry, approver, agent.Config{
+		OnToken:         onToken,
+		OnTool:          onTool,
+		Store:           env.st,
+		SessionID:       env.sessionID,
+		Vectors:         env.vs,
+		Skills:          env.sk,
+		Index:           env.idx,
+		IndexAutoInject: true,
+		InitialHistory:  env.initialHistory,
+		InitialSummary:  env.initialSummary,
+		Window:          cfg.ContextWindow,
+	}, ws)
 }
 
 // skillsHandler implements the /skills and /skill-name REPL commands.

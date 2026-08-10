@@ -1,0 +1,12 @@
+name: memory-recall
+description: M3 — memory_save stores a fact, memory_search recalls it
+memory: true
+input: remember that I prefer tabs
+steps:
+  - tool_call: {name: memory_save, args: '{"text":"user prefers tabs over spaces","importance":0.8}'}
+  - tool_call: {name: memory_search, args: '{"query":"tabs"}'}
+  - answer: I remember you prefer tabs over spaces.
+assert:
+  min_tool_results: 2
+  tool_results_contain: ["remembered", "user prefers tabs over spaces"]
+  final_answer_contains: "tabs"

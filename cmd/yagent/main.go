@@ -7,7 +7,9 @@ import (
 	"os"
 
 	"yagent/internal/config"
+	"yagent/internal/doctor"
 	"yagent/internal/llm"
+	"yagent/internal/logx"
 	"yagent/internal/memory"
 	"yagent/internal/ui"
 )
@@ -15,6 +17,7 @@ import (
 func main() {
 	version := flag.Bool("version", false, "print version")
 	cfgPath := flag.String("config", "", "config file")
+	debug := flag.Bool("debug", false, "debug logging to stderr + log file")
 	flag.Parse()
 	if *version {
 		fmt.Println("yagent v0.0.0")
@@ -30,16 +33,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	if _, err := logx.Setup(cfg.DataDir, *debug); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 
 	switch args[0] {
 	case "chat":
 		fs := flag.NewFlagSet("chat", flag.ContinueOnError)
 		continueID := fs.String("continue", "", "resume session by id")
+		plain := fs.Bool("plain", false, "force the plain REPL instead of the TUI")
 		if err := fs.Parse(args[1:]); err != nil {
 			os.Exit(2)
 		}
 		client := llm.NewClient(cfg.ServerURL, cfg.Model)
-		if err := ui.RunChat(context.Background(), client, cfg, *continueID); err != nil {
+		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{Plain: *plain}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -48,13 +56,19 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "doctor":
+		rep := doctor.Run(cfg)
+		fmt.Println("yagent doctor — local-first agent diagnostics")
+		if err := rep.Render(os.Stdout); err != nil {
+			os.Exit(1)
+		}
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] | yagent sessions | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--plain] | yagent sessions | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 

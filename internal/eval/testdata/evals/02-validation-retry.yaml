@@ -1,0 +1,14 @@
+name: validation-retry
+description: M2 — a malformed tool call is fed back for retry
+files:
+  a.txt: |
+    contents of a
+input: read a.txt
+steps:
+  - tool_call: {name: fs_read, args: '{}'}
+  - tool_call: {name: fs_read, args: '{"path":"a.txt"}'}
+  - answer: The file contains "contents of a".
+assert:
+  min_tool_results: 2
+  tool_results_contain: ['"path" is required', "contents of a"]
+  final_answer_contains: "contents of a"
