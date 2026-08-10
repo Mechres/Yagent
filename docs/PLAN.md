@@ -1,0 +1,132 @@
+# PLAN — Yagent milestones
+
+Execute in order. Do not skip ahead; each milestone's acceptance criteria must pass against the **real local model** before starting the next. Keep `AGENTS.md` and the design docs in sync with whatever you actually build.
+
+## Environment setup (do once, verify first)
+
+```bash
+# inference server — option A: Ollama (ROCm)
+HSA_OVERRIDE_GFX_VERSION=10.3.0 ollama serve
+ollama pull qwen2.5-coder:14b
+ollama pull nomic-embed-text
+
+# option B: llama.cpp llama-server with Vulkan
+# llama-server -m qwen2.5-coder-14b-instruct-q4_k_m.gguf --port 11434 -ngl 99
+
+# sanity check the OpenAI-compatible API
+curl http://localhost:11434/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "qwen2.5-coder:14b",
+  "messages": [{"role":"user","content":"say ok"}],
+  "stream": false
+}'
+```
+
+Prereqs: Go 1.22+, a running server from above, `git` on PATH.
+
+---
+
+## M1 — Skeleton + streaming chat CLI
+
+**Goal**: a binary that streams chat from the local model. No tools, no memory.
+
+Tasks:
+- [x] `go mod init yagent`; create the module layout from `AGENTS.md`
+- [ ] `internal/config`: yaml config (`~/.config/yagent/config.yaml`), defaults, env overrides (`YAGENT_SERVER_URL`, `YAGENT_MODEL`) — *stub returns hardcoded defaults*
+- [ ] `internal/llm`: `ChatStream` against `/v1/chat/completions`; own SSE parser (`data:` lines, `[DONE]`); typed `Message`/`Response`; backoff-retry (3×) on transport errors; `Embed` stub — *SSE parser done (`sse.go`, tested); ChatStream/retry/Embed pending*
+- [ ] `internal/ui`: stdin/stdout REPL; tokens print as they arrive; `/exit` quits, `/clear` resets history — *REPL + `/exit` done; streaming + `/clear` pending*
+- [x] `cmd/yagent`: `chat` subcommand, `--version`, `--config` flag
+- [ ] tests: SSE parser and client against `httptest.Server` (no network) — *SSE parser test done; client test pending*
+
+Acceptance:
+```bash
+go build ./... && go vet ./... && go test ./...     # all clean
+go run ./cmd/yagent chat                            # streams replies from the local model
+```
+
+## M2 — Tool loop + fs/shell/git tools
+
+**Goal**: the agent loop from `design/agent-loop.md` with the M2 tool set from `design/tools.md`.
+
+Tasks:
+- [ ] `internal/tools`: `Tool` interface, registry, `fs_read/fs_write/fs_edit/glob/grep/shell_exec/git_status/git_diff/git_log`
+- [ ] workspace scoping + risk levels; `Approver` prompt in the REPL (y/n, shows command or diff)
+- [ ] `internal/agent`: loop, context assembly (system prompt + history), tool-call validation/retry, truncation, max-iteration guard
+- [ ] system prompt v1: identity, tool usage rules, workspace path, "be concise" bias
+- [ ] tests: fake LLM server returning scripted tool_calls (multi-turn); each tool against `t.TempDir()`; approval denial path
+
+Acceptance:
+- [ ] "Read main.go and explain what it does" → uses `fs_read`, answers correctly
+- [ ] "Fix the typo in README.md" → `fs_edit`, diff shown, asks approval; denied → agent adapts
+- [ ] "What branch are we on and is the tree clean?" → uses git tools, no shell_exec needed
+- [ ] malformed tool args from the model recover via validation-error feedback (test with fake server)
+
+## M3 — Memory: sessions, summarization, semantic recall
+
+**Goal**: L1–L3 from `design/memory.md`. Long sessions don't overflow; facts survive restarts.
+
+Tasks:
+- [ ] `internal/memory`: SQLite (`modernc.org/sqlite`) schema + `Store` interface; `chat --continue <id>`, `yagent sessions`
+- [ ] token-budget manager: summarize oldest 50% of history when over window; running summary injected per `agent-loop.md`
+- [ ] chromem-go collection + `Embed` wiring (`nomic-embed-text`); `memory_save` / `memory_search` tools; per-turn recall injection (top-5, budgeted)
+- [ ] session-end summary job → embedded into L3
+- [ ] tests: budget math (forced overflow with fake summarizer), Store round-trips, recall ranking
+
+Acceptance:
+- [ ] 60+ turn session (scripted) never exceeds the context window; earlier decisions still answerable via the running summary
+- [ ] "Remember that I prefer X" → quit → new session → ask about X → recalled
+- [ ] deleting the data dir = clean slate, no errors
+
+## M4 — Codebase index
+
+**Goal**: L4 — semantic code search over the workspace.
+
+Tasks:
+- [ ] `internal/index`: walker (`.gitignore`-aware, size/binary filters), tree-sitter chunker (Go first, then python/ts/js; line-window fallback), content-hash incremental re-embed
+- [ ] `index_repo` (background, progress to ui) and `index_search` tools
+- [ ] per-turn index retrieval injection (top-6, 2000-token budget, `path:start-end` prefixes)
+- [ ] tests: chunker on real files of each supported language; hash-skip on re-index; search relevance on a fixture repo
+
+Acceptance:
+- [ ] index this very repo; "where is tool validation implemented?" → `index_search` returns the right chunk without any grep
+- [ ] edit one file → re-index → only that file re-embedded (log lines prove it)
+
+## M5 — Web tools
+
+**Goal**: research capability.
+
+Tasks:
+- [ ] `web_search` against SearXNG (`format=json`; document the settings.yml requirement); fallback: configurable Brave API key via env
+- [ ] `web_fetch`: GET → HTML→markdown extraction → 16 KiB cap; 15s timeout; redirect limit
+- [ ] system-prompt guidance: cite URLs when using web results
+- [ ] tests: fake SearXNG + fake HTML pages (no network in tests)
+
+Acceptance:
+- [ ] "Research whether llama.cpp supports ROCm on gfx1031 and summarize with sources" → searches, fetches ≥2 pages, answer contains URLs
+
+## M6 — TUI + polish
+
+**Goal**: daily-driver quality.
+
+Tasks:
+- [ ] bubbletea TUI: streaming pane, tool-call cards (args, diff, approval buttons), status line (model, tokens, iteration)
+- [ ] structured logging (`slog`, `--debug` flag, log file under data dir)
+- [ ] config validation with helpful errors; `yagent doctor` (server reachable? models pulled? GPU backend active?)
+- [ ] tiny eval harness: `testdata/evals/*.yaml` golden tasks (M2–M5 acceptance flows, scripted with fake server) run in CI/`go test`
+- [ ] README quickstart verified from scratch on a clean checkout
+
+Acceptance:
+- [ ] full M2–M5 acceptance suite passes through the TUI build
+- [ ] `yagent doctor` correctly diagnoses: server down, model missing, bad config
+
+## M7 — Orchestration (optional; only if M1–M6 show a real need)
+
+Subagent primitive: spawn a child `Agent` with a narrowed system prompt and tool subset (e.g., read-only "researcher"), run to completion, return its final message as a tool result to the parent. Requires evidence (eval failures) that the single loop is the bottleneck before starting.
+
+---
+
+## Working agreements
+
+- One milestone = one working state of the binary; don't leave `main` broken between tasks
+- If a design doc and reality disagree while implementing, fix the doc in the same commit
+- If you must add a dependency beyond the approved list in `AGENTS.md`, write down why (commit message + update `AGENTS.md`)
+- Track model-specific quirks (tool-call format failures, context limits) in `docs/models.md` as you discover them
