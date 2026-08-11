@@ -11,6 +11,7 @@ import (
 
 	"yagent/internal/config"
 	"yagent/internal/llm"
+	"yagent/internal/memory"
 	"yagent/internal/skills"
 	"yagent/internal/tools"
 )
@@ -209,5 +210,43 @@ func TestSettingsPageChooser(t *testing.T) {
 	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.editing == false || m.choosing {
 		t.Error("text field should open the text editor")
+	}
+}
+
+func TestSessionsBrowser(t *testing.T) {
+	st, err := memory.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := st.NewSession(context.Background(), "/tmp/ws")
+	if _, err := st.Append(context.Background(), sess.ID, llm.Message{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	m := testModel(t)
+	m.env.st = st
+	m.input.SetValue("/sessions")
+	m.submitLine()
+	if !m.sessionsOpen {
+		t.Fatal("/sessions did not open the browser")
+	}
+	if len(m.sessions) != 1 {
+		t.Fatalf("sessions = %d", len(m.sessions))
+	}
+	v := m.sessionsView()
+	if !strings.Contains(v, "Sessions") || !strings.Contains(v, sess.ID[:8]) {
+		t.Errorf("sessionsView = %q", v)
+	}
+	// delete (twice to confirm)
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !m.sessionsConfirm {
+		t.Error("first d should arm confirmation")
+	}
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if len(m.sessions) != 0 {
+		t.Errorf("session not deleted: %d remain", len(m.sessions))
+	}
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.sessionsOpen {
+		t.Error("esc should close the browser")
 	}
 }

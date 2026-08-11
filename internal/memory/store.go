@@ -305,6 +305,26 @@ type MessageHit struct {
 	Snippet   string
 }
 
+// DeleteSession removes a session and all its messages/summary (used by the
+// TUI session browser).
+func (s *Store) DeleteSession(ctx context.Context, sessionID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id = ?)`,
+		sessionID); err != nil {
+		return fmt.Errorf("delete session search rows: %w", err)
+	}
+	for _, q := range []string{
+		`DELETE FROM messages WHERE session_id = ?`,
+		`DELETE FROM summaries WHERE session_id = ?`,
+		`DELETE FROM sessions WHERE id = ?`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q, sessionID); err != nil {
+			return fmt.Errorf("delete session: %w", err)
+		}
+	}
+	return nil
+}
+
 // SearchMessages runs a full-text search over all stored messages (FTS5),
 // newest first, capped at limit.
 func (s *Store) SearchMessages(ctx context.Context, query string, limit int) ([]MessageHit, error) {

@@ -116,3 +116,33 @@ func validateToolInput(name string) error {
 		t.Errorf("no args = %q", got)
 	}
 }
+
+func TestCodeOutline(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "pkg/one.go", `package pkg
+
+// Add returns a + b.
+func Add(a, b int) int { return a + b }
+
+type Store struct{ data []string }
+
+func (s *Store) Get(i int) string { return s.data[i] }
+`)
+	writeFile(t, ws, "pkg/README.md", "not code\n")
+	reg := NewRegistry(ws, Options{SkillsWriteApproval: true})
+	got := execTool(t, reg, "code_outline", map[string]any{"path": "pkg"})
+	if !strings.Contains(got, "Add") || !strings.Contains(got, "[function]") || !strings.Contains(got, "Store") {
+		t.Errorf("code_outline = %q", got)
+	}
+	if strings.Contains(got, "README") {
+		t.Error("non-source file included")
+	}
+	// single file
+	got = execTool(t, reg, "code_outline", map[string]any{"path": "pkg/one.go"})
+	if !strings.Contains(got, "Store") || !strings.Contains(got, "Get") {
+		t.Errorf("single file outline = %q", got)
+	}
+	if got := execTool(t, reg, "code_outline", map[string]any{"path": ""}); !strings.Contains(got, "validation-error") {
+		t.Errorf("empty path = %q", got)
+	}
+}

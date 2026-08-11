@@ -364,3 +364,26 @@ func TestSearchMessagesAndRender(t *testing.T) {
 		t.Errorf("markdown = %q", md)
 	}
 }
+
+func TestDeleteSession(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	sess, _ := st.NewSession(ctx, "/tmp/repo")
+	if _, err := st.Append(ctx, sess.ID, Message{Role: "user", Content: "hello world"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteSession(ctx, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if hits, _ := st.SearchMessages(ctx, "hello", 5); len(hits) != 0 {
+		t.Errorf("search still finds deleted messages: %+v", hits)
+	}
+	if sessions, _ := st.ListSessions(ctx); len(sessions) != 0 {
+		t.Errorf("sessions after delete = %+v", sessions)
+	}
+}

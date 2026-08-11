@@ -2,6 +2,8 @@ package index
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -39,6 +41,29 @@ type Symbol struct {
 	Name string
 	Kind string // friendly kind: function, type, namespace, ...
 	Line int    // 1-based
+}
+
+// SupportedSourceExt reports whether a file extension is structurally
+// chunkable (has a tree-sitter grammar).
+func SupportedSourceExt(ext string) bool {
+	lower := strings.ToLower(ext)
+	for i := range languages {
+		for _, e := range languages[i].ext {
+			if lower == e {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SymbolsForFile returns the declaration symbols of rel within workspace.
+func SymbolsForFile(workspace, rel string) ([]Symbol, error) {
+	content, err := os.ReadFile(filepath.Join(workspace, rel))
+	if err != nil {
+		return nil, err
+	}
+	return symbolsFor(rel, string(content)), nil
 }
 
 // symbolsFor extracts top-level declaration symbols (name, kind, line) from a

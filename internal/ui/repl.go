@@ -16,6 +16,7 @@ import (
 	"yagent/internal/agent"
 	"yagent/internal/config"
 	"yagent/internal/index"
+	"yagent/internal/jobs"
 	"yagent/internal/llm"
 	"yagent/internal/memory"
 	"yagent/internal/skills"
@@ -124,6 +125,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	defer env.vs.Close()
 	defer env.projVS.Close()
 	defer env.idx.Close()
+	defer env.jobs.StopAll()
 
 	w := os.Stdout
 	env.registry.SetIndexProgress(func(line string) {
@@ -238,6 +240,7 @@ type chatEnv struct {
 	initialSummary string
 	forkSource     string
 	undo           *undo.Buffer
+	jobs           *jobs.Registry
 }
 
 // runGoalMode drives the agent autonomously toward a goal: each round runs the
@@ -347,7 +350,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 	env := &chatEnv{
 		st: st, vs: vs, projVS: projVS, sk: sk, idx: idx, web: webClient,
 		sessionID: sessionID, initialHistory: initialHistory, initialSummary: initialSummary,
-		forkSource: forkSource, undo: undo.New(),
+		forkSource: forkSource, undo: undo.New(), jobs: jobs.New(),
 	}
 	env.registry = tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
@@ -359,6 +362,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		Consult:             consultClient,
 		ConsultCmd:          cfg.Consult.Cmd,
 		Undo:                env.undo,
+		Jobs:                env.jobs,
 		ShellSandbox:        cfg.Shell.Sandbox,
 		SkillsWriteApproval: cfg.Skills.WriteApproval,
 	})
@@ -368,6 +372,18 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 // newAgent builds the agent loop over a chatEnv.
 func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken func(string), onTool func(llm.ToolCall)) *agent.Agent {
 	ws, _ := os.Getwd()
+	// M7 v1: subagents are read-only child agents that return a summary.
+	env.registry.SetSubagent(func(ctx context.Context, task, workspace string) (string, error) {
+		reg := tools.NewRegistry(workspace, tools.Options{
+			ReadOnly:       true,
+			Web:            env.web,
+			Index:          env.idx,
+			Vectors:        env.vs,
+			ProjectVectors: env.projVS,
+			Skills:         env.sk,
+		})
+		return agent.RunSubagent(ctx, client, reg, task, workspace)
+	})
 	return agent.New(client, env.registry, approver, agent.Config{
 		OnToken:         onToken,
 		OnTool:          onTool,

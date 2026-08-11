@@ -5,6 +5,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased
 
 ### Added
+- M7 v1: `subagent` tool (isolated read-only child agent); `fs_patch`
+  (multi-file unified diff); background jobs (`shell_bg`/`shell_logs`/
+  `shell_kill`); `code_outline`; compact code injection; TUI `/sessions`
+  browser; session delete.
 - Per-project config: `<workspace>/.yagent/config.yaml` overlays the global
   config for a repo (model, server, sandbox, ...), committed for the team;
   `/set` writes to it when present.

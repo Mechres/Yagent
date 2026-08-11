@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"yagent/internal/index"
+	"yagent/internal/jobs"
 	"yagent/internal/llm"
 	"yagent/internal/memory"
 	"yagent/internal/skills"
@@ -80,6 +81,12 @@ type Options struct {
 	Undo *undo.Buffer
 	// ShellSandbox wraps shell_exec in bubblewrap when set to "bwrap".
 	ShellSandbox string
+	// ReadOnly restricts the registry to read-only tools (used by subagents).
+	ReadOnly bool
+	// Subagent delegates a task to an isolated child agent (M7 v1).
+	Subagent func(ctx context.Context, task, workspace string) (string, error)
+	// Jobs enables background-process tools (may be nil).
+	Jobs *jobs.Registry
 	// ConsultCmd is an installed terminal AI app used as the advisor, e.g.
 	// ["claude", "-p"] (the prompt is appended as the final argument).
 	ConsultCmd []string
@@ -107,6 +114,8 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"fs_read":       &fsReadTool{ws: r.workspace},
 		"fs_write":      &fsWriteTool{ws: r.workspace, undo: opts.Undo},
 		"fs_edit":       &fsEditTool{ws: r.workspace, undo: opts.Undo},
+		"fs_patch":      &fsPatchTool{ws: r.workspace, undo: opts.Undo},
+		"code_outline":  &codeOutlineTool{ws: r.workspace},
 		"glob":          &globTool{ws: r.workspace},
 		"grep":          &grepTool{ws: r.workspace},
 		"shell_exec":    &shellExecTool{ws: r.workspace, sandbox: opts.ShellSandbox},
@@ -132,10 +141,30 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	if opts.Consult != nil || len(opts.ConsultCmd) > 0 {
 		reg["consult"] = &consultTool{client: opts.Consult, cmd: opts.ConsultCmd}
 	}
+	if opts.Subagent != nil {
+		reg["subagent"] = &subagentTool{ws: r.workspace, run: opts.Subagent}
+	}
+	if opts.Jobs != nil {
+		reg["shell_bg"] = &shellBgTool{jobs: opts.Jobs}
+		reg["shell_logs"] = &shellLogsTool{jobs: opts.Jobs}
+		reg["shell_kill"] = &shellKillTool{jobs: opts.Jobs}
+	}
 	for name, t := range reg {
+		if opts.ReadOnly && t.Risk() != RiskReadOnly {
+			continue // subagents get read-only tools only
+		}
 		r.tools[name] = t
 	}
 	return r
+}
+
+// SetSubagent wires the subagent delegate at runtime.
+func (r *Registry) SetSubagent(fn func(ctx context.Context, task, workspace string) (string, error)) {
+	if t, ok := r.tools["subagent"].(*subagentTool); ok {
+		t.run = fn
+	} else if fn != nil {
+		r.tools["subagent"] = &subagentTool{ws: r.workspace, run: fn}
+	}
 }
 
 // SetSkillsWriteApproval toggles the skill write gate at runtime (/skills

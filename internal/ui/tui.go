@@ -42,6 +42,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	defer env.vs.Close()
 	defer env.projVS.Close()
 	defer env.idx.Close()
+	defer env.jobs.StopAll()
 
 	incoming := make(chan tea.Msg, 4096)
 	inputCh := make(chan string, 1)
@@ -196,6 +197,11 @@ type tuiModel struct {
 	editInput    textinput.Model
 	choosing     bool
 	choosingIdx  int
+
+	sessionsOpen    bool
+	sessionsIdx     int
+	sessionsConfirm bool
+	sessions        []memory.SessionSummary
 }
 
 func newInput() textinput.Model {
@@ -350,6 +356,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.sessionsOpen {
+			return m.handleSessionsKey(msg)
+		}
 		if m.settingsOpen {
 			return m.handleSettingsKey(msg)
 		}
@@ -478,6 +487,13 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.settingsOpen = true
 		m.settingsIdx = 0
 		m.editing = false
+		return m, nil
+	case "/sessions":
+		m.input.Reset()
+		m.sessions, _ = m.env.st.ListSessions(context.Background())
+		m.sessionsOpen = true
+		m.sessionsIdx = 0
+		m.sessionsConfirm = false
 		return m, nil
 	case "/clear":
 		m.input.Reset()
@@ -616,6 +632,52 @@ func splitKeepEmpty(s string) []string {
 	return strings.Split(strings.TrimRight(s, "\n"), "\n")
 }
 
+// handleSessionsKey drives the session browser: up/down pick a session,
+// enter shows resume/export commands, d deletes (twice to confirm), esc closes.
+func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.sessionsOpen = false
+		return m, nil
+	case "up":
+		if m.sessionsIdx > 0 {
+			m.sessionsIdx--
+		}
+	case "down":
+		if m.sessionsIdx < len(m.sessions)-1 {
+			m.sessionsIdx++
+		}
+	case "d", "x":
+		if m.sessionsConfirm {
+			id := m.sessions[m.sessionsIdx].ID
+			_ = m.env.st.DeleteSession(context.Background(), id)
+			m.sessionsConfirm = false
+			m.sessions, _ = m.env.st.ListSessions(context.Background())
+			if m.sessionsIdx >= len(m.sessions) {
+				m.sessionsIdx = len(m.sessions) - 1
+			}
+			m.append("  deleted session " + id[:8])
+			if len(m.sessions) == 0 {
+				m.sessionsOpen = false
+			}
+			return m, nil
+		}
+		m.sessionsConfirm = true
+		return m, nil
+	case "enter":
+		if len(m.sessions) == 0 {
+			return m, nil
+		}
+		id := m.sessions[m.sessionsIdx].ID
+		m.append(fmt.Sprintf("  session %s — resume: yagent chat --continue %s | export: yagent sessions export %s", id, id, id))
+		return m, nil
+	}
+	if msg.String() != "d" && msg.String() != "x" {
+		m.sessionsConfirm = false
+	}
+	return m, nil
+}
+
 // settingsView renders the interactive settings page.
 func (m *tuiModel) settingsView() string {
 	keys := config.Settings()
@@ -680,6 +742,42 @@ func (m *tuiModel) settingsView() string {
 		Padding(0, 1).Render(page)
 }
 
+// sessionsView renders the session browser.
+func (m *tuiModel) sessionsView() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
+		Render("💬 Sessions")
+	marker := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Render("▸")
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	rows := make([]string, 0, len(m.sessions))
+	for i, s := range m.sessions {
+		titleTxt := s.Title
+		if titleTxt == "" {
+			titleTxt = "(untitled)"
+		}
+		if len(titleTxt) > 40 {
+			titleTxt = titleTxt[:39] + "…"
+		}
+		line := fmt.Sprintf("%s  %4d msgs  %s", s.ID[:8], s.Messages, titleTxt)
+		if i == m.sessionsIdx {
+			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(lipgloss.Color("237")).
+				Bold(true).Render(line))
+		} else {
+			rows = append(rows, "  "+dim.Render(line))
+		}
+	}
+	if len(m.sessions) == 0 {
+		rows = append(rows, "  "+dim.Render("no sessions yet"))
+	}
+	hint := dim.Render("↑/↓ pick · enter show commands · d delete (twice) · esc close")
+	if m.sessionsConfirm {
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("  delete this session? press d again to confirm, any key to cancel")
+	}
+	body := lipgloss.NewStyle().Foreground(lipgloss.Color("188")).Render(strings.Join(rows, "\n"))
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1).Render(title + "\n\n" + body + "\n\n" + hint)
+}
+
 // flushStream commits the current streamed answer into the transcript.
 func (m *tuiModel) flushStream() {
 	if m.stream.Len() > 0 {
@@ -692,7 +790,7 @@ func (m *tuiModel) flushStream() {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/undo",
+		"/exit", "/clear", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/undo", "/sessions",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}
@@ -743,6 +841,9 @@ func (m *tuiModel) View() string {
 	}
 	if m.settingsOpen {
 		return m.settingsView()
+	}
+	if m.sessionsOpen {
+		return m.sessionsView()
 	}
 	// The viewport holds the transcript; the streaming tail renders as its own
 	// line below it so scrolling is never reset by per-frame content updates.

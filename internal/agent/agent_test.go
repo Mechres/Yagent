@@ -1014,3 +1014,35 @@ func TestRunGoalCaps(t *testing.T) {
 		t.Errorf("err = %v, want cap error", err)
 	}
 }
+
+func TestRunSubagent(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
+		finalContent("SUMMARY: the file exists"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "data")
+	reg := tools.NewRegistry(ws, tools.Options{ReadOnly: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	answer, err := RunSubagent(context.Background(), client, reg, "check a.txt", ws)
+	if err != nil {
+		t.Fatalf("RunSubagent: %v", err)
+	}
+	if !strings.Contains(answer, "SUMMARY") {
+		t.Errorf("answer = %q", answer)
+	}
+}
+
+func TestCompactChunk(t *testing.T) {
+	full := "func helper(x int) int {\n    return x + 1\n}\n"
+	c := compactChunk(full)
+	if !strings.Contains(c, "func helper(x int) int {") || !strings.Contains(c, "// ...") {
+		t.Errorf("compact = %q", c)
+	}
+	// brace-less content keeps the top few lines
+	py := "def f(a):\n    return a + 1\n    # more\n    # more\n    # more\n"
+	c = compactChunk(py)
+	if strings.Contains(c, "return a + 1") {
+		t.Errorf("python body not collapsed: %q", c)
+	}
+}

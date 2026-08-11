@@ -366,6 +366,19 @@ func VerifySkill(ctx context.Context, client ChatLLM, reg *tools.Registry, appro
 	return a.Run(ctx, verifySkillPrompt)
 }
 
+// subagentSystemPrompt scopes a child agent to read-only investigation.
+const subagentSystemPrompt = `You are a subagent of Yagent working on a delegated subtask in a workspace. You have read-only tools (fs_read, grep, glob, git, web, index, memory, skills). Investigate, gather evidence (paths, lines, URLs), and finish with a concise summary or conclusion. Never modify files.`
+
+// RunSubagent executes a self-contained subtask in an isolated read-only agent
+// and returns its final message. The caller supplies a read-only registry; the
+// child runs with its own context window, so long investigations do not pollute
+// the parent conversation (M7 v1).
+func RunSubagent(ctx context.Context, client ChatLLM, reg *tools.Registry, task, workspace string) (string, error) {
+	a := New(client, reg, nil, Config{MaxIterations: 15, Window: 8000, Reserve: 1000}, workspace)
+	a.InjectSystem(subagentSystemPrompt)
+	return a.Run(ctx, task)
+}
+
 // ParseVerdict extracts PASS/FAIL from a verification answer.
 func ParseVerdict(answer string) string {
 	for _, line := range strings.Split(answer, "\n") {
@@ -597,8 +610,9 @@ func (a *Agent) assembleContext(recall, code string) []llm.Message {
 }
 
 // codeIndex retrieves the top chunks matching the user input from the codebase
-// index (M4) and formats them as path:start-end blocks, budget-capped. Skipped
-// when the index is empty or auto-injection is off.
+// index (M4) and formats them as path:start-end blocks, budget-capped. When the
+// block would overflow, chunk bodies are collapsed to their signature headers
+// (// ...) so more relevant declarations fit in context.
 func (a *Agent) codeIndex(ctx context.Context, input string) string {
 	if a.cfg.Index == nil || !a.cfg.IndexAutoInject || a.cfg.Index.Count() == 0 {
 		return ""
@@ -607,21 +621,67 @@ func (a *Agent) codeIndex(ctx context.Context, input string) string {
 	if err != nil || len(results) == 0 {
 		return ""
 	}
+	block := renderIndexBlock(results, false)
+	if len(block) > maxIndexTokens*4 {
+		block = renderIndexBlock(results, true) // collapse bodies
+	}
+	if len(block) > maxIndexTokens*4 {
+		return block[:maxIndexTokens*4] + "\n…"
+	}
+	return block
+}
+
+func renderIndexBlock(results []index.Result, compact bool) string {
 	var b strings.Builder
 	b.WriteString("Relevant code from the workspace index (path:start-end):\n")
 	for _, r := range results {
 		fmt.Fprintf(&b, "- %s:%d-%d\n", r.Path, r.StartLine, r.EndLine)
 		snippet := r.Content
-		if len(snippet) > 300 {
+		if compact {
+			snippet = compactChunk(snippet)
+		} else if len(snippet) > 300 {
 			snippet = snippet[:300] + "…"
 		}
 		b.WriteString("  " + strings.ReplaceAll(snippet, "\n", "\n  ") + "\n")
 	}
-	if b.Len() > maxIndexTokens*4 {
-		s := b.String()[:maxIndexTokens*4]
-		return s + "\n…"
-	}
 	return b.String()
+}
+
+// compactChunk keeps a declaration's header (through its opening brace, or the
+// signature lines for brace-less languages) and collapses the body to // ....
+func compactChunk(content string) string {
+	lines := strings.Split(content, "\n")
+	brace := -1
+	for i, l := range lines {
+		if strings.Contains(l, "{") {
+			brace = i
+			break
+		}
+	}
+	keep := 0
+	if brace >= 0 {
+		keep = brace + 1
+	} else {
+		// brace-less languages: keep decorators / "def f(a):" / "func f()" /
+		// "class X" header lines, stop at the first body line.
+		for i, l := range lines {
+			t := strings.TrimSpace(l)
+			if strings.HasPrefix(t, "@") || strings.HasSuffix(l, ":") ||
+				strings.HasPrefix(t, "def ") || strings.HasPrefix(t, "class ") || strings.HasPrefix(t, "func ") {
+				keep = i + 1
+				continue
+			}
+			break
+		}
+		if keep == 0 {
+			keep = 1
+		}
+	}
+	out := append([]string{}, lines[:keep]...)
+	if keep < len(lines) {
+		out = append(out, "// ...")
+	}
+	return strings.Join(out, "\n")
 }
 
 // skillIndex renders the L0 list (skills.md progressive disclosure): name +

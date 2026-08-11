@@ -22,6 +22,10 @@ The ui implements `Approver`; prompts show the tool name, args (command/diff), a
 | `glob` | RO | `pattern` (req), `path` | `**/*.go` style; cap 200 results |
 | `grep` | RO | `pattern` (req), `path`, `include` | regex via stdlib `regexp` over file walk; cap 100 matches |
 | `shell_exec` | Destructive | `command` (req), `timeout_sec` | pipes through `sh -c`; stdout+stderr captured, cap 32 KiB; default timeout 30s (max 300); env scrubbed of secrets (`*_TOKEN`, `*_KEY`, `*_SECRET`). `shell.sandbox: bwrap` (Linux) wraps commands in bubblewrap: workspace writable, system read-only, private `/tmp`, no network, `--die-with-parent`. Fails loudly if bubblewrap isn't installed — never silently runs unsandboxed. |
+| `shell_bg` / `shell_logs` / `shell_kill` | M6.19 | Write/RO/Destructive | run a command in the background (`shell_bg` returns a job id), inspect its accumulated tail output (`shell_logs`), terminate it (`shell_kill`); all jobs are killed at session end. For dev servers and long-running commands. |
+| `fs_patch` | M6.19 | Write | apply a multi-file unified git diff in one call (context verified; paths workspace-scoped; changes recorded in the /undo buffer) |
+| `code_outline` | M6.19 | RO | list a file/directory's declarations as `line [kind] name` signatures (no bodies) via tree-sitter |
+| `subagent` | M7 v1 | RO | delegate a self-contained, context-heavy subtask to an isolated read-only child agent (own context, returns a summary) |
 | `git_status` | RO | none | porcelain output |
 | `git_diff` | RO | `path`, `staged` | cap 32 KiB |
 | `git_log` | RO | `n` (≤50) | oneline |
