@@ -17,6 +17,9 @@ model: qwen2.5-coder:14b
 embedding_model: nomic-embed-text
 # embedding_server_url: http://localhost:8080
 
+# TUI color palette: tokyo (default) | catppuccin | nord.
+theme: tokyo
+
 # Context window in tokens (also YAGENT_CONTEXT_WINDOW).
 context_window: 16384
 

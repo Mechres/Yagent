@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-
-	tea "github.com/charmbracelet/bubbletea"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/Mechres/Yagent/internal/agent"
 	"github.com/Mechres/Yagent/internal/config"
@@ -64,7 +66,7 @@ func TestSlashMatchesIncludeSkills(t *testing.T) {
 }
 
 func TestRenderApprovalDiff(t *testing.T) {
-	d := renderApprovalDiff("line one\nold line\nline three", "line one\nnew line\nline three")
+	d := renderApprovalDiff(tokyoNight, "line one\nold line\nline three", "line one\nnew line\nline three")
 	if !strings.Contains(d, "- old line") || !strings.Contains(d, "+ new line") {
 		t.Errorf("diff missing changes: %q", d)
 	}
@@ -80,19 +82,19 @@ func TestFsApprovalDiff(t *testing.T) {
 	}
 	edit := llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_edit",
 		Arguments: []byte(`{"path":"a.txt","old_string":"old content","new_string":"new content"}`)}}
-	d := fsApprovalDiff(ws, edit)
+	d := fsApprovalDiff(tokyoNight, ws, edit)
 	if !strings.Contains(d, "- old content") || !strings.Contains(d, "+ new content") {
 		t.Errorf("fs_edit diff = %q", d)
 	}
 	// path traversal -> no diff
 	evil := llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_edit",
 		Arguments: []byte(`{"path":"../evil","old_string":"a","new_string":"b"}`)}}
-	if d := fsApprovalDiff(ws, evil); d != "" {
+	if d := fsApprovalDiff(tokyoNight, ws, evil); d != "" {
 		t.Errorf("traversal should yield no diff, got %q", d)
 	}
 	// non-fs tool -> no diff
 	other := llm.ToolCall{Function: llm.ToolCallFunction{Name: "shell_exec", Arguments: []byte(`{"command":"ls"}`)}}
-	if d := fsApprovalDiff(ws, other); d != "" {
+	if d := fsApprovalDiff(tokyoNight, ws, other); d != "" {
 		t.Errorf("non-fs tool should yield no diff, got %q", d)
 	}
 }
@@ -274,6 +276,100 @@ func TestRenderMarkdown(t *testing.T) {
 	// to a blank line rather than echoing raw marker text
 	if out := renderMarkdown("```"); len(out) == 0 {
 		t.Errorf("unclosed fence returned empty output")
+	}
+}
+
+func TestThemeByName(t *testing.T) {
+	if got := themeByName("tokyo"); got.Primary != tokyoNight.Primary {
+		t.Errorf("tokyo primary = %v", got.Primary)
+	}
+	if got := themeByName("catppuccin"); got.Primary == tokyoNight.Primary {
+		t.Error("catppuccin should differ from tokyo")
+	}
+	if got := themeByName("nord"); got.Background == tokyoNight.Background {
+		t.Error("nord should differ from tokyo")
+	}
+	// unknown names fall back to tokyo (config validates, but be safe)
+	if got := themeByName("beige"); got.Primary != tokyoNight.Primary {
+		t.Error("unknown theme should fall back to tokyo")
+	}
+}
+
+func TestThemeRendersDistinctPalettes(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.ANSI256) })
+	base := testModel(t)
+	base.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	base.cfg = &config.Config{Model: "m"}
+	base.width, base.height = 100, 30
+	base.branch = "main"
+
+	seen := map[string]string{}
+	for _, name := range config.ThemeOptions {
+		m := *base
+		m.th = themeByName(name)
+		// extract the primary RGB from the rendered header (first color sequence)
+		out := m.headerView()
+		seen[name] = out
+	}
+	// every theme must render a non-empty header with its own primary color
+	primaries := map[string]string{}
+	for _, name := range config.ThemeOptions {
+		v := seen[name]
+		if v == "" {
+			t.Fatalf("theme %s rendered empty header", name)
+		}
+		// primary is the title pill background: look for the 48;2;r;g;b escape
+		idx := strings.Index(v, "48;2;")
+		if idx < 0 {
+			t.Fatalf("theme %s header has no truecolor bg: %q", name, v)
+		}
+		end := strings.Index(v[idx:], "m")
+		primaries[name] = v[idx : idx+end]
+	}
+	if primaries["tokyo"] == primaries["catppuccin"] || primaries["tokyo"] == primaries["nord"] {
+		t.Errorf("theme primaries collide: %v", primaries)
+	}
+}
+
+func TestThemeSwitchAppliesLive(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{
+		ServerURL: "http://x", Model: "m", ContextWindow: 16384,
+		Path:  filepath.Join(t.TempDir(), "config.yaml"),
+		Theme: "tokyo",
+	}
+	m.settingsOpen = true
+	m.th = themeByName("tokyo")
+
+	idx := -1
+	for i, s := range config.Settings() {
+		if s.Key == "theme" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("theme not in settings catalog")
+	}
+	m.settingsIdx = idx
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter}) // open chooser
+	if !m.choosing {
+		t.Fatal("theme chooser did not open")
+	}
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyRight}) // tokyo -> catppuccin
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter}) // save
+	if m.choosing {
+		t.Fatal("chooser still open")
+	}
+	if m.cfg.Theme != "catppuccin" {
+		t.Errorf("cfg.Theme = %q, want catppuccin", m.cfg.Theme)
+	}
+	if m.th.Primary == tokyoNight.Primary {
+		t.Error("m.th did not switch live (still tokyo)")
+	}
+	if m.th.Primary != catppuccinMocha.Primary {
+		t.Error("m.th should now be catppuccin")
 	}
 }
 

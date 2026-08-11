@@ -5,6 +5,9 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## v0.1.1 — 2026-08-11
 
 ### Added
+- **TUI theme selector**: the `theme` setting (tokyo | catppuccin | nord,
+  `YAGENT_THEME` env) picks the palette; `/settings` uses the left/right
+  chooser and applies it live. Default `tokyo`.
 - **TUI overhaul**: 24-bit Tokyo Night theme (one shared palette replaces the
   ad-hoc 256-color codes); pill-style header (app, workspace, model, session,
   git branch) and status bar (state, live context gauge with a progress bar,

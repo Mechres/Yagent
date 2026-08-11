@@ -33,6 +33,51 @@ var tokyoNight = Theme{
 	Error:      lipgloss.Color("#f7768e"),
 }
 
+// catppuccinMocha is a warmer, softer alternative.
+var catppuccinMocha = Theme{
+	Primary:    lipgloss.Color("#89b4fa"),
+	Secondary:  lipgloss.Color("#cba6f7"),
+	Accent:     lipgloss.Color("#94e2d5"),
+	Background: lipgloss.Color("#1e1e2e"),
+	Surface:    lipgloss.Color("#313244"),
+	Muted:      lipgloss.Color("#6c7086"),
+	Border:     lipgloss.Color("#45475a"),
+	Foreground: lipgloss.Color("#cdd6f4"),
+	Success:    lipgloss.Color("#a6e3a1"),
+	Warning:    lipgloss.Color("#f9e2af"),
+	Error:      lipgloss.Color("#f38ba8"),
+}
+
+// nord is a cool, low-contrast arctic palette.
+var nord = Theme{
+	Primary:    lipgloss.Color("#88c0d0"),
+	Secondary:  lipgloss.Color("#b48ead"),
+	Accent:     lipgloss.Color("#8fbcbb"),
+	Background: lipgloss.Color("#2e3440"),
+	Surface:    lipgloss.Color("#3b4252"),
+	Muted:      lipgloss.Color("#4c566a"),
+	Border:     lipgloss.Color("#434c5e"),
+	Foreground: lipgloss.Color("#d8dee9"),
+	Success:    lipgloss.Color("#a3be8c"),
+	Warning:    lipgloss.Color("#ebcb8b"),
+	Error:      lipgloss.Color("#bf616a"),
+}
+
+// themes is the registry of selectable palettes (the "theme" setting).
+var themes = map[string]Theme{
+	"tokyo":      tokyoNight,
+	"catppuccin": catppuccinMocha,
+	"nord":       nord,
+}
+
+// themeByName resolves a theme name, falling back to tokyo for unknown names.
+func themeByName(name string) Theme {
+	if th, ok := themes[name]; ok {
+		return th
+	}
+	return tokyoNight
+}
+
 // Icons: emoji render on virtually every terminal emulator; these replace the
 // ASCII markers throughout the TUI (kept short so the layout stays stable).
 const (

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -683,6 +684,11 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 		c.EmbeddingServerURL = value
 	case "data_dir":
 		c.DataDir = value
+	case "theme":
+		if !slices.Contains(config.ThemeOptions, value) {
+			return fmt.Errorf("theme must be one of: %s", strings.Join(config.ThemeOptions, ", "))
+		}
+		c.Theme = value
 	case "context_window":
 		n, err := strconv.Atoi(value)
 		if err != nil {

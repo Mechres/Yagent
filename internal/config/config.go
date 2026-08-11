@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,12 +26,14 @@ type Config struct {
 	// EmbeddingServerURL is where /v1/embeddings is served; defaults to
 	// ServerURL. Set it to a dedicated embedding server (e.g. a second
 	// llama-server running bge-m3) for better recall.
-	EmbeddingServerURL string       `yaml:"embedding_server_url"`
-	DataDir            string       `yaml:"data_dir"`
-	ContextWindow      int          `yaml:"context_window"`
-	Skills             SkillsConfig `yaml:"skills"`
-	Web                WebConfig    `yaml:"web_search"`
-	Shell              ShellConfig  `yaml:"shell"`
+	EmbeddingServerURL string `yaml:"embedding_server_url"`
+	DataDir            string `yaml:"data_dir"`
+	ContextWindow      int    `yaml:"context_window"`
+	// Theme is the TUI color palette name (tokyo, catppuccin, nord).
+	Theme  string       `yaml:"theme"`
+	Skills SkillsConfig `yaml:"skills"`
+	Web    WebConfig    `yaml:"web_search"`
+	Shell  ShellConfig  `yaml:"shell"`
 	// Consult points the `consult` tool at a second local model ("advisor")
 	// the agent can ask for guidance. Empty = disabled.
 	Consult ConsultConfig `yaml:"consult"`
@@ -93,7 +96,11 @@ const (
 	DefaultModel          = "qwen2.5-coder:14b"
 	DefaultEmbeddingModel = "nomic-embed-text"
 	DefaultContextWindow  = 16384
+	DefaultTheme          = "tokyo"
 )
+
+// ThemeOptions are the selectable TUI palette names.
+var ThemeOptions = []string{"tokyo", "catppuccin", "nord"}
 
 // EnvVarServerURL / EnvVarModel / EnvVarEmbeddingModel / EnvVarDataDir are the
 // environment variable overrides, applied on top of whatever the config file
@@ -106,6 +113,7 @@ const (
 	EnvVarEmbeddingServer = "YAGENT_EMBEDDING_SERVER_URL"
 	EnvVarDataDir         = "YAGENT_DATA_DIR"
 	EnvVarContextWindow   = "YAGENT_CONTEXT_WINDOW"
+	EnvVarTheme           = "YAGENT_THEME"
 	EnvVarWebProvider     = "YAGENT_WEB_SEARCH_PROVIDER"
 	EnvVarSearxngURL      = "YAGENT_SEARXNG_URL"
 	EnvVarConsultServer   = "YAGENT_CONSULT_SERVER_URL"
@@ -147,6 +155,7 @@ func LoadConfig(path string) (*Config, error) {
 		Model:          DefaultModel,
 		EmbeddingModel: DefaultEmbeddingModel,
 		ContextWindow:  DefaultContextWindow,
+		Theme:          DefaultTheme,
 		Skills:         SkillsConfig{WriteApproval: false},
 	}
 	dataDir, err := DefaultDataDir()
@@ -210,6 +219,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if v := os.Getenv(EnvVarDataDir); v != "" {
 		cfg.DataDir = v
+	}
+	if v := os.Getenv(EnvVarTheme); v != "" {
+		cfg.Theme = v
 	}
 	if v := os.Getenv(EnvVarContextWindow); v != "" {
 		n, err := strconv.Atoi(v)
@@ -302,6 +314,7 @@ func Settings() []SettingKey {
 		{Key: "embedding_server_url", Label: "Embedding server URL"},
 		{Key: "context_window", Label: "Context window (tokens)"},
 		{Key: "data_dir", Label: "Data dir"},
+		{Key: "theme", Label: "TUI theme", Options: ThemeOptions},
 		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng"}},
 		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
 		{Key: "skills.write_approval", Label: "Skills write approval", Options: []string{"false", "true"}},
@@ -331,6 +344,8 @@ func (c *Config) Get(key string) string {
 		return strconv.Itoa(c.ContextWindow)
 	case "data_dir":
 		return c.DataDir
+	case "theme":
+		return c.Theme
 	case "web_search.provider":
 		return c.Web.Provider
 	case "web_search.searxng_url":
@@ -420,6 +435,7 @@ func validateKey(parts []string, value string) error {
 	known := map[string]bool{
 		"server_url": true, "model": true, "api_key": true, "embedding_model": true,
 		"embedding_server_url": true, "context_window": true, "data_dir": true,
+		"theme":               true,
 		"web_search.provider": true, "web_search.searxng_url": true,
 		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
 		"shell.sandbox":      true,
@@ -444,6 +460,10 @@ func validateKey(parts []string, value string) error {
 		case "duckduckgo", "mojeek", "searxng":
 		default:
 			return &ValidationError{msg: "web_search.provider must be duckduckgo, mojeek or searxng"}
+		}
+	case "theme":
+		if !slices.Contains(ThemeOptions, value) {
+			return &ValidationError{msg: "theme must be one of: " + strings.Join(ThemeOptions, ", ")}
 		}
 	case "shell.sandbox":
 		if value != "" && value != "bwrap" {

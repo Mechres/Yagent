@@ -105,8 +105,9 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		m.workspace = ws
 	}
 	m.branch = gitBranch(m.workspace)
+	m.th = themeByName(cfg.Theme)
 	m.spinner = spinner.New(spinner.WithSpinner(spinner.MiniDot),
-		spinner.WithStyle(lipgloss.NewStyle().Foreground(tokyoNight.Primary)))
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(m.th.Primary)))
 	m.viewport = viewport.New(80, 20)
 	m.viewport.KeyMap.Up.SetEnabled(false) // avoid clashing with the text input
 	m.viewport.KeyMap.Down.SetEnabled(false)
@@ -187,6 +188,7 @@ type tuiModel struct {
 	width  int
 	height int
 	branch string
+	th     Theme
 
 	transcript  []string
 	stream      strings.Builder
@@ -283,6 +285,7 @@ func (m *tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else if err := applySetting(m.cfg, m.env.registry, entry.Key, value); err != nil {
 				m.append("  error: " + err.Error())
 			} else {
+				m.applyThemeLive(entry.Key, value)
 				m.append(fmt.Sprintf("  %s = %s (saved)", entry.Key, value))
 			}
 			m.editing = false
@@ -343,7 +346,16 @@ func (m *tuiModel) saveChoice(entry config.SettingKey) {
 		m.append("  error: " + err.Error())
 		return
 	}
+	m.applyThemeLive(entry.Key, value)
 	m.append(fmt.Sprintf("  %s = %s (saved)", entry.Key, value))
+}
+
+// applyThemeLive switches the rendered palette immediately when the theme
+// setting changes from the settings page.
+func (m *tuiModel) applyThemeLive(key, value string) {
+	if key == "theme" {
+		m.th = themeByName(value)
+	}
 }
 
 func indexOf(list []string, value string) int {
@@ -478,7 +490,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = msg.respond
 		m.approveArg = msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments)
 		m.append(fmt.Sprintf("  %s [%s] %s", iconWarn, msg.risk, m.approveArg))
-		if d := fsApprovalDiff(m.workspace, msg.call); d != "" {
+		if d := fsApprovalDiff(m.th, m.workspace, msg.call); d != "" {
 			m.append(d)
 		}
 		m.append("  allow? (y/n)")
@@ -571,7 +583,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 // fsApprovalDiff renders a colorized before/after preview for fs_edit and
 // fs_write approval prompts. Returns "" when the call isn't one of those or
 // can't be read.
-func fsApprovalDiff(ws string, call llm.ToolCall) string {
+func fsApprovalDiff(th Theme, ws string, call llm.ToolCall) string {
 	var args struct {
 		Path      string `json:"path"`
 		OldString string `json:"old_string"`
@@ -597,7 +609,7 @@ func fsApprovalDiff(ws string, call llm.ToolCall) string {
 	default:
 		return ""
 	}
-	return renderApprovalDiff(oldText, newText)
+	return renderApprovalDiff(th, oldText, newText)
 }
 
 // approvePath resolves a model path relative to the workspace, rejecting
@@ -616,12 +628,12 @@ func approvePath(ws, p string) (string, error) {
 
 // renderApprovalDiff is a colorized line diff (additions in theme green,
 // removals in theme red) for approval previews.
-func renderApprovalDiff(oldText, newText string) string {
+func renderApprovalDiff(th Theme, oldText, newText string) string {
 	oldLines := splitKeepEmpty(oldText)
 	newLines := splitKeepEmpty(newText)
-	green := lipgloss.NewStyle().Foreground(tokyoNight.Success)
-	red := lipgloss.NewStyle().Foreground(tokyoNight.Error)
-	hunk := lipgloss.NewStyle().Foreground(tokyoNight.Secondary)
+	green := lipgloss.NewStyle().Foreground(th.Success)
+	red := lipgloss.NewStyle().Foreground(th.Error)
+	hunk := lipgloss.NewStyle().Foreground(th.Secondary)
 	var b strings.Builder
 	max := len(oldLines)
 	if len(newLines) > max {
@@ -766,9 +778,9 @@ func (m *tuiModel) settingsView() string {
 	keyW := 24
 	valueW := 44
 
-	marker := lipgloss.NewStyle().Foreground(tokyoNight.Primary).Render("▸")
-	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Foreground)
-	valStyle := lipgloss.NewStyle().Foreground(tokyoNight.Muted)
+	marker := lipgloss.NewStyle().Foreground(m.th.Primary).Render("▸")
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(m.th.Foreground)
+	valStyle := lipgloss.NewStyle().Foreground(m.th.Muted)
 
 	var rows []string
 	for i, s := range keys {
@@ -782,7 +794,7 @@ func (m *tuiModel) settingsView() string {
 		if i == m.settingsIdx {
 			line := fmt.Sprintf("%-*s %s", keyW, s.Key, value)
 			rows = append(rows, marker+" "+lipgloss.NewStyle().
-				Background(tokyoNight.Surface).
+				Background(m.th.Surface).
 				Bold(true).
 				Render(line))
 		} else {
@@ -790,22 +802,22 @@ func (m *tuiModel) settingsView() string {
 		}
 	}
 
-	title := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary).
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
 		Render(iconGear + " Yagent settings")
-	body := lipgloss.NewStyle().Foreground(tokyoNight.Foreground).Render(strings.Join(rows, "\n"))
-	hint := lipgloss.NewStyle().Foreground(tokyoNight.Muted).
+	body := lipgloss.NewStyle().Foreground(m.th.Foreground).Render(strings.Join(rows, "\n"))
+	hint := lipgloss.NewStyle().Foreground(m.th.Muted).
 		Render("↑/↓ move   ·   enter edit (saved immediately)   ·   esc close")
 
 	page := title + "\n\n" + body + "\n\n" + hint
 	if m.editing {
 		field := keys[m.settingsIdx].Key
-		prompt := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary).
+		prompt := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
 			Render("edit " + field + ": ")
 		page += "\n\n" + prompt + m.editInput.View()
 	}
 	if m.choosing {
 		field := keys[m.settingsIdx].Key
-		cur := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary)
+		cur := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary)
 		var opts []string
 		for i, o := range keys[m.settingsIdx].Options {
 			if i == m.choosingIdx {
@@ -814,13 +826,13 @@ func (m *tuiModel) settingsView() string {
 				opts = append(opts, o)
 			}
 		}
-		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary).
+		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
 			Render("choose "+field+": ") + strings.Join(opts, "   ") +
-			"\n" + lipgloss.NewStyle().Foreground(tokyoNight.Muted).
+			"\n" + lipgloss.NewStyle().Foreground(m.th.Muted).
 			Render("←/→ change   ·   enter save   ·   esc cancel")
 	}
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
-		BorderForeground(tokyoNight.Primary).
+		BorderForeground(m.th.Primary).
 		Padding(0, 1).Render(page)
 }
 
@@ -858,10 +870,10 @@ func (m *tuiModel) loadHistoryIntoTranscript(history []llm.Message, summary stri
 // sessionsView renders the session browser (shown as a centered modal over the
 // transcript).
 func (m *tuiModel) sessionsView() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary).
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
 		Render(iconSession + " Sessions")
-	marker := lipgloss.NewStyle().Foreground(tokyoNight.Primary).Render("▸")
-	dim := lipgloss.NewStyle().Foreground(tokyoNight.Muted)
+	marker := lipgloss.NewStyle().Foreground(m.th.Primary).Render("▸")
+	dim := lipgloss.NewStyle().Foreground(m.th.Muted)
 	rows := make([]string, 0, len(m.sessions))
 	for i, s := range m.sessions {
 		titleTxt := s.Title
@@ -873,7 +885,7 @@ func (m *tuiModel) sessionsView() string {
 		}
 		line := fmt.Sprintf("%s  %4d msgs  %s", s.ID[:8], s.Messages, titleTxt)
 		if i == m.sessionsIdx {
-			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(tokyoNight.Surface).
+			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(m.th.Surface).
 				Bold(true).Render(line))
 		} else {
 			rows = append(rows, "  "+dim.Render(line))
@@ -885,15 +897,15 @@ func (m *tuiModel) sessionsView() string {
 	body := strings.Join(rows, "\n")
 	hint := dim.Render("↑/↓ pick · enter commands · r resume · f fork · e export · d delete (twice) · esc close")
 	if m.sessionsConfirm {
-		hint = lipgloss.NewStyle().Foreground(tokyoNight.Error).Render("  delete this session? press d again to confirm, any key to cancel")
+		hint = lipgloss.NewStyle().Foreground(m.th.Error).Render("  delete this session? press d again to confirm, any key to cancel")
 	}
 	if m.sessionsAction != "" {
-		action := lipgloss.NewStyle().Foreground(tokyoNight.Primary).Render(m.sessionsAction)
+		action := lipgloss.NewStyle().Foreground(m.th.Primary).Render(m.sessionsAction)
 		body += "\n\n" + action
 	}
-	bodyStyle := lipgloss.NewStyle().Foreground(tokyoNight.Foreground).Render(body)
+	bodyStyle := lipgloss.NewStyle().Foreground(m.th.Foreground).Render(body)
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
-		BorderForeground(tokyoNight.Primary).
+		BorderForeground(m.th.Primary).
 		Padding(0, 1).Render(title + "\n\n" + bodyStyle + "\n\n" + hint)
 }
 
@@ -970,10 +982,10 @@ func (m *tuiModel) View() string {
 	out += m.input.View() + "\n"
 	out += m.statusView()
 	if m.settingsOpen {
-		out = overlayModal(m.settingsView(), m.width, m.height)
+		out = overlayModal(m.th, m.settingsView(), m.width, m.height)
 	}
 	if m.sessionsOpen {
-		out = overlayModal(m.sessionsView(), m.width, m.height)
+		out = overlayModal(m.th, m.sessionsView(), m.width, m.height)
 	}
 	return out
 }
@@ -998,7 +1010,7 @@ func (m *tuiModel) showPopover() bool {
 
 // headerView is the persistent top bar: app, workspace, model, session, branch.
 func (m *tuiModel) headerView() string {
-	th := tokyoNight
+	th := m.th
 	title := th.pill(th.Primary, lipgloss.Color("#15161e"), true).Render(iconYOLO + " YAGENT")
 	parts := []string{title}
 	if m.workspace != "" {
@@ -1017,7 +1029,7 @@ func (m *tuiModel) headerView() string {
 
 // statusView is the bottom pill bar: state, context gauge, tokens, tools, yolo.
 func (m *tuiModel) statusView() string {
-	th := tokyoNight
+	th := m.th
 	state, color := m.statusText()
 	statePill := th.pill(th.Surface, color, true).Render(state)
 	var parts []string
@@ -1033,7 +1045,7 @@ func (m *tuiModel) statusView() string {
 
 // ctxGauge renders the context gauge: "used/limit ██████░░░░ 38%".
 func (m *tuiModel) ctxGauge(used, limit int) string {
-	th := tokyoNight
+	th := m.th
 	pct := 0.0
 	if limit > 0 {
 		pct = float64(used) / float64(limit)
@@ -1061,7 +1073,7 @@ func (m *tuiModel) ctxGauge(used, limit int) string {
 // statusText is the state segment of the status bar: a spinner/kaomoji marker,
 // the state word and the current turn's token count.
 func (m *tuiModel) statusText() (string, lipgloss.Color) {
-	th := tokyoNight
+	th := m.th
 	state := "ready"
 	marker := "(◕‿◕)"
 	color := th.Muted
@@ -1088,7 +1100,7 @@ func (m *tuiModel) statusText() (string, lipgloss.Color) {
 // popoverView renders the "/" command palette as a bordered box above the
 // input, listing the commands that match what the user is typing.
 func (m *tuiModel) popoverView() string {
-	th := tokyoNight
+	th := m.th
 	matches := m.slashMatches()
 	shown := matches
 	if len(shown) > 6 {
@@ -1114,7 +1126,7 @@ func (m *tuiModel) popoverView() string {
 
 // overlayModal centers a bordered modal, filling the rest of the screen with
 // the theme background.
-func overlayModal(modal string, width, height int) string {
+func overlayModal(th Theme, modal string, width, height int) string {
 	if width == 0 || height == 0 {
 		return modal + "\n"
 	}
@@ -1122,7 +1134,7 @@ func overlayModal(modal string, width, height int) string {
 		lipgloss.Center, lipgloss.Center,
 		modal,
 		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(tokyoNight.Background),
+		lipgloss.WithWhitespaceForeground(th.Background),
 	)
 }
 

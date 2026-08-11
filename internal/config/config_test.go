@@ -394,6 +394,45 @@ func TestSetGeneralAndValidation(t *testing.T) {
 	}
 }
 
+func TestLoadConfigTheme(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarTheme, "")
+	// default
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Theme != DefaultTheme {
+		t.Errorf("default theme = %q, want %q", cfg.Theme, DefaultTheme)
+	}
+	// from file
+	path := writeConfig(t, "theme: nord\n")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Theme != "nord" {
+		t.Errorf("file theme = %q", cfg.Theme)
+	}
+	// env beats file
+	t.Setenv(EnvVarTheme, "catppuccin")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Theme != "catppuccin" {
+		t.Errorf("env theme = %q", cfg.Theme)
+	}
+	// validation
+	err = Set(path, "theme", "beige")
+	if err == nil {
+		t.Error("invalid theme should be rejected")
+	}
+	if err := Set(path, "theme", "nord"); err != nil {
+		t.Errorf("valid theme rejected: %v", err)
+	}
+}
+
 func TestSettingsCatalogAndGet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(EnvVarServerURL, "")
