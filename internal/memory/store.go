@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS summaries (
     summary      TEXT NOT NULL,
     covers_until INTEGER NOT NULL
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content);
 `
 
 // Store is the SQLite-backed session store.
@@ -87,7 +89,42 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
-	return &Store{db: db, dir: dir}, nil
+	st := &Store{db: db, dir: dir}
+	if err := st.backfillFTS(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill search index: %w", err)
+	}
+	return st, nil
+}
+
+// backfillFTS indexes messages written before the FTS table existed.
+func (s *Store) backfillFTS() error {
+	var msgs, fts int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&msgs); err != nil {
+		return err
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM messages_fts`).Scan(&fts); err != nil {
+		return err
+	}
+	if msgs <= fts {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT id, content FROM messages`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var content string
+		if err := rows.Scan(&id, &content); err != nil {
+			return err
+		}
+		if _, err := s.db.Exec(`INSERT INTO messages_fts (rowid, content) VALUES (?, ?)`, id, scrub.Text(content)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // Close releases the database handle.
@@ -134,6 +171,10 @@ func (s *Store) Append(ctx context.Context, sessionID string, msg Message) (int6
 		return 0, fmt.Errorf("insert message: %w", err)
 	}
 	id, _ := res.LastInsertId()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO messages_fts (rowid, content) VALUES (?, ?)`,
+		id, scrub.Text(msg.Content)); err != nil {
+		return 0, fmt.Errorf("index message: %w", err)
+	}
 
 	if msg.Role == "user" {
 		if _, err := s.db.ExecContext(ctx,
@@ -236,6 +277,73 @@ func (s *Store) SetSummary(ctx context.Context, sessionID, summary string, msgID
 	return nil
 }
 
+// MessageHit is one full-text search result across sessions.
+type MessageHit struct {
+	MessageID int64
+	SessionID string
+	Title     string
+	Role      string
+	Snippet   string
+}
+
+// SearchMessages runs a full-text search over all stored messages (FTS5),
+// newest first, capped at limit.
+func (s *Store) SearchMessages(ctx context.Context, query string, limit int) ([]MessageHit, error) {
+	q, ok := ftsQuery(query)
+	if !ok {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT m.id, s.id, s.title, m.role, snippet(messages_fts, 0, '[', ']', '…', 12)
+		 FROM messages_fts f
+		 JOIN messages m ON m.id = f.rowid
+		 JOIN sessions s ON s.id = m.session_id
+		 WHERE messages_fts MATCH ?
+		 ORDER BY f.rank LIMIT ?`, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search messages: %w", err)
+	}
+	defer rows.Close()
+	var out []MessageHit
+	for rows.Next() {
+		var h MessageHit
+		if err := rows.Scan(&h.MessageID, &h.SessionID, &h.Title, &h.Role, &h.Snippet); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// RenderMarkdown renders a session's transcript as Markdown for export.
+func (s *Store) RenderMarkdown(ctx context.Context, sessionID string) (string, error) {
+	history, err := s.History(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Yagent session %s\n\n", sessionID)
+	for _, m := range history {
+		switch m.Role {
+		case "user":
+			fmt.Fprintf(&b, "## User\n\n%s\n\n", m.Content)
+		case "assistant":
+			body := m.Content
+			if body == "" {
+				body = "(tool calls)"
+			}
+			fmt.Fprintf(&b, "## Assistant\n\n%s\n\n", body)
+		case "tool":
+			fmt.Fprintf(&b, "<details><summary>tool result</summary>\n\n```\n%s\n```\n\n</details>\n\n", m.Content)
+		}
+	}
+	return b.String(), nil
+}
+
+// ftsQuery builds a safe FTS5 MATCH string from the query's word tokens.
 func nullIfEmpty(s string) any {
 	if s == "" {
 		return nil

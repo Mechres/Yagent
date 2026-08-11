@@ -38,6 +38,14 @@ CREATE TABLE IF NOT EXISTS index_chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_index_chunks_path ON index_chunks(path);
 CREATE VIRTUAL TABLE IF NOT EXISTS index_chunks_fts USING fts5(content);
+CREATE TABLE IF NOT EXISTS index_symbols (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    path  TEXT NOT NULL,
+    name  TEXT NOT NULL,
+    kind  TEXT NOT NULL,
+    line  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_symbols_name ON index_symbols(name, kind);
 `
 
 // Summary reports what one Index pass did.
@@ -141,11 +149,17 @@ func (s *Store) Index(ctx context.Context) (Summary, error) {
 		if err := s.removeChunks(ctx, rel); err != nil {
 			return sum, err
 		}
+		if err := s.removeSymbols(ctx, rel); err != nil {
+			return sum, err
+		}
 		chunks := chunkSource(rel, string(content))
 		if len(chunks) == 0 {
 			continue
 		}
 		newChunks = append(newChunks, chunks...)
+		if err := s.indexSymbols(ctx, rel, string(content)); err != nil {
+			return sum, err
+		}
 		sum.Files++
 		s.progressf("indexing %s (%d chunks)", rel, len(chunks))
 	}
@@ -182,6 +196,9 @@ func (s *Store) Index(ctx context.Context) (Summary, error) {
 	rows.Close()
 	for _, rel := range stale {
 		if err := s.removeChunks(ctx, rel); err != nil {
+			return sum, err
+		}
+		if err := s.removeSymbols(ctx, rel); err != nil {
 			return sum, err
 		}
 		if _, err := s.db.ExecContext(ctx, `DELETE FROM index_files WHERE path = ?`, rel); err != nil {
@@ -277,6 +294,59 @@ func (s *Store) removeChunks(ctx context.Context, rel string) error {
 		return fmt.Errorf("remove chunk rows: %w", err)
 	}
 	return nil
+}
+
+// indexSymbols stores the top-level declaration symbols of a file.
+func (s *Store) indexSymbols(ctx context.Context, rel, content string) error {
+	for _, sym := range symbolsFor(rel, content) {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO index_symbols (path, name, kind, line) VALUES (?, ?, ?, ?)`,
+			sym.Path, sym.Name, sym.Kind, sym.Line); err != nil {
+			return fmt.Errorf("insert symbol: %w", err)
+		}
+	}
+	return nil
+}
+
+// removeSymbols deletes a file's symbols.
+func (s *Store) removeSymbols(ctx context.Context, rel string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM index_symbols WHERE path = ?`, rel); err != nil {
+		return fmt.Errorf("remove symbols: %w", err)
+	}
+	return nil
+}
+
+// SymbolResult is one exact-name symbol match.
+type SymbolResult struct {
+	Path string
+	Name string
+	Kind string
+	Line int
+}
+
+// SearchSymbol finds declarations by exact name, optionally filtered by kind.
+func (s *Store) SearchSymbol(ctx context.Context, name, kind string) ([]SymbolResult, error) {
+	q := `SELECT path, name, kind, line FROM index_symbols WHERE name = ?`
+	args := []any{name}
+	if kind != "" {
+		q += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	q += ` ORDER BY path, line LIMIT 50`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search symbols: %w", err)
+	}
+	defer rows.Close()
+	var out []SymbolResult
+	for rows.Next() {
+		var r SymbolResult
+		if err := rows.Scan(&r.Path, &r.Name, &r.Kind, &r.Line); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // lockFiles are skipped even when gitignore doesn't list them.

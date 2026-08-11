@@ -327,3 +327,40 @@ func TestStoreScrubsSecrets(t *testing.T) {
 		t.Errorf("summary leaked a secret: %q", sum)
 	}
 }
+
+func TestSearchMessagesAndRender(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	sess, _ := st.NewSession(ctx, "/tmp/repo")
+	if _, err := st.Append(ctx, sess.ID, Message{Role: "user", Content: "hello world tabs"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, sess.ID, Message{Role: "assistant", Content: "nothing else"}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := st.SearchMessages(ctx, "tabs", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0].Snippet, "tabs") {
+		t.Errorf("hits = %+v", hits)
+	}
+	// no match
+	if hits, _ := st.SearchMessages(ctx, "zzzqqq", 10); len(hits) != 0 {
+		t.Errorf("unexpected hits = %+v", hits)
+	}
+
+	md, err := st.RenderMarkdown(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(md, "hello world tabs") || !strings.Contains(md, "nothing else") {
+		t.Errorf("markdown = %q", md)
+	}
+}

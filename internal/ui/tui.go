@@ -83,7 +83,9 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 				cancel()
 				return
 			case line := <-inputCh:
+				env.undo.StartTurn()
 				answer, err := ag.Run(runnerCtx, line)
+				env.undo.EndTurn()
 				incoming <- turnDoneMsg{answer: answer, err: err}
 			}
 		}
@@ -467,7 +469,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "/help":
 		m.input.Reset()
-		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /skills list|pending|diff|approve|reject|approval /skill-name")
+		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|approve|reject|approval /skill-name")
 		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty")
 		return m, waitIncoming(m.incoming)
 	case "/settings":
@@ -689,7 +691,7 @@ func (m *tuiModel) flushStream() {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>",
+		"/exit", "/clear", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/undo",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}

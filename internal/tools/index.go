@@ -42,16 +42,20 @@ func (t *indexRepoTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 type indexSearchTool struct{ store *index.Store }
 
 type indexSearchArgs struct {
-	Query string `json:"query"`
-	K     int    `json:"k,omitempty"`
+	Query  string `json:"query"`
+	K      int    `json:"k,omitempty"`
+	Symbol string `json:"symbol,omitempty"`
+	Type   string `json:"type,omitempty"`
 }
 
-var indexSearchSchema = fnSchema("index_search", "search the workspace code index semantically for the query; returns matching code chunks with their path:line ranges — use it to find where a function, type or concept lives without grep",
+var indexSearchSchema = fnSchema("index_search", "search the workspace code index: hybrid semantic search by query, or exact symbol lookup by name — set 'symbol' to find a declaration by name (optionally filter with 'type': function/type/namespace). Returns path:line ranges",
 	map[string]any{
-		"query": strProp("what to find, e.g. 'tool argument validation'"),
-		"k":     intProp("max results, default 5, max 10 (optional)"),
+		"query":  strProp("what to find, e.g. 'tool argument validation' (optional when symbol is set)"),
+		"k":      intProp("max results, default 5, max 10 (optional)"),
+		"symbol": strProp("exact symbol/declaration name to look up, e.g. AssembleContext (optional)"),
+		"type":   strProp("filter symbol results by kind: function, type, namespace (optional)"),
 	},
-	[]string{"query"})
+	[]string{})
 
 func (t *indexSearchTool) Schema() llm.ToolSchema { return indexSearchSchema }
 func (t *indexSearchTool) Risk() RiskLevel        { return RiskReadOnly }
@@ -61,8 +65,8 @@ func (t *indexSearchTool) Execute(ctx context.Context, raw json.RawMessage) (str
 	if err := decodeArgs(raw, &a); err != nil {
 		return "", err
 	}
-	if a.Query == "" {
-		return "", validationErrorf(`argument "query" is required`)
+	if a.Query == "" && a.Symbol == "" {
+		return "", validationErrorf(`either "query" or "symbol" is required`)
 	}
 	if a.K <= 0 {
 		a.K = 5
@@ -72,6 +76,9 @@ func (t *indexSearchTool) Execute(ctx context.Context, raw json.RawMessage) (str
 	}
 	if t.store == nil {
 		return "error: code index is not configured for this session", nil
+	}
+	if a.Symbol != "" {
+		return t.symbolLookup(ctx, a)
 	}
 	results, err := t.store.Search(ctx, a.Query, a.K)
 	if err != nil {
@@ -90,4 +97,30 @@ func (t *indexSearchTool) Execute(ctx context.Context, raw json.RawMessage) (str
 		b.WriteString(snippet + "\n\n")
 	}
 	return capResult(b.String(), maxResultBytes), nil
+}
+
+// symbolLookup returns exact-name symbol matches with their surrounding chunk.
+func (t *indexSearchTool) symbolLookup(ctx context.Context, a indexSearchArgs) (string, error) {
+	symbols, err := t.store.SearchSymbol(ctx, a.Symbol, a.Type)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+	if len(symbols) == 0 {
+		return fmt.Sprintf("no symbol named %q%sfound (run index_repo first?)", a.Symbol, kindNote(a.Type)), nil
+	}
+	if len(symbols) > a.K {
+		symbols = symbols[:a.K]
+	}
+	var b strings.Builder
+	for _, s := range symbols {
+		fmt.Fprintf(&b, "%s:%d [%s] %s\n", s.Path, s.Line, s.Kind, s.Name)
+	}
+	return capResult(b.String(), maxResultBytes), nil
+}
+
+func kindNote(kind string) string {
+	if kind == "" {
+		return " "
+	}
+	return " of kind " + kind + " "
 }

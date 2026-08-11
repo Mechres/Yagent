@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"yagent/internal/llm"
+	"yagent/internal/undo"
 )
 
 var (
@@ -97,7 +98,10 @@ func isBinary(data []byte) bool {
 
 // ---------- fs_write ----------
 
-type fsWriteTool struct{ ws string }
+type fsWriteTool struct {
+	ws   string
+	undo *undo.Buffer
+}
 
 type fsWriteArgs struct {
 	Path    string `json:"path"`
@@ -117,6 +121,14 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		return "", err
 	}
 	old, oldErr := os.ReadFile(path)
+	if t.undo != nil {
+		// nil Old records "did not exist" so undo can delete the file.
+		if oldErr == nil {
+			t.undo.Record(path, old)
+		} else {
+			t.undo.Record(path, nil)
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Sprintf("error: create parent dirs: %v", err), nil
 	}
@@ -132,7 +144,10 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 
 // ---------- fs_edit ----------
 
-type fsEditTool struct{ ws string }
+type fsEditTool struct {
+	ws   string
+	undo *undo.Buffer
+}
 
 type fsEditArgs struct {
 	Path      string `json:"path"`
@@ -158,6 +173,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Sprintf("error: %v; re-read the file first with fs_read", err), nil
+	}
+	if t.undo != nil {
+		t.undo.Record(path, data)
 	}
 	old := string(data)
 	n := strings.Count(old, a.OldString)

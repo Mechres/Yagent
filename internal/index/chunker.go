@@ -30,6 +30,98 @@ const (
 	maxFileBytes = 512 << 10
 )
 
+// Symbol is one top-level declaration's identity (for symbol-aware search).
+type Symbol struct {
+	Path string
+	Name string
+	Kind string // friendly kind: function, type, namespace, ...
+	Line int    // 1-based
+}
+
+// symbolsFor extracts top-level declaration symbols (name, kind, line) from a
+// supported language's source. Returns nil for unsupported files or when no
+// declarations are found.
+func symbolsFor(path, content string) []Symbol {
+	lang := languageFor(path)
+	if lang == nil {
+		return nil
+	}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(lang.lang); err != nil {
+		return nil
+	}
+	tree := parser.Parse([]byte(content), nil)
+	if tree == nil {
+		return nil
+	}
+	defer tree.Close()
+	root := tree.RootNode()
+
+	var out []Symbol
+	for i := uint(0); i < root.NamedChildCount(); i++ {
+		node := root.NamedChild(i)
+		if !lang.decl[node.Kind()] {
+			continue
+		}
+		name := declName(node, content)
+		if name == "" {
+			continue
+		}
+		out = append(out, Symbol{
+			Path: path,
+			Name: name,
+			Kind: friendlyKind(node.Kind()),
+			Line: int(node.StartPosition().Row) + 1,
+		})
+	}
+	return out
+}
+
+// declName extracts the identifier a declaration node names, via the grammar's
+// "name" field or the first identifier-like descendant.
+func declName(n *sitter.Node, content string) string {
+	if name := n.ChildByFieldName("name"); name != nil {
+		return content[name.StartByte():name.EndByte()]
+	}
+	var found string
+	var walk func(*sitter.Node)
+	walk = func(x *sitter.Node) {
+		if found != "" {
+			return
+		}
+		switch x.Kind() {
+		case "identifier", "type_identifier", "field_identifier", "type_name",
+			"class_name", "function_name", "method_name":
+			found = content[x.StartByte():x.EndByte()]
+			return
+		}
+		for i := uint(0); i < x.NamedChildCount(); i++ {
+			walk(x.NamedChild(i))
+		}
+	}
+	walk(n)
+	return found
+}
+
+// friendlyKind maps a grammar node kind to a coarse symbol kind.
+func friendlyKind(kind string) string {
+	switch kind {
+	case "function_declaration", "function_item", "method_declaration",
+		"method_definition", "generator_function_declaration", "arrow_function":
+		return "function"
+	case "struct_item", "struct_specifier", "class_declaration", "class_specifier",
+		"record_declaration", "impl_item", "interface_declaration", "trait_item",
+		"enum_declaration", "enum_item", "union_specifier", "type_alias_declaration",
+		"type_item", "typedef_declaration":
+		return "type"
+	case "namespace_definition", "mod_item":
+		return "namespace"
+	default:
+		return kind
+	}
+}
+
 // Chunk is one indexed unit of source text.
 type Chunk struct {
 	Path      string

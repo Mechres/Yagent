@@ -45,7 +45,14 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   This is also the natural M7 evidence: run an autonomous goal and watch whether
   the single loop bottlenecks.
 - ✅ `consult` tool (M6.13): a second local "advisor" model (`consult.server_url`
-  / `consult.model`) the agent can ask for a second opinion.
+  / `consult.model`), a cloud OpenAI-compatible endpoint (`consult.api_key`), or
+  an installed terminal AI app (`consult.cmd`, e.g. `[claude, -p]`).
+- ✅ Session mgmt (M6.15): `yagent sessions search <q>` + `yagent sessions
+  export <id>`.
+- ✅ `/undo` (M6.15): in-memory per-turn file-write buffer; reverts the last
+  turn's fs_write/fs_edit (incl. created files).
+- ✅ Symbol-aware search (M6.15): top-level decls indexed into `index_symbols`;
+  `index_search` supports `symbol:`/`type:` exact lookups.
 - 🟡 Subagent primitive (`SpawnSubagent`) — M7 proper. Gated: only start if the
   loop-mode evals show the single loop is the bottleneck.
 - 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and

@@ -64,7 +64,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "sessions":
-		if err := runSessions(cfg); err != nil {
+		if err := runSessionsCmd(cfg, args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -154,7 +154,7 @@ esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--plain] [--yolo] | yagent sessions | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 
@@ -216,6 +216,87 @@ func runSkills(cfg *config.Config, args []string, scope string) error {
 	default:
 		return fmt.Errorf("unknown skills command %q (list | import)", args[0])
 	}
+}
+
+// runSessionsCmd dispatches `yagent sessions [search <q> | export <id>]`.
+func runSessionsCmd(cfg *config.Config, args []string) error {
+	if len(args) == 0 {
+		return runSessions(cfg)
+	}
+	switch args[0] {
+	case "search":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: yagent sessions search <query>")
+		}
+		return runSessionSearch(cfg, args[1])
+	case "export":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: yagent sessions export <id> [--output file.md]")
+		}
+		output := ""
+		if len(args) > 2 {
+			if args[2] == "--output" {
+				if len(args) < 4 {
+					return fmt.Errorf("usage: yagent sessions export <id> [--output file.md]")
+				}
+				output = args[3]
+			} else {
+				return fmt.Errorf("unknown option %q (use --output)", args[2])
+			}
+		}
+		return runSessionExport(cfg, args[1], output)
+	}
+	return fmt.Errorf("unknown sessions command %q (search | export)", args[0])
+}
+
+// runSessionSearch full-text searches across all sessions' messages.
+func runSessionSearch(cfg *config.Config, query string) error {
+	st, err := memory.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	hits, err := st.SearchMessages(context.Background(), query, 20)
+	if err != nil {
+		return err
+	}
+	if len(hits) == 0 {
+		fmt.Println("no matches")
+		return nil
+	}
+	for _, h := range hits {
+		title := h.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+		fmt.Printf("%s  [%s] %s\n  %s\n", h.SessionID[:8], h.Role, title, h.Snippet)
+	}
+	return nil
+}
+
+// runSessionExport renders a session transcript as Markdown.
+func runSessionExport(cfg *config.Config, id, output string) error {
+	st, err := memory.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	md, err := st.RenderMarkdown(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	if output == "-" {
+		fmt.Print(md)
+		return nil
+	}
+	if output == "" {
+		output = "session-" + id + ".md"
+	}
+	if err := os.WriteFile(output, []byte(md), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("exported %s -> %s\n", id[:8], output)
+	return nil
 }
 
 // runSessions lists persisted sessions, newest first.

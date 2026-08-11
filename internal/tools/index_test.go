@@ -83,3 +83,36 @@ func validateToolInput(name string) error {
 		t.Errorf("index_search k cap = %q", got)
 	}
 }
+
+func TestIndexSearchSymbol(t *testing.T) {
+	ts := indexEmbedServer(t)
+	defer ts.Close()
+	ws := t.TempDir()
+	writeFile(t, ws, "pkg/tool.go", `package pkg
+
+// validateToolInput checks tool arguments before dispatch.
+func validateToolInput(name string) error {
+	return nil
+}
+`)
+	idx, err := index.Open(ws, t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(ws, Options{Index: idx})
+	if got := skillExec(t, reg, "index_repo", map[string]any{}); !strings.Contains(got, "indexed 1 files") {
+		t.Fatalf("index_repo = %q", got)
+	}
+	got := skillExec(t, reg, "index_search", map[string]any{"symbol": "validateToolInput"})
+	if !strings.Contains(got, "pkg/tool.go:4") || !strings.Contains(got, "function") {
+		t.Errorf("symbol lookup = %q", got)
+	}
+	// kind filter + no match
+	if got := skillExec(t, reg, "index_search", map[string]any{"symbol": "validateToolInput", "type": "type"}); !strings.Contains(got, "no symbol") {
+		t.Errorf("kind-filtered = %q", got)
+	}
+	// missing both args
+	if got := skillExec(t, reg, "index_search", map[string]any{}); !strings.Contains(got, "validation-error") {
+		t.Errorf("no args = %q", got)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"yagent/internal/llm"
 	"yagent/internal/memory"
 	"yagent/internal/skills"
+	"yagent/internal/undo"
 	"yagent/internal/web"
 )
 
@@ -73,6 +74,8 @@ type Options struct {
 	Web *web.Client
 	// Consult enables the `consult` advisor tool (may be nil).
 	Consult *llm.Client
+	// Undo records file writes for /undo (may be nil).
+	Undo *undo.Buffer
 	// ConsultCmd is an installed terminal AI app used as the advisor, e.g.
 	// ["claude", "-p"] (the prompt is appended as the final argument).
 	ConsultCmd []string
@@ -98,8 +101,8 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	}
 	reg := map[string]Tool{
 		"fs_read":       &fsReadTool{ws: r.workspace},
-		"fs_write":      &fsWriteTool{ws: r.workspace},
-		"fs_edit":       &fsEditTool{ws: r.workspace},
+		"fs_write":      &fsWriteTool{ws: r.workspace, undo: opts.Undo},
+		"fs_edit":       &fsEditTool{ws: r.workspace, undo: opts.Undo},
 		"glob":          &globTool{ws: r.workspace},
 		"grep":          &grepTool{ws: r.workspace},
 		"shell_exec":    &shellExecTool{ws: r.workspace},

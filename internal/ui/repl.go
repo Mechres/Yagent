@@ -19,6 +19,7 @@ import (
 	"yagent/internal/memory"
 	"yagent/internal/skills"
 	"yagent/internal/tools"
+	"yagent/internal/undo"
 	"yagent/internal/web"
 )
 
@@ -181,7 +182,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			fmt.Fprintln(w, "history cleared")
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
@@ -196,7 +197,9 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			continue
 		}
 
+		env.undo.StartTurn()
 		_, err = ag.Run(ctx, line)
+		env.undo.EndTurn()
 		if err != nil {
 			if errors.Is(err, agent.ErrMaxIterations) {
 				fmt.Fprintf(w, "\n[%v — type /clear to start fresh]\n", err)
@@ -230,6 +233,7 @@ type chatEnv struct {
 	initialHistory []llm.Message
 	initialSummary string
 	forkSource     string
+	undo           *undo.Buffer
 }
 
 // runGoalMode drives the agent autonomously toward a goal: each round runs the
@@ -335,7 +339,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 	env := &chatEnv{
 		st: st, vs: vs, sk: sk, idx: idx, web: webClient,
 		sessionID: sessionID, initialHistory: initialHistory, initialSummary: initialSummary,
-		forkSource: forkSource,
+		forkSource: forkSource, undo: undo.New(),
 	}
 	env.registry = tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
@@ -345,6 +349,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		Web:                 webClient,
 		Consult:             consultClient,
 		ConsultCmd:          cfg.Consult.Cmd,
+		Undo:                env.undo,
 		SkillsWriteApproval: cfg.Skills.WriteApproval,
 	})
 	return env, nil
@@ -412,6 +417,8 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 			return h.showSettings()
 		}
 		return h.setSetting(rest)
+	case rest == "undo":
+		return h.undoLastTurn()
 	default:
 		// /skill-name: load a SKILL.md into context and continue.
 		content, warning, err := h.store.View(rest, "")
@@ -548,23 +555,11 @@ func (h *skillsHandler) exportSession(rest string, ag *agent.Agent) (bool, error
 	if len(parts) > 1 {
 		path = parts[1]
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "# Yagent session %s\n\n", h.env.sessionID)
-	for _, m := range ag.History() {
-		switch m.Role {
-		case "user":
-			fmt.Fprintf(&b, "## User\n\n%s\n\n", m.Content)
-		case "assistant":
-			body := m.Content
-			if body == "" {
-				body = "(tool calls)"
-			}
-			fmt.Fprintf(&b, "## Assistant\n\n%s\n\n", body)
-		case "tool":
-			fmt.Fprintf(&b, "<details><summary>tool result</summary>\n\n```\n%s\n```\n\n</details>\n\n", m.Content)
-		}
+	md, err := h.env.st.RenderMarkdown(h.ctx, h.env.sessionID)
+	if err != nil {
+		return true, fmt.Errorf("render session: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
 		return true, fmt.Errorf("write %s: %w", path, err)
 	}
 	fmt.Fprintf(h.w, "saved session to %s\n", path)
@@ -585,6 +580,22 @@ func (h *skillsHandler) pendingIDs(id string) ([]string, error) {
 		ids = append(ids, p.ID)
 	}
 	return ids, nil
+}
+
+// undoLastTurn reverts the file writes from the most recent completed turn.
+func (h *skillsHandler) undoLastTurn() (bool, error) {
+	if h.env == nil || h.env.undo == nil || !h.env.undo.CanUndo() {
+		fmt.Fprintln(h.w, "nothing to undo")
+		return true, nil
+	}
+	entries, err := h.env.undo.UndoLastTurn()
+	if err != nil {
+		return true, err
+	}
+	for _, e := range entries {
+		fmt.Fprintf(h.w, "  reverted %s\n", e.Path)
+	}
+	return true, nil
 }
 
 // showSettings prints every editable setting and its current value.

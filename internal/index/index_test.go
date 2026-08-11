@@ -217,3 +217,41 @@ func TestIndexSearchRelevance(t *testing.T) {
 		t.Errorf("no-vector-signal query = %+v / %v, want non-empty", res, err)
 	}
 }
+
+func TestSymbolsForAndSearch(t *testing.T) {
+	syms := symbolsFor("main.go", `package main
+
+func hello(x int) int { return x + 1 }
+
+type Store struct{ m map[string]int }
+
+func (s *Store) Get(k string) int { return s.m[k] }
+`)
+	foundFunc := false
+	for _, s := range syms {
+		if s.Name == "hello" && s.Kind == "function" && s.Line == 3 {
+			foundFunc = true
+		}
+	}
+	if !foundFunc {
+		t.Errorf("symbols = %+v", syms)
+	}
+
+	// e2e: index a fixture and look the symbol up
+	ts, _ := countingEmbedServer(t)
+	ws := fixtureRepo(t)
+	s := openIndex(t, ws, t.TempDir(), ts.URL)
+	if _, err := s.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.SearchSymbol(context.Background(), "validateToolInput", "")
+	if err != nil || len(res) == 0 {
+		t.Fatalf("SearchSymbol = %+v / %v", res, err)
+	}
+	if res[0].Path != "pkg/a.go" || res[0].Kind != "function" {
+		t.Errorf("symbol = %+v", res[0])
+	}
+	if filtered, _ := s.SearchSymbol(context.Background(), "validateToolInput", "type"); len(filtered) != 0 {
+		t.Errorf("kind filter should exclude functions: %+v", filtered)
+	}
+}
