@@ -119,7 +119,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			fmt.Fprintln(w, "history cleared")
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /help /skills list|pending|diff|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /help /export [file] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
@@ -264,10 +264,12 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 	rest := strings.TrimPrefix(line, "/")
 	switch {
 	case rest == "skills":
-		fmt.Fprintln(h.w, "usage: /skills list | pending | diff <id> | approve <id|all> | reject <id|all> | approval on|off")
+		fmt.Fprintln(h.w, "usage: /skills list | pending | diff <id> | verify <id> | approve <id|all> | reject <id|all> | approval on|off")
 		return true, nil
 	case strings.HasPrefix(rest, "skills "):
 		return h.handleSkills(strings.Fields(rest)[1:])
+	case rest == "export" || strings.HasPrefix(rest, "export "):
+		return h.exportSession(rest, ag)
 	default:
 		// /skill-name: load a SKILL.md into context and continue.
 		content, warning, err := h.store.View(rest, "")
@@ -394,6 +396,37 @@ func (h *skillsHandler) handleSkills(args []string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// exportSession writes the conversation transcript as Markdown (default
+// session-<id>.md in the current directory; override with /export <path>).
+func (h *skillsHandler) exportSession(rest string, ag *agent.Agent) (bool, error) {
+	parts := strings.Fields(rest)
+	path := "session-" + h.env.sessionID + ".md"
+	if len(parts) > 1 {
+		path = parts[1]
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Yagent session %s\n\n", h.env.sessionID)
+	for _, m := range ag.History() {
+		switch m.Role {
+		case "user":
+			fmt.Fprintf(&b, "## User\n\n%s\n\n", m.Content)
+		case "assistant":
+			body := m.Content
+			if body == "" {
+				body = "(tool calls)"
+			}
+			fmt.Fprintf(&b, "## Assistant\n\n%s\n\n", body)
+		case "tool":
+			fmt.Fprintf(&b, "<details><summary>tool result</summary>\n\n```\n%s\n```\n\n</details>\n\n", m.Content)
+		}
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return true, fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Fprintf(h.w, "saved session to %s\n", path)
+	return true, nil
 }
 
 // pendingIDs resolves an id or "all" to the list of staged write ids.

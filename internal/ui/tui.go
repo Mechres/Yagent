@@ -86,10 +86,12 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		input: newInput(),
 	}
 	m.viewport = viewport.New(80, 20)
-	m.viewport.MouseWheelEnabled = true
 	m.viewport.KeyMap.Up.SetEnabled(false) // avoid clashing with the text input
 	m.viewport.KeyMap.Down.SetEnabled(false)
-	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// No mouse capture: wheel scroll is replaced by keyboard scroll (PgUp/PgDn,
+	// arrows when the input is empty, Ctrl-U/D), and leaving the mouse to the
+	// terminal keeps text selection/copy working normally.
+	p := tea.NewProgram(&m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
@@ -160,6 +162,7 @@ type tuiModel struct {
 	pending     chan bool
 	approveArg  string
 	confirmQuit bool
+	follow      bool // follow the bottom of the transcript
 	tabIndex    int
 	lastInput   string
 	err         error
@@ -167,12 +170,13 @@ type tuiModel struct {
 
 func newInput() textinput.Model {
 	in := textinput.New()
-	in.Placeholder = "message (enter to send, ctrl-c to quit)"
+	in.Placeholder = "message (enter to send, ctrl-c to quit, pgup/dn to scroll)"
 	in.CharLimit = 4000
 	return in
 }
 
 func (m *tuiModel) Init() tea.Cmd {
+	m.follow = true
 	return tea.Batch(
 		m.input.Focus(),
 		waitIncoming(m.incoming),
@@ -187,10 +191,22 @@ func (m *tuiModel) append(line string) {
 }
 
 func (m *tuiModel) refreshViewport() {
-	atBottom := m.viewport.AtBottom()
 	m.viewport.SetContent(strings.Join(m.transcript, "\n"))
-	if atBottom {
+	if m.follow {
 		m.viewport.GotoBottom()
+	}
+}
+
+// scroll moves the viewport and drops follow mode when scrolling up.
+func (m *tuiModel) scroll(up bool) {
+	if up {
+		m.follow = false
+		m.viewport.ViewUp()
+	} else {
+		m.viewport.ViewDown()
+		if m.viewport.AtBottom() {
+			m.follow = true
+		}
 	}
 }
 
@@ -200,10 +216,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Width = msg.Width
 		m.viewport.Height = max(5, msg.Height-4)
 		m.refreshViewport()
-		return m, nil
-
-	case tea.MouseMsg:
-		m.viewport, _ = m.viewport.Update(msg)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -236,17 +248,25 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.submitLine()
 		case "tab":
 			if strings.HasPrefix(m.input.Value(), "/") {
-				matches := m.slashMatches()
-				if len(matches) > 0 {
-					m.tabIndex = (m.tabIndex + 1) % len(matches)
-					m.input.SetValue(matches[m.tabIndex])
-					m.input.CursorEnd()
-				}
+				m.completeCommand()
 			}
 			return m, nil
-		case "pgup", "pgdown", "ctrl+u", "ctrl+d":
-			m.viewport, _ = m.viewport.Update(msg)
+		case "pgup", "ctrl+u":
+			m.scroll(true)
 			return m, nil
+		case "pgdown", "ctrl+d":
+			m.scroll(false)
+			return m, nil
+		case "up":
+			if m.input.Value() == "" {
+				m.scroll(true)
+				return m, nil
+			}
+		case "down":
+			if m.input.Value() == "" {
+				m.scroll(false)
+				return m, nil
+			}
 		case "y", "Y":
 			if m.confirmQuit {
 				return m, tea.Quit
@@ -269,7 +289,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenMsg:
 		m.stream.WriteString(msg.delta)
 		m.turnTokens += len(msg.delta) / 4
-		m.refreshViewport()
 		return m, waitIncoming(m.incoming)
 
 	case toolMsg:
@@ -313,12 +332,14 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "/help":
 		m.input.Reset()
-		m.append("commands: /exit /clear /help /skills list|pending|diff|approve|reject|approval /skill-name")
+		m.append("commands: /exit /clear /help /export [file] /skills list|pending|diff|approve|reject|approval /skill-name")
+		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty")
 		return m, waitIncoming(m.incoming)
 	case "/clear":
 		m.input.Reset()
 		m.ag.Reset()
 		m.transcript = nil
+		m.follow = true
 		m.refreshViewport()
 		m.append("history cleared")
 		return m, waitIncoming(m.incoming)
@@ -353,6 +374,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.stream.Reset()
 	m.turnTokens = 0
 	m.toolCalls = 0
+	m.follow = true // new input snaps back to the bottom
 	m.inputCh <- text
 	return m, nil
 }
@@ -369,9 +391,9 @@ func (m *tuiModel) flushStream() {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/help",
+		"/exit", "/clear", "/help", "/export [file]",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
-		"/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
+		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}
 	if m.env != nil && m.env.sk != nil {
 		for _, s := range m.env.sk.List() {
@@ -393,19 +415,36 @@ func (m *tuiModel) slashMatches() []string {
 	return out
 }
 
+// completeCommand implements Tab completion: if the input is already a full
+// command, cycle through ALL commands; otherwise complete to the next prefix
+// match.
+func (m *tuiModel) completeCommand() {
+	cmds := m.slashCommands()
+	val := m.input.Value()
+	for i, c := range cmds {
+		if c == val {
+			m.input.SetValue(cmds[(i+1)%len(cmds)])
+			m.input.CursorEnd()
+			return
+		}
+	}
+	matches := m.slashMatches()
+	if len(matches) > 0 {
+		m.tabIndex = (m.tabIndex + 1) % len(matches)
+		m.input.SetValue(matches[m.tabIndex])
+		m.input.CursorEnd()
+	}
+}
+
 func (m *tuiModel) View() string {
 	if m.err != nil {
 		return m.err.Error() + "\n"
 	}
-	// viewport content already carries the transcript; add the streaming tail
+	// The viewport holds the transcript; the streaming tail renders as its own
+	// line below it so scrolling is never reset by per-frame content updates.
+	out := m.viewport.View() + "\n"
 	if m.stream.Len() > 0 {
-		content := strings.Join(m.transcript, "\n")
-		if content != "" {
-			content += "\n"
-		}
-		content += strings.TrimRight(m.stream.String(), "\n")
-		m.viewport.SetContent(content)
-		m.viewport.GotoBottom()
+		out += strings.TrimRight(m.stream.String(), "\n") + "\n"
 	}
 	used, limit := m.ag.ContextUsage()
 	ctxColor := lipgloss.Color("212")
@@ -416,7 +455,6 @@ func (m *tuiModel) View() string {
 		Bold(true).
 		Foreground(ctxColor).
 		Render(fmt.Sprintf(" %-24s │ ctx %d/%d │ %s ", m.cfg.Model, used, limit, m.statusText()))
-	out := m.viewport.View() + "\n"
 	// "/" menu: show the matching slash commands while typing a command
 	if strings.HasPrefix(m.input.Value(), "/") {
 		if matches := m.slashMatches(); len(matches) > 0 {

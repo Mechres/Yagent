@@ -1,0 +1,32 @@
+# Improvement ideas
+
+- Add missing project files — `LICENSE`, `CONTRIBUTING.md`, example `config.yaml` template.
+- Generate version tag — currently reports "v0.0.0"; consider a `go generate` or `git describe` based versioning.
+- Add build scripts / Makefile — to simplify development workflows (`make test`, `make vet`, `make docker`?).
+- Document API endpoints — add HTTP docs or OpenAPI spec for the inference client.
+- Add release notes / changelog — for tracking changes between releases.
+- Generate documentation site — README references `docs/design/` but there's no generated docs site.
+- Add unit test coverage — verify the test suite is comprehensive; add integration tests for the TUI.
+- Add shell completion — bash/zsh completions for `yagent` command.
+- Add man pages — for system integration.
+- Add Dockerfile — for containerized deployment.
+- Add systemd unit / service files — for auto-start on boot.
+- Add CI configuration — GitHub Actions / GitLab CI for automated testing.
+- Add pre-commit hooks — for linting, formatting (`gofmt`), and vet checks.
+- Add code comments — ensure all exported functions have documentation.
+- Add benchmarks — for performance testing and regression detection.
+- Add profiling support — for debugging slow operations.
+- Add metrics / telemetry — for monitoring usage patterns.
+- Add logging format — ensure consistent structured logging.
+- Add error types — define custom errors for domain-specific issues.
+- Add context handling — ensure all functions respect cancellation.
+- Add resource cleanup — ensure goroutines are properly terminated.
+- Add concurrency safety — review mutex usage and race conditions.
+- Add dependency analysis — ensure no circular imports.
+- Add code review checklist — for maintainers.
+- Add documentation linter — ensure docs match code.
+- Add markdown linter — for consistent formatting.
+- Add spell checker — for documentation quality.
+- Add formatting tools — `gofmt` and `goimports` usage.
+- Add linting — `go vet` usage.
+- Add security scanning — for identifying vulnerabilities.
