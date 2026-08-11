@@ -2,6 +2,25 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.1 — 2026-08-11
+
+### Added
+- **TUI overhaul**: 24-bit Tokyo Night theme (one shared palette replaces the
+  ad-hoc 256-color codes); pill-style header (app, workspace, model, session,
+  git branch) and status bar (state, live context gauge with a progress bar,
+  tool count, YOLO badge); animated spinner while working; emoji icons for
+  tool calls, approvals and states; centered modal overlays for `/settings`
+  and `/sessions`; a bordered `/` command palette popover above the input;
+  markdown rendering for committed assistant messages via `glamour`.
+
+### Changed
+- Main loop is cloud-capable: `api_key`/`YAGENT_API_KEY` sends
+  `Authorization: Bearer` on chat + embedding requests (local stays the
+  default); `consult` already had its own.
+- Chunker parses each file once (`chunkAndSymbols`) instead of once for
+  chunks and again for symbols; symbol lines now point at the declaration,
+  not its doc comment.
+
 ## v0.1.0 — 2026-08-11
 
 ### Added

@@ -220,6 +220,83 @@ func (stubChatLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []l
 	return &llm.Response{Message: llm.Message{Role: "assistant", Content: "ok"}}, nil
 }
 
+func TestViewLayout(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.env.sessionID = "0123456789abcdef"
+	m.cfg = &config.Config{Model: "qwen2.5-coder:14b"}
+	m.workspace = "/tmp/ws"
+	m.width, m.height = 100, 30
+	m.branch = "main"
+	m.busy = true
+	m.turnTokens = 300
+	m.toolCalls = 2
+
+	v := m.View()
+	for _, want := range []string{"YAGENT", "qwen2.5-coder:14b", "main", "16384"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("View() missing %q in:\n%s", want, v)
+		}
+	}
+	// command palette popover while typing a slash command
+	m.busy = false
+	m.input.SetValue("/skills")
+	if !m.showPopover() {
+		t.Fatal("popover should show while typing a slash command")
+	}
+	pv := m.popoverView()
+	if !strings.Contains(pv, "/skills") {
+		t.Errorf("popoverView = %q", pv)
+	}
+	// settings modal overlays the whole screen
+	m.settingsOpen = true
+	ov := m.View()
+	if !strings.Contains(ov, "Yagent settings") {
+		t.Errorf("settings modal missing in:\n%s", ov)
+	}
+	m.settingsOpen = false
+	// sessions modal
+	m.sessionsOpen = true
+	if ov := m.View(); !strings.Contains(ov, "Sessions") {
+		t.Errorf("sessions modal missing")
+	}
+}
+
+func TestRenderMarkdown(t *testing.T) {
+	out := renderMarkdown("hello **bold** world")
+	if !strings.Contains(out, "hello") || !strings.Contains(out, "bold") {
+		t.Errorf("markdown lost content: %q", out)
+	}
+	if !strings.Contains(out, "\x1b[") {
+		t.Errorf("markdown output should carry ANSI styles: %q", out)
+	}
+	// malformed markdown (unclosed fence) must not panic; glamour degrades
+	// to a blank line rather than echoing raw marker text
+	if out := renderMarkdown("```"); len(out) == 0 {
+		t.Errorf("unclosed fence returned empty output")
+	}
+}
+
+func TestStatusPills(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	state, color := m.statusText()
+	if !strings.Contains(state, "ready") {
+		t.Errorf("idle state = %q", state)
+	}
+	_ = color
+	// gauge over budget turns red
+	gauge := m.ctxGauge(17000, 16384)
+	if !strings.Contains(gauge, "103%") {
+		t.Errorf("over-budget gauge = %q", gauge)
+	}
+	m.busy = true
+	state, _ = m.statusText()
+	if !strings.Contains(state, "working") {
+		t.Errorf("busy state = %q", state)
+	}
+}
+
 func TestSessionsBrowser(t *testing.T) {
 	st, err := memory.Open(t.TempDir())
 	if err != nil {

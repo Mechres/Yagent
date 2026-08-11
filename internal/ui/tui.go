@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -102,6 +104,9 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	if ws, err := os.Getwd(); err == nil {
 		m.workspace = ws
 	}
+	m.branch = gitBranch(m.workspace)
+	m.spinner = spinner.New(spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(tokyoNight.Primary)))
 	m.viewport = viewport.New(80, 20)
 	m.viewport.KeyMap.Up.SetEnabled(false) // avoid clashing with the text input
 	m.viewport.KeyMap.Down.SetEnabled(false)
@@ -177,6 +182,11 @@ type tuiModel struct {
 
 	input    textinput.Model
 	viewport viewport.Model
+	spinner  spinner.Model
+
+	width  int
+	height int
+	branch string
 
 	transcript  []string
 	stream      strings.Builder
@@ -209,7 +219,17 @@ func newInput() textinput.Model {
 	in := textinput.New()
 	in.Placeholder = "message (enter to send, ctrl-c to quit, pgup/dn to scroll)"
 	in.CharLimit = 4000
+	in.Prompt = iconCommand + " "
 	return in
+}
+
+// gitBranch returns the current git branch name, or "" when not a repo.
+func gitBranch(ws string) string {
+	out, err := exec.Command("git", "-C", ws, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func (m *tuiModel) Init() tea.Cmd {
@@ -351,10 +371,17 @@ func (m *tuiModel) scroll(up bool) {
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
 		m.viewport.Width = msg.Width
-		m.viewport.Height = max(5, msg.Height-4)
+		m.viewport.Height = m.layoutHeight()
 		m.refreshViewport()
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, tea.Batch(cmd, waitIncoming(m.incoming))
 
 	case tea.KeyMsg:
 		if m.sessionsOpen {
@@ -368,13 +395,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "y", "Y":
 				m.pending <- true
 				m.pending = nil
-				m.append("  ✓ approved " + m.approveArg)
-				return m, waitIncoming(m.incoming)
+				m.append("  " + iconOK + " approved " + m.approveArg)
+				return m, m.nextCmd()
 			case "n", "N":
 				m.pending <- false
 				m.pending = nil
-				m.append("  ✗ rejected " + m.approveArg)
-				return m, waitIncoming(m.incoming)
+				m.append("  " + iconBad + " rejected " + m.approveArg)
+				return m, m.nextCmd()
 			}
 		}
 		switch msg.String() {
@@ -382,7 +409,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.busy && !m.confirmQuit {
 				m.confirmQuit = true
 				m.append("  turn still running — quit anyway? (y/n)")
-				return m, waitIncoming(m.incoming)
+				return m, m.nextCmd()
 			}
 			return m, tea.Quit
 		case "enter":
@@ -419,7 +446,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.confirmQuit {
 				m.confirmQuit = false
 				m.append("  continuing")
-				return m, waitIncoming(m.incoming)
+				return m, m.nextCmd()
 			}
 		}
 		var cmd tea.Cmd
@@ -433,29 +460,29 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenMsg:
 		m.stream.WriteString(msg.delta)
 		m.turnTokens += len(msg.delta) / 4
-		return m, waitIncoming(m.incoming)
+		return m, m.nextCmd()
 
 	case toolMsg:
 		m.flushStream()
 		m.toolCalls++
-		m.append("  → " + msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments))
-		return m, waitIncoming(m.incoming)
+		m.append("  " + iconTool + " " + msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments))
+		return m, m.nextCmd()
 
 	case progressMsg:
 		m.flushStream()
 		m.append("  [index] " + msg.text)
-		return m, waitIncoming(m.incoming)
+		return m, m.nextCmd()
 
 	case approvalRequestMsg:
 		m.flushStream()
 		m.pending = msg.respond
 		m.approveArg = msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments)
-		m.append(fmt.Sprintf("  ⚠ [%s] %s", msg.risk, m.approveArg))
+		m.append(fmt.Sprintf("  %s [%s] %s", iconWarn, msg.risk, m.approveArg))
 		if d := fsApprovalDiff(m.workspace, msg.call); d != "" {
 			m.append(d)
 		}
 		m.append("  allow? (y/n)")
-		return m, waitIncoming(m.incoming)
+		return m, m.nextCmd()
 
 	case turnDoneMsg:
 		m.flushStream()
@@ -463,9 +490,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.append(fmt.Sprintf("  error: %v", msg.err))
 		}
-		return m, waitIncoming(m.incoming)
+		return m, m.nextCmd()
 	}
-	return m, waitIncoming(m.incoming)
+	return m, m.nextCmd()
 }
 
 // submitLine handles the submitted line: local slash commands (/exit, /clear,
@@ -482,7 +509,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.input.Reset()
 		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|approve|reject|approval /skill-name")
 		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty")
-		return m, waitIncoming(m.incoming)
+		return m, m.nextCmd()
 	case "/settings":
 		m.input.Reset()
 		m.settingsOpen = true
@@ -503,7 +530,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.follow = true
 		m.refreshViewport()
 		m.append("history cleared")
-		return m, waitIncoming(m.incoming)
+		return m, m.nextCmd()
 	}
 	if strings.HasPrefix(text, "/") {
 		m.input.Reset()
@@ -522,7 +549,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 			if err != nil {
 				m.append("error: " + err.Error())
 			}
-			return m, waitIncoming(m.incoming)
+			return m, m.nextCmd()
 		}
 		// unknown slash command: fall through and let the model see it
 		m.append("> " + text)
@@ -587,13 +614,14 @@ func approvePath(ws, p string) (string, error) {
 	return abs, nil
 }
 
-// renderApprovalDiff is a crude colorized line diff (additions green,
-// removals red) for approval previews.
+// renderApprovalDiff is a colorized line diff (additions in theme green,
+// removals in theme red) for approval previews.
 func renderApprovalDiff(oldText, newText string) string {
 	oldLines := splitKeepEmpty(oldText)
 	newLines := splitKeepEmpty(newText)
-	green := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	red := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	green := lipgloss.NewStyle().Foreground(tokyoNight.Success)
+	red := lipgloss.NewStyle().Foreground(tokyoNight.Error)
+	hunk := lipgloss.NewStyle().Foreground(tokyoNight.Secondary)
 	var b strings.Builder
 	max := len(oldLines)
 	if len(newLines) > max {
@@ -623,7 +651,7 @@ func renderApprovalDiff(oldText, newText string) string {
 	if b.Len() == 0 {
 		return "(no changes)"
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return hunk.Render("── diff ──") + "\n" + strings.TrimRight(b.String(), "\n")
 }
 
 func splitKeepEmpty(s string) []string {
@@ -688,7 +716,7 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loadHistoryIntoTranscript(history, summary)
 		m.sessionsOpen = false
 		m.append(fmt.Sprintf("  resumed session %s — continuing it now", id))
-		return m, waitIncoming(m.incoming)
+		return m, m.nextCmd()
 	case "f":
 		if len(m.sessions) == 0 {
 			return m, nil
@@ -705,7 +733,7 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loadHistoryIntoTranscript(history, summary)
 		m.sessionsOpen = false
 		m.append(fmt.Sprintf("  forked %s -> %s; continuing the fork now", id[:8], sid))
-		return m, waitIncoming(m.incoming)
+		return m, m.nextCmd()
 	case "e":
 		if len(m.sessions) == 0 {
 			return m, nil
@@ -731,15 +759,16 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// settingsView renders the interactive settings page.
+// settingsView renders the interactive settings page (shown as a centered
+// modal over the transcript).
 func (m *tuiModel) settingsView() string {
 	keys := config.Settings()
 	keyW := 24
 	valueW := 44
 
-	marker := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Render("▸")
-	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
-	valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	marker := lipgloss.NewStyle().Foreground(tokyoNight.Primary).Render("▸")
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Foreground)
+	valStyle := lipgloss.NewStyle().Foreground(tokyoNight.Muted)
 
 	var rows []string
 	for i, s := range keys {
@@ -753,7 +782,7 @@ func (m *tuiModel) settingsView() string {
 		if i == m.settingsIdx {
 			line := fmt.Sprintf("%-*s %s", keyW, s.Key, value)
 			rows = append(rows, marker+" "+lipgloss.NewStyle().
-				Background(lipgloss.Color("237")).
+				Background(tokyoNight.Surface).
 				Bold(true).
 				Render(line))
 		} else {
@@ -761,22 +790,22 @@ func (m *tuiModel) settingsView() string {
 		}
 	}
 
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
-		Render("⚙ Yagent settings")
-	body := lipgloss.NewStyle().Foreground(lipgloss.Color("188")).Render(strings.Join(rows, "\n"))
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+	title := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary).
+		Render(iconGear + " Yagent settings")
+	body := lipgloss.NewStyle().Foreground(tokyoNight.Foreground).Render(strings.Join(rows, "\n"))
+	hint := lipgloss.NewStyle().Foreground(tokyoNight.Muted).
 		Render("↑/↓ move   ·   enter edit (saved immediately)   ·   esc close")
 
 	page := title + "\n\n" + body + "\n\n" + hint
 	if m.editing {
 		field := keys[m.settingsIdx].Key
-		prompt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
+		prompt := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary).
 			Render("edit " + field + ": ")
 		page += "\n\n" + prompt + m.editInput.View()
 	}
 	if m.choosing {
 		field := keys[m.settingsIdx].Key
-		cur := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+		cur := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary)
 		var opts []string
 		for i, o := range keys[m.settingsIdx].Options {
 			if i == m.choosingIdx {
@@ -785,13 +814,13 @@ func (m *tuiModel) settingsView() string {
 				opts = append(opts, o)
 			}
 		}
-		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
+		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary).
 			Render("choose "+field+": ") + strings.Join(opts, "   ") +
-			"\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+			"\n" + lipgloss.NewStyle().Foreground(tokyoNight.Muted).
 			Render("←/→ change   ·   enter save   ·   esc cancel")
 	}
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240")).
+		BorderForeground(tokyoNight.Primary).
 		Padding(0, 1).Render(page)
 }
 
@@ -813,7 +842,7 @@ func (m *tuiModel) loadHistoryIntoTranscript(history []llm.Message, summary stri
 			if body == "" {
 				body = "(tool calls)"
 			}
-			m.append(body)
+			m.append(renderMarkdown(body))
 		case "tool":
 			snippet := h.Content
 			if len(snippet) > 200 {
@@ -826,12 +855,13 @@ func (m *tuiModel) loadHistoryIntoTranscript(history []llm.Message, summary stri
 	m.refreshViewport()
 }
 
-// sessionsView renders the session browser.
+// sessionsView renders the session browser (shown as a centered modal over the
+// transcript).
 func (m *tuiModel) sessionsView() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
-		Render("💬 Sessions")
-	marker := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Render("▸")
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	title := lipgloss.NewStyle().Bold(true).Foreground(tokyoNight.Primary).
+		Render(iconSession + " Sessions")
+	marker := lipgloss.NewStyle().Foreground(tokyoNight.Primary).Render("▸")
+	dim := lipgloss.NewStyle().Foreground(tokyoNight.Muted)
 	rows := make([]string, 0, len(m.sessions))
 	for i, s := range m.sessions {
 		titleTxt := s.Title
@@ -843,7 +873,7 @@ func (m *tuiModel) sessionsView() string {
 		}
 		line := fmt.Sprintf("%s  %4d msgs  %s", s.ID[:8], s.Messages, titleTxt)
 		if i == m.sessionsIdx {
-			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(lipgloss.Color("237")).
+			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(tokyoNight.Surface).
 				Bold(true).Render(line))
 		} else {
 			rows = append(rows, "  "+dim.Render(line))
@@ -855,22 +885,22 @@ func (m *tuiModel) sessionsView() string {
 	body := strings.Join(rows, "\n")
 	hint := dim.Render("↑/↓ pick · enter commands · r resume · f fork · e export · d delete (twice) · esc close")
 	if m.sessionsConfirm {
-		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("  delete this session? press d again to confirm, any key to cancel")
+		hint = lipgloss.NewStyle().Foreground(tokyoNight.Error).Render("  delete this session? press d again to confirm, any key to cancel")
 	}
 	if m.sessionsAction != "" {
-		action := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Render(m.sessionsAction)
+		action := lipgloss.NewStyle().Foreground(tokyoNight.Primary).Render(m.sessionsAction)
 		body += "\n\n" + action
 	}
-	bodyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("188")).Render(body)
+	bodyStyle := lipgloss.NewStyle().Foreground(tokyoNight.Foreground).Render(body)
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240")).
+		BorderForeground(tokyoNight.Primary).
 		Padding(0, 1).Render(title + "\n\n" + bodyStyle + "\n\n" + hint)
 }
 
 // flushStream commits the current streamed answer into the transcript.
 func (m *tuiModel) flushStream() {
 	if m.stream.Len() > 0 {
-		m.append(strings.TrimRight(m.stream.String(), "\n"))
+		m.append(renderMarkdown(strings.TrimRight(m.stream.String(), "\n")))
 		m.stream.Reset()
 	}
 }
@@ -928,56 +958,184 @@ func (m *tuiModel) View() string {
 	if m.err != nil {
 		return m.err.Error() + "\n"
 	}
-	if m.settingsOpen {
-		return m.settingsView()
-	}
-	if m.sessionsOpen {
-		return m.sessionsView()
-	}
-	// The viewport holds the transcript; the streaming tail renders as its own
-	// line below it so scrolling is never reset by per-frame content updates.
-	out := m.viewport.View() + "\n"
+	m.viewport.Height = m.layoutHeight()
+	out := m.headerView() + "\n"
+	out += m.viewport.View() + "\n"
 	if m.stream.Len() > 0 {
 		out += strings.TrimRight(m.stream.String(), "\n") + "\n"
 	}
-	used, limit := m.ag.ContextUsage()
-	ctxColor := lipgloss.Color("212")
-	if used >= limit {
-		ctxColor = lipgloss.Color("196") // over budget
+	if m.showPopover() {
+		out += m.popoverView() + "\n"
 	}
-	status := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(ctxColor).
-		Render(fmt.Sprintf(" %-24s │ ctx %d/%d │ %s ", m.cfg.Model, used, limit, m.statusText()))
-	// "/" menu: show the matching slash commands while typing a command
-	if strings.HasPrefix(m.input.Value(), "/") {
-		if matches := m.slashMatches(); len(matches) > 0 {
-			shown := matches
-			if len(shown) > 6 {
-				shown = shown[:6]
-			}
-			hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
-				Render("  " + strings.Join(shown, "   ") + "   (tab to cycle)")
-			out += hint + "\n"
-		}
+	out += m.input.View() + "\n"
+	out += m.statusView()
+	if m.settingsOpen {
+		out = overlayModal(m.settingsView(), m.width, m.height)
 	}
-	out += m.input.View() + "\n" + status
+	if m.sessionsOpen {
+		out = overlayModal(m.sessionsView(), m.width, m.height)
+	}
 	return out
 }
 
-func (m *tuiModel) statusText() string {
-	kaomoji := "(◕‿◕)"
+// layoutHeight is the transcript viewport height given the current window
+// (header + status + input always take three lines; the "/" popover borrows two).
+func (m *tuiModel) layoutHeight() int {
+	h := m.height - 4
+	if m.showPopover() {
+		h -= 2
+	}
+	return max(5, h)
+}
+
+// showPopover reports whether the "/" command palette should be rendered.
+func (m *tuiModel) showPopover() bool {
+	if m.settingsOpen || m.sessionsOpen {
+		return false
+	}
+	return strings.HasPrefix(m.input.Value(), "/") && len(m.slashMatches()) > 0
+}
+
+// headerView is the persistent top bar: app, workspace, model, session, branch.
+func (m *tuiModel) headerView() string {
+	th := tokyoNight
+	title := th.pill(th.Primary, lipgloss.Color("#15161e"), true).Render(iconYOLO + " YAGENT")
+	parts := []string{title}
+	if m.workspace != "" {
+		parts = append(parts, th.pill(th.Surface, th.Foreground, false).Render(shorten(m.workspace, 40)))
+	}
+	model := th.pill(th.Surface, th.Foreground, false).Render(iconAgent + " " + shorten(m.cfg.Model, 28))
+	parts = append(parts, model)
+	if m.env != nil && m.env.sessionID != "" {
+		parts = append(parts, th.pill(th.Surface, th.Accent, false).Render(iconSession+" "+shorten(m.env.sessionID, 8)))
+	}
+	if m.branch != "" {
+		parts = append(parts, th.pill(th.Surface, th.Secondary, false).Render(iconBranch+" "+shorten(m.branch, 20)))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+}
+
+// statusView is the bottom pill bar: state, context gauge, tokens, tools, yolo.
+func (m *tuiModel) statusView() string {
+	th := tokyoNight
+	state, color := m.statusText()
+	statePill := th.pill(th.Surface, color, true).Render(state)
+	var parts []string
+	parts = append(parts, statePill)
+	used, limit := m.ag.ContextUsage()
+	parts = append(parts, th.pill(th.Surface, color, false).Render(iconCtx+" "+m.ctxGauge(used, limit)))
+	parts = append(parts, th.pill(th.Surface, th.Muted, false).Render(iconTool+" "+fmt.Sprint(m.toolCalls)))
+	if m.yoloToggler != nil && m.yoloToggler.IsYOLO() {
+		parts = append(parts, th.pill(th.Error, "#ffffff", true).Render(iconYOLO+" YOLO"))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Center, parts...)
+}
+
+// ctxGauge renders the context gauge: "used/limit ██████░░░░ 38%".
+func (m *tuiModel) ctxGauge(used, limit int) string {
+	th := tokyoNight
+	pct := 0.0
+	if limit > 0 {
+		pct = float64(used) / float64(limit)
+	}
+	color := th.Success
+	switch {
+	case pct > 0.9:
+		color = th.Error
+	case pct > 0.75:
+		color = th.Warning
+	}
+	cells := 10
+	filled := int(pct * float64(cells))
+	if filled > cells {
+		filled = cells
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", cells-filled)
+	pctTxt := fmt.Sprintf("%d%%", int(pct*100))
+	if limit > 0 {
+		return fmt.Sprintf("%d/%d %s %s", used, limit, lipgloss.NewStyle().Foreground(color).Render(bar), pctTxt)
+	}
+	return fmt.Sprintf("%d %s", used, pctTxt)
+}
+
+// statusText is the state segment of the status bar: a spinner/kaomoji marker,
+// the state word and the current turn's token count.
+func (m *tuiModel) statusText() (string, lipgloss.Color) {
+	th := tokyoNight
 	state := "ready"
+	marker := "(◕‿◕)"
+	color := th.Muted
 	switch {
 	case m.busy:
-		kaomoji, state = "(・_・)ノ", "working"
+		state = "working"
+		marker = m.spinner.View()
+		color = th.Primary
 	case m.pending != nil:
-		kaomoji, state = "(；一_一)", "awaiting approval"
+		state = "awaiting approval"
+		marker = "(；一_一)"
+		color = th.Warning
 	}
 	if m.yoloToggler != nil && m.yoloToggler.IsYOLO() {
 		state += " · yolo"
 	}
-	return fmt.Sprintf("%s %s  │ session %s  │ %d tok  │ %d tools", kaomoji, state, m.env.sessionID[:8], m.turnTokens, m.toolCalls)
+	base := marker + " " + state
+	if m.busy {
+		base += fmt.Sprintf("  ·  %d tok", m.turnTokens)
+	}
+	return base, color
+}
+
+// popoverView renders the "/" command palette as a bordered box above the
+// input, listing the commands that match what the user is typing.
+func (m *tuiModel) popoverView() string {
+	th := tokyoNight
+	matches := m.slashMatches()
+	shown := matches
+	if len(shown) > 6 {
+		shown = shown[:6]
+	}
+	rows := make([]string, 0, len(shown))
+	for i, c := range shown {
+		if i == m.tabIndex%len(matches) {
+			rows = append(rows, th.pill(th.Primary, "#15161e", true).Render(c))
+		} else {
+			rows = append(rows, lipgloss.NewStyle().Foreground(th.Foreground).Render("  "+c))
+		}
+	}
+	body := strings.Join(rows, "\n")
+	hint := lipgloss.NewStyle().Foreground(th.Muted).Render("  tab to cycle · esc to clear · enter to run")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.Border).
+		Background(th.Background).
+		Padding(0, 1).
+		Render(body + "\n" + hint)
+}
+
+// overlayModal centers a bordered modal, filling the rest of the screen with
+// the theme background.
+func overlayModal(modal string, width, height int) string {
+	if width == 0 || height == 0 {
+		return modal + "\n"
+	}
+	return lipgloss.Place(width, height,
+		lipgloss.Center, lipgloss.Center,
+		modal,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(tokyoNight.Background),
+	)
+}
+
+// shorten truncates s to n runes (n includes the ellipsis).
+func shorten(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return "…"
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // appendWriter routes an io.Writer's output into the transcript (used by the
@@ -998,4 +1156,13 @@ func waitIncoming(ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return <-ch
 	}
+}
+
+// nextCmd is the standard re-arm after handling a message: it watches for the
+// next incoming message, and keeps the spinner ticking while a turn runs.
+func (m *tuiModel) nextCmd() tea.Cmd {
+	if m.busy {
+		return tea.Batch(waitIncoming(m.incoming), m.spinner.Tick)
+	}
+	return waitIncoming(m.incoming)
 }

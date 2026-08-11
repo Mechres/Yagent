@@ -74,7 +74,8 @@ Keep packages acyclic: `ui → agent → {llm, tools, memory, index} → config`
   - `github.com/tree-sitter/go-tree-sitter` (+ `tree-sitter-go/python/javascript/typescript`) — repo chunking (M4, needs **cgo**; a C toolchain is now required to build)
   - `golang.org/x/net/html` — HTML parsing for the DDG scraper and `web_fetch` extraction (M5)
   - `github.com/tmc/langchaingo` — **NOT approved**; we implement our own loop/memory
-  - `github.com/charmbracelet/bubbletea` + `lipgloss` (+ `bubbles/textinput`) — TUI (M6)
+  - `github.com/charmbracelet/bubbletea` + `lipgloss` (+ `bubbles/textinput`, `bubbles/spinner`) — TUI (M6)
+  - `github.com/charmbracelet/glamour` — terminal markdown rendering for the TUI transcript (M7 polish; the standard Charm renderer, keeps goldmark inside one upstream dep)
   - `github.com/philippgille/chromem-go` — **removed in M3.5**; L3 is SQLite hybrid (vector + FTS5), no chromem, no ANN
 - Errors: wrap with `fmt.Errorf("...: %w", err)`, no panics outside `main`, no `log.Fatal` in library code.
 - Tests: table-driven where sensible; no network access in unit tests (use `httptest.Server` to fake the LLM API).
