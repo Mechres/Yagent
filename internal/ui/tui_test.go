@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"yagent/internal/agent"
 	"yagent/internal/config"
 	"yagent/internal/llm"
 	"yagent/internal/memory"
@@ -213,6 +214,12 @@ func TestSettingsPageChooser(t *testing.T) {
 	}
 }
 
+type stubChatLLM struct{}
+
+func (stubChatLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error) {
+	return &llm.Response{Message: llm.Message{Role: "assistant", Content: "ok"}}, nil
+}
+
 func TestSessionsBrowser(t *testing.T) {
 	st, err := memory.Open(t.TempDir())
 	if err != nil {
@@ -224,6 +231,7 @@ func TestSessionsBrowser(t *testing.T) {
 	}
 	m := testModel(t)
 	m.env.st = st
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
 	m.input.SetValue("/sessions")
 	m.submitLine()
 	if !m.sessionsOpen {
