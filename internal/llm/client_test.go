@@ -154,6 +154,45 @@ func TestChatStreamBearerToken(t *testing.T) {
 	}
 }
 
+func TestChatStreamSendsSampling(t *testing.T) {
+	t.Parallel()
+	var gotReq atomic.Value
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotReq.Store(string(body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", chunkData("ok"))
+		flusher.Flush()
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	client.Sampling = Sampling{Temperature: 0.6, TopP: 0.95, TopK: 20, RepetitionPenalty: 1.05}
+	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	var req chatCompletionRequest
+	if err := json.Unmarshal([]byte(gotReq.Load().(string)), &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if req.Temperature != 0.6 || req.TopP != 0.95 || req.TopK != 20 || req.RepetitionPenalty != 1.05 {
+		t.Errorf("sampling not forwarded: %+v", req.Sampling)
+	}
+
+	// zero values are omitted (cloud endpoints that reject top_k/rep_penalty)
+	client.Sampling = Sampling{Temperature: 0.6, TopP: 0.95}
+	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	body := gotReq.Load().(string)
+	if strings.Contains(body, "top_k") || strings.Contains(body, "repetition_penalty") {
+		t.Errorf("zero sampling fields should be omitted: %s", body)
+	}
+}
+
 func TestChatStreamSendsToolSchemas(t *testing.T) {
 	t.Parallel()
 	var gotReq atomic.Value

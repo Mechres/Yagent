@@ -34,6 +34,12 @@ type Config struct {
 	Skills SkillsConfig `yaml:"skills"`
 	Web    WebConfig    `yaml:"web_search"`
 	Shell  ShellConfig  `yaml:"shell"`
+	// Sampling is forwarded on every chat request (zero values are omitted, so
+	// servers/cloud endpoints that don't understand a field only get what was
+	// set). Defaults follow the Qwythos recipe for temperature/top_p; top_k and
+	// repetition_penalty are opt-in (some OpenAI-compatible endpoints reject
+	// them).
+	Sampling SamplingConfig `yaml:"sampling"`
 	// Consult points the `consult` tool at a second local model ("advisor")
 	// the agent can ask for guidance. Empty = disabled.
 	Consult ConsultConfig `yaml:"consult"`
@@ -90,6 +96,16 @@ type ConsultConfig struct {
 	Cmd []string `yaml:"cmd"`
 }
 
+// SamplingConfig is the subset of generation parameters forwarded on chat
+// requests. Zero values are omitted (top_k/repetition_penalty default off so
+// OpenAI-compatible cloud endpoints that reject them aren't broken by default).
+type SamplingConfig struct {
+	Temperature       float64 `yaml:"temperature"`
+	TopP              float64 `yaml:"top_p"`
+	TopK              int     `yaml:"top_k"`
+	RepetitionPenalty float64 `yaml:"repetition_penalty"`
+}
+
 // Defaults applied when no config file and no env override is present.
 const (
 	DefaultServerURL      = "http://localhost:11434"
@@ -97,6 +113,11 @@ const (
 	DefaultEmbeddingModel = "nomic-embed-text"
 	DefaultContextWindow  = 16384
 	DefaultTheme          = "tokyo"
+	// DefaultTemperature / DefaultTopP follow the Qwythos-9B recipe (0.6 /
+	// 0.95). TopK (20) and RepetitionPenalty (1.05) are documented but not
+	// defaulted, since some OpenAI-compatible endpoints reject them.
+	DefaultTemperature = 0.6
+	DefaultTopP        = 0.95
 )
 
 // ThemeOptions are the selectable TUI palette names.
@@ -156,6 +177,7 @@ func LoadConfig(path string) (*Config, error) {
 		EmbeddingModel: DefaultEmbeddingModel,
 		ContextWindow:  DefaultContextWindow,
 		Theme:          DefaultTheme,
+		Sampling:       SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
 		Skills:         SkillsConfig{WriteApproval: false},
 	}
 	dataDir, err := DefaultDataDir()
@@ -315,6 +337,10 @@ func Settings() []SettingKey {
 		{Key: "context_window", Label: "Context window (tokens)"},
 		{Key: "data_dir", Label: "Data dir"},
 		{Key: "theme", Label: "TUI theme", Options: ThemeOptions},
+		{Key: "sampling.temperature", Label: "Sampling temperature"},
+		{Key: "sampling.top_p", Label: "Sampling top_p"},
+		{Key: "sampling.top_k", Label: "Sampling top_k (0 = off)"},
+		{Key: "sampling.repetition_penalty", Label: "Sampling repetition penalty (0 = off)"},
 		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng"}},
 		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
 		{Key: "skills.write_approval", Label: "Skills write approval", Options: []string{"false", "true"}},
@@ -346,6 +372,14 @@ func (c *Config) Get(key string) string {
 		return c.DataDir
 	case "theme":
 		return c.Theme
+	case "sampling.temperature":
+		return strconv.FormatFloat(c.Sampling.Temperature, 'f', -1, 64)
+	case "sampling.top_p":
+		return strconv.FormatFloat(c.Sampling.TopP, 'f', -1, 64)
+	case "sampling.top_k":
+		return strconv.Itoa(c.Sampling.TopK)
+	case "sampling.repetition_penalty":
+		return strconv.FormatFloat(c.Sampling.RepetitionPenalty, 'f', -1, 64)
 	case "web_search.provider":
 		return c.Web.Provider
 	case "web_search.searxng_url":
@@ -435,7 +469,9 @@ func validateKey(parts []string, value string) error {
 	known := map[string]bool{
 		"server_url": true, "model": true, "api_key": true, "embedding_model": true,
 		"embedding_server_url": true, "context_window": true, "data_dir": true,
-		"theme":               true,
+		"theme":                true,
+		"sampling.temperature": true, "sampling.top_p": true,
+		"sampling.top_k": true, "sampling.repetition_penalty": true,
 		"web_search.provider": true, "web_search.searxng_url": true,
 		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
 		"shell.sandbox":      true,
@@ -465,6 +501,16 @@ func validateKey(parts []string, value string) error {
 		if !slices.Contains(ThemeOptions, value) {
 			return &ValidationError{msg: "theme must be one of: " + strings.Join(ThemeOptions, ", ")}
 		}
+	case "sampling.temperature", "sampling.top_p", "sampling.repetition_penalty":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || f < 0 || f > 2 {
+			return &ValidationError{msg: key + " must be a number between 0 and 2"}
+		}
+	case "sampling.top_k":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return &ValidationError{msg: "sampling.top_k must be a non-negative integer (0 = off)"}
+		}
 	case "shell.sandbox":
 		if value != "" && value != "bwrap" {
 			return &ValidationError{msg: "shell.sandbox must be empty or bwrap"}
@@ -482,8 +528,10 @@ func typedScalar(key, value string) *yaml.Node {
 	switch key {
 	case "write_approval":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
-	case "context_window":
+	case "context_window", "sampling.top_k":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
+	case "sampling.temperature", "sampling.top_p", "sampling.repetition_penalty":
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: value}
 	}
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
 }

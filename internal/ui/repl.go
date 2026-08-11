@@ -689,6 +689,30 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 			return fmt.Errorf("theme must be one of: %s", strings.Join(config.ThemeOptions, ", "))
 		}
 		c.Theme = value
+	case "sampling.temperature":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		c.Sampling.Temperature = f
+	case "sampling.top_p":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		c.Sampling.TopP = f
+	case "sampling.top_k":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		c.Sampling.TopK = n
+	case "sampling.repetition_penalty":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		c.Sampling.RepetitionPenalty = f
 	case "context_window":
 		n, err := strconv.Atoi(value)
 		if err != nil {

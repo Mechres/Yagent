@@ -21,6 +21,12 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   to `/dev/null`, so a sandboxed command cannot read them.
 
 ### Changed
+- **Sampling parameters**: chat requests now forward `temperature`/`top_p`
+  (defaulting to the Qwythos-9B recipe 0.6/0.95) plus optional `top_k` and
+  `repetition_penalty` (`sampling.*` settings / `/set`; zero values are
+  omitted so cloud endpoints that reject them stay working). Qwythos's card
+  warns that greedy/low-temp sampling degenerates into repetition loops — this
+  applies its recommended recipe instead of server defaults.
 - `resolvePath` accepts **absolute paths inside the workspace** (models
   habitually emit them; containment is still enforced either way) — a rejected
   absolute grep/fs path no longer derails the agent loop.

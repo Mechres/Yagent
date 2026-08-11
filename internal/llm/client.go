@@ -58,6 +58,8 @@ type Client struct {
 	// every request (used by the consult tool against cloud OpenAI-compatible
 	// endpoints).
 	BearerToken string
+	// Sampling is forwarded on every chat request (zero values omitted).
+	Sampling Sampling
 }
 
 // NewClient constructs a Client with default HTTP settings.
@@ -67,6 +69,17 @@ func NewClient(serverURL, model string) *Client {
 		Model:     model,
 		HTTP:      &http.Client{},
 	}
+}
+
+// Sampling holds generation parameters forwarded to the server on every chat
+// request. Zero values are omitted, so servers that don't understand a field
+// (some OpenAI-compatible cloud endpoints reject repetition_penalty/top_k)
+// only receive what the user explicitly configured.
+type Sampling struct {
+	Temperature       float64 `json:"temperature,omitempty"`
+	TopP              float64 `json:"top_p,omitempty"`
+	TopK              int     `json:"top_k,omitempty"`
+	RepetitionPenalty float64 `json:"repetition_penalty,omitempty"`
 }
 
 // maxRetries and backoff schedule for transport errors. HTTP error statuses
@@ -80,6 +93,7 @@ type chatCompletionRequest struct {
 	Messages []Message    `json:"messages"`
 	Stream   bool         `json:"stream"`
 	Tools    []ToolSchema `json:"tools,omitempty"`
+	Sampling `json:",inline"`
 }
 
 // chatChunk is one streaming delta from /v1/chat/completions.
@@ -106,7 +120,7 @@ type chatChunk struct {
 // transport errors up to 3 times with backoff; HTTP error statuses are
 // returned as errors immediately.
 func (c *Client) ChatStream(ctx context.Context, messages []Message, tools []ToolSchema, onDelta func(string)) (*Response, error) {
-	reqBody := chatCompletionRequest{Model: c.Model, Messages: messages, Stream: true, Tools: tools}
+	reqBody := chatCompletionRequest{Model: c.Model, Messages: messages, Stream: true, Tools: tools, Sampling: c.Sampling}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

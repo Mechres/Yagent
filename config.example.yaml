@@ -20,6 +20,16 @@ embedding_model: nomic-embed-text
 # TUI color palette: tokyo (default) | catppuccin | nord.
 theme: tokyo
 
+# Generation parameters forwarded on every chat request. temperature/top_p
+# default to the Qwythos-9B recipe (0.6 / 0.95). top_k and repetition_penalty
+# are 0 (off) by default because some OpenAI-compatible cloud endpoints reject
+# them; set them here for local llama.cpp/Ollama:
+# sampling:
+#   temperature: 0.6
+#   top_p: 0.95
+#   top_k: 20
+#   repetition_penalty: 1.05
+
 # Context window in tokens (also YAGENT_CONTEXT_WINDOW).
 context_window: 16384
 

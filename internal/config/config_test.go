@@ -436,6 +436,44 @@ func TestLoadConfigTheme(t *testing.T) {
 	}
 }
 
+func TestLoadConfigSampling(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// defaults
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Sampling.Temperature != DefaultTemperature || cfg.Sampling.TopP != DefaultTopP {
+		t.Errorf("default sampling = %+v", cfg.Sampling)
+	}
+	if cfg.Sampling.TopK != 0 || cfg.Sampling.RepetitionPenalty != 0 {
+		t.Errorf("top_k/rep_penalty should default off: %+v", cfg.Sampling)
+	}
+	// from file
+	path := writeConfig(t, "sampling:\n  temperature: 0.8\n  top_p: 0.9\n  top_k: 40\n  repetition_penalty: 1.1\n")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Sampling.Temperature != 0.8 || cfg.Sampling.TopP != 0.9 ||
+		cfg.Sampling.TopK != 40 || cfg.Sampling.RepetitionPenalty != 1.1 {
+		t.Errorf("file sampling = %+v", cfg.Sampling)
+	}
+	// /set round-trip + validation
+	if err := Set(path, "sampling.top_k", "20"); err != nil {
+		t.Errorf("set top_k: %v", err)
+	}
+	if err := Set(path, "sampling.temperature", "0.6"); err != nil {
+		t.Errorf("set temperature: %v", err)
+	}
+	if err := Set(path, "sampling.temperature", "hot"); err == nil {
+		t.Error("non-numeric temperature should be rejected")
+	}
+	if err := Set(path, "sampling.top_k", "-3"); err == nil {
+		t.Error("negative top_k should be rejected")
+	}
+}
+
 func TestSettingsCatalogAndGet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(EnvVarServerURL, "")

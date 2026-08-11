@@ -62,6 +62,12 @@ func main() {
 		}
 		client := llm.NewClient(cfg.ServerURL, cfg.Model)
 		client.BearerToken = cfg.APIKey
+		client.Sampling = llm.Sampling{
+			Temperature:       cfg.Sampling.Temperature,
+			TopP:              cfg.Sampling.TopP,
+			TopK:              cfg.Sampling.TopK,
+			RepetitionPenalty: cfg.Sampling.RepetitionPenalty,
+		}
 		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{
 			Plain: *plain, YOLO: *yolo, Fork: *forkID, Goal: *goal, Rounds: *rounds,
 		}); err != nil {

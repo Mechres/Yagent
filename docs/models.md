@@ -14,7 +14,7 @@ it accepts one leading system message only.
 
 | Model | Server | tool-call | ctx behavior | notes |
 |---|---|---|---|---|
-| `Qwythos-9B-...Q4_K_M` | llama.cpp :8089 | moderate | single system msg; n_ctx VRAM-limited | dev model, see quirks below |
+| `Qwythos-9B-...Q4_K_M` (Qwen3.5-9B base) | llama.cpp :8089 | moderate | single system msg; n_ctx VRAM-limited | dev model, see quirks below |
 | `qwen2.5-coder:14b` | Ollama | good | standard | reference model for tool-heavy work |
 | `qwen3:8b` | Ollama | good | larger ctx | comfortable VRAM headroom |
 | `gemma3:12b-it-qat` | Ollama | weaker | standard | good quality, weaker tool calling |
@@ -28,6 +28,7 @@ Observed behavior (M1–M3.5 acceptance, 2025-06):
 
 | Quirk | Observed | Handling |
 |---|---|---|
+| **Sampling recipe** | Qwen3.5 reasoning template degenerates into repetition loops at greedy/low temperature; the card recommends `temperature=0.6, top_p=0.95, top_k=20, repetition_penalty=1.05` | Yagent forwards `sampling.temperature`/`top_p` (default 0.6/0.95) and optional `top_k`/`repetition_penalty` on every chat request (see `config.example.yaml`) |
 | Context window | `n_ctx` = 125696 (VRAM-limited; not the advertised 1M) | fine for current milestones |
 | `reasoning_content` | Emits a reasoning block before the answer (Claude-style template); server exposes it as `reasoning_content`, which the SSE parser ignores | nothing to do; reasoning never enters history/context |
 | Narrates tool calls | Sometimes says "I need to use fs_edit…" and ends the turn **without** emitting a `tool_calls`; the loop then treats the narration as the final answer | fixed by an explicit system-prompt rule: *"To use a tool, emit the tool call now. Never just describe a tool call you intend to make…"* |
