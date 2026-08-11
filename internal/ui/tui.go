@@ -46,13 +46,13 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	inputCh := make(chan string, 1)
 	runnerCtx, runnerCancel := context.WithCancel(ctx)
 	runnerDone := make(chan struct{})
-	var approver agent.Approver = &tuiApprover{incoming: incoming, ctx: runnerCtx}
+	ap := newToggleableApprover(&tuiApprover{incoming: incoming, ctx: runnerCtx})
+	ap.SetYOLO(yolo)
 	if yolo {
-		approver = autoApprover{}
 		env.registry.SetSkillsWriteApproval(false)
 	}
 
-	ag := newAgent(client, cfg, env, approver,
+	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { incoming <- tokenMsg{delta: delta} },
 		func(call llm.ToolCall) { incoming <- toolMsg{call: call} })
 	env.registry.SetIndexProgress(func(line string) {
@@ -88,7 +88,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		cfg: cfg, env: env, ag: ag, client: client,
 		incoming: incoming, inputCh: inputCh,
 		runnerCancel: runnerCancel, runnerDone: runnerDone,
-		input: newInput(),
+		input: newInput(), yoloToggler: ap,
 	}
 	if ws, err := os.Getwd(); err == nil {
 		m.workspace = ws
@@ -154,11 +154,12 @@ func (a *tuiApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools
 // ---------- model ----------
 
 type tuiModel struct {
-	cfg       *config.Config
-	env       *chatEnv
-	ag        *agent.Agent
-	client    *llm.Client
-	workspace string
+	cfg         *config.Config
+	env         *chatEnv
+	ag          *agent.Agent
+	client      *llm.Client
+	workspace   string
+	yoloToggler *toggleableApprover
 
 	incoming     chan tea.Msg
 	inputCh      chan string
@@ -350,7 +351,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "/help":
 		m.input.Reset()
-		m.append("commands: /exit /clear /help /export [file] /skills list|pending|diff|approve|reject|approval /skill-name")
+		m.append("commands: /exit /clear /help /yolo /export [file] /skills list|pending|diff|approve|reject|approval /skill-name")
 		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty")
 		return m, waitIncoming(m.incoming)
 	case "/clear":
@@ -365,14 +366,15 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(text, "/") {
 		m.input.Reset()
 		skillsCmd := &skillsHandler{
-			store:    m.env.sk,
-			reg:      m.env.registry,
-			cfg:      m.cfg,
-			w:        &appendWriter{m: m},
-			approval: &m.cfg.Skills.WriteApproval,
-			ctx:      context.Background(),
-			client:   m.client,
-			env:      m.env,
+			store:       m.env.sk,
+			reg:         m.env.registry,
+			cfg:         m.cfg,
+			w:           &appendWriter{m: m},
+			approval:    &m.cfg.Skills.WriteApproval,
+			ctx:         context.Background(),
+			client:      m.client,
+			env:         m.env,
+			yoloToggler: m.yoloToggler,
 		}
 		if handled, err := skillsCmd.handle(text, m.ag); handled || err != nil {
 			if err != nil {
@@ -501,7 +503,7 @@ func (m *tuiModel) flushStream() {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/help", "/export [file]",
+		"/exit", "/clear", "/help", "/export [file]", "/yolo",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}
@@ -582,14 +584,18 @@ func (m *tuiModel) View() string {
 }
 
 func (m *tuiModel) statusText() string {
+	kaomoji := "(◕‿◕)"
 	state := "ready"
-	if m.busy {
-		state = "busy"
+	switch {
+	case m.busy:
+		kaomoji, state = "(・_・)ノ", "working"
+	case m.pending != nil:
+		kaomoji, state = "(；一_一)", "awaiting approval"
 	}
-	if m.pending != nil {
-		state = "awaiting approval"
+	if m.yoloToggler != nil && m.yoloToggler.IsYOLO() {
+		state += " · yolo"
 	}
-	return fmt.Sprintf("session %s  │ %s  │ %d tok  │ %d tools", m.env.sessionID[:8], state, m.turnTokens, m.toolCalls)
+	return fmt.Sprintf("%s %s  │ session %s  │ %d tok  │ %d tools", kaomoji, state, m.env.sessionID[:8], m.turnTokens, m.toolCalls)
 }
 
 // appendWriter routes an io.Writer's output into the transcript (used by the

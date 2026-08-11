@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"yagent/internal/agent"
 	"yagent/internal/config"
@@ -37,6 +38,40 @@ type autoApprover struct{}
 
 func (autoApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
 	return true, nil
+}
+
+// toggleableApprover wraps a prompting approver and can be switched to yolo
+// mode at runtime via /yolo.
+type toggleableApprover struct {
+	inner agent.Approver
+	mu    sync.RWMutex
+	yolo  bool
+}
+
+func newToggleableApprover(inner agent.Approver) *toggleableApprover {
+	return &toggleableApprover{inner: inner}
+}
+
+func (t *toggleableApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
+	t.mu.RLock()
+	yolo := t.yolo
+	t.mu.RUnlock()
+	if yolo {
+		return true, nil
+	}
+	return t.inner.Approve(ctx, call, risk)
+}
+
+func (t *toggleableApprover) SetYOLO(on bool) {
+	t.mu.Lock()
+	t.yolo = on
+	t.mu.Unlock()
+}
+
+func (t *toggleableApprover) IsYOLO() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.yolo
 }
 
 // RunChat runs an agent-driven REPL: user lines go through the agent loop,
@@ -78,9 +113,9 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		fmt.Fprintf(w, "  [index] %s\n", line)
 	})
 	reader := bufio.NewReader(os.Stdin)
-	var ap agent.Approver = &replApprover{reader: reader, writer: w}
+	ap := newToggleableApprover(&replApprover{reader: reader, writer: w})
+	ap.SetYOLO(opts.YOLO)
 	if opts.YOLO {
-		ap = autoApprover{}
 		env.registry.SetSkillsWriteApproval(false)
 	}
 
@@ -91,14 +126,15 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		})
 
 	skillsCmd := &skillsHandler{
-		store:    env.sk,
-		reg:      env.registry,
-		cfg:      cfg,
-		w:        w,
-		approval: &cfg.Skills.WriteApproval,
-		ctx:      ctx,
-		client:   client,
-		env:      env,
+		store:       env.sk,
+		reg:         env.registry,
+		cfg:         cfg,
+		w:           w,
+		approval:    &cfg.Skills.WriteApproval,
+		ctx:         ctx,
+		client:      client,
+		env:         env,
+		yoloToggler: ap,
 	}
 
 	fmt.Printf("yagent chat — session %s (/exit, /clear, /help)\n", env.sessionID)
@@ -129,7 +165,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			fmt.Fprintln(w, "history cleared")
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /help /export [file] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /help /yolo /export [file] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
@@ -270,14 +306,15 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 
 // skillsHandler implements the /skills and /skill-name REPL commands.
 type skillsHandler struct {
-	store    *skills.Store
-	reg      *tools.Registry
-	cfg      *config.Config
-	w        io.Writer
-	approval *bool
-	ctx      context.Context
-	client   *llm.Client
-	env      *chatEnv
+	store       *skills.Store
+	reg         *tools.Registry
+	cfg         *config.Config
+	w           io.Writer
+	approval    *bool
+	ctx         context.Context
+	client      *llm.Client
+	env         *chatEnv
+	yoloToggler *toggleableApprover
 }
 
 // denyWriteApprover allows only read-only tools during skill verification
@@ -298,6 +335,8 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.handleSkills(strings.Fields(rest)[1:])
 	case rest == "export" || strings.HasPrefix(rest, "export "):
 		return h.exportSession(rest, ag)
+	case rest == "yolo" || strings.HasPrefix(rest, "yolo "):
+		return h.handleYOLO(rest)
 	default:
 		// /skill-name: load a SKILL.md into context and continue.
 		content, warning, err := h.store.View(rest, "")
@@ -471,6 +510,39 @@ func (h *skillsHandler) pendingIDs(id string) ([]string, error) {
 		ids = append(ids, p.ID)
 	}
 	return ids, nil
+}
+
+// handleYOLO toggles yolo mode at runtime: /yolo flips it, /yolo on|off sets
+// it. Yolo auto-approves every write/destructive tool and applies skill
+// writes immediately.
+func (h *skillsHandler) handleYOLO(rest string) (bool, error) {
+	parts := strings.Fields(rest)
+	var on bool
+	switch {
+	case len(parts) > 1 && parts[1] == "on":
+		on = true
+	case len(parts) > 1 && parts[1] == "off":
+		on = false
+	case len(parts) > 1:
+		return true, fmt.Errorf("yolo takes on|off, or bare /yolo to toggle")
+	default:
+		on = !h.yoloToggler.IsYOLO()
+	}
+	h.yoloToggler.SetYOLO(on)
+	h.reg.SetSkillsWriteApproval(!on)
+	suffix := ""
+	if on {
+		suffix = " and skill writes apply immediately"
+	}
+	fmt.Fprintf(h.w, "yolo mode %s — every write/destructive tool is auto-approved%s\n", boolWord(on), suffix)
+	return true, nil
+}
+
+func boolWord(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // verifyPending runs the verification harness on a staged skill write: the

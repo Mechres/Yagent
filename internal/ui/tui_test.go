@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"yagent/internal/llm"
 	"yagent/internal/skills"
+	"yagent/internal/tools"
 )
 
 func testModel(t *testing.T) *tuiModel {
@@ -87,5 +89,34 @@ func TestFsApprovalDiff(t *testing.T) {
 	other := llm.ToolCall{Function: llm.ToolCallFunction{Name: "shell_exec", Arguments: []byte(`{"command":"ls"}`)}}
 	if d := fsApprovalDiff(ws, other); d != "" {
 		t.Errorf("non-fs tool should yield no diff, got %q", d)
+	}
+}
+
+type recordingApprover struct{ n int }
+
+func (r *recordingApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
+	r.n++
+	return true, nil
+}
+
+func TestToggleableApprover(t *testing.T) {
+	inner := &recordingApprover{}
+	a := newToggleableApprover(inner)
+	call := llm.ToolCall{}
+	// yolo off -> delegates
+	if ok, _ := a.Approve(context.Background(), call, tools.RiskDestructive); !ok || inner.n != 1 {
+		t.Errorf("off mode: ok=%v n=%d, want delegate", ok, inner.n)
+	}
+	// yolo on -> auto-approves without touching the inner approver
+	a.SetYOLO(true)
+	if ok, _ := a.Approve(context.Background(), call, tools.RiskDestructive); !ok || inner.n != 1 {
+		t.Errorf("yolo mode: ok=%v n=%d, want auto (no delegate)", ok, inner.n)
+	}
+	if !a.IsYOLO() {
+		t.Error("IsYOLO should be true")
+	}
+	a.SetYOLO(false)
+	if a.IsYOLO() {
+		t.Error("IsYOLO should be false after off")
 	}
 }
