@@ -80,10 +80,74 @@ func main() {
 		if err := rep.Render(os.Stdout); err != nil {
 			os.Exit(1)
 		}
+	case "completion":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: yagent completion bash|zsh")
+			os.Exit(2)
+		}
+		script, err := completionScript(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Print(script)
 	default:
 		usage()
 	}
 }
+
+// completionScript returns a shell completion script for bash or zsh.
+func completionScript(shell string) (string, error) {
+	switch shell {
+	case "bash":
+		return bashCompletion, nil
+	case "zsh":
+		return zshCompletion, nil
+	}
+	return "", fmt.Errorf("unknown shell %q (bash | zsh)", shell)
+}
+
+const bashCompletion = `# yagent bash completion — source with: source <(yagent completion bash)
+_yagent() {
+    local cur
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    local commands="chat sessions skills doctor completion"
+    local chat_flags="--continue --fork --plain --yolo"
+    local skills_cmds="list import"
+    local scopes="global project"
+    if [ "$COMP_CWORD" -eq 1 ]; then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        return 0
+    fi
+    case "${COMP_WORDS[1]}" in
+        chat)
+            COMPREPLY=( $(compgen -W "$chat_flags" -- "$cur") ) ;;
+        skills)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=( $(compgen -W "$skills_cmds" -- "$cur") )
+            elif [ "$COMP_CWORD" -eq 3 ] && [ "${COMP_WORDS[2]}" = "import" ]; then
+                COMPREPLY=( $(compgen -f -- "$cur") )
+            elif [ "$COMP_CWORD" -eq 4 ] && [ "${COMP_WORDS[2]}" = "import" ]; then
+                COMPREPLY=( $(compgen -W "$scopes" -- "$cur") )
+            fi
+            ;;
+        completion)
+            COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") ) ;;
+    esac
+    return 0
+}
+complete -F _yagent yagent
+`
+
+const zshCompletion = `#compdef yagent
+# yagent zsh completion — add this directory to your fpath and symlink to _yagent
+_arguments '1:command:(chat sessions skills doctor completion)' '*: :->args'
+case $words[1] in
+  chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' ;;
+  skills) _arguments '1:skill command:(list import)' '*: :->file' ;;
+  completion) _arguments '1:shell:(bash zsh)' ;;
+esac
+`
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--plain] [--yolo] | yagent sessions | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")

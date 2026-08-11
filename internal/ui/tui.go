@@ -2,9 +2,11 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -88,6 +90,9 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		runnerCancel: runnerCancel, runnerDone: runnerDone,
 		input: newInput(),
 	}
+	if ws, err := os.Getwd(); err == nil {
+		m.workspace = ws
+	}
 	m.viewport = viewport.New(80, 20)
 	m.viewport.KeyMap.Up.SetEnabled(false) // avoid clashing with the text input
 	m.viewport.KeyMap.Down.SetEnabled(false)
@@ -149,10 +154,11 @@ func (a *tuiApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools
 // ---------- model ----------
 
 type tuiModel struct {
-	cfg    *config.Config
-	env    *chatEnv
-	ag     *agent.Agent
-	client *llm.Client
+	cfg       *config.Config
+	env       *chatEnv
+	ag        *agent.Agent
+	client    *llm.Client
+	workspace string
 
 	incoming     chan tea.Msg
 	inputCh      chan string
@@ -314,7 +320,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		m.pending = msg.respond
 		m.approveArg = msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments)
-		m.append(fmt.Sprintf("  ⚠ [%s] %s — allow? (y/n)", msg.risk, m.approveArg))
+		m.append(fmt.Sprintf("  ⚠ [%s] %s", msg.risk, m.approveArg))
+		if d := fsApprovalDiff(m.workspace, msg.call); d != "" {
+			m.append(d)
+		}
+		m.append("  allow? (y/n)")
 		return m, waitIncoming(m.incoming)
 
 	case turnDoneMsg:
@@ -385,6 +395,98 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.follow = true // new input snaps back to the bottom
 	m.inputCh <- text
 	return m, nil
+}
+
+// fsApprovalDiff renders a colorized before/after preview for fs_edit and
+// fs_write approval prompts. Returns "" when the call isn't one of those or
+// can't be read.
+func fsApprovalDiff(ws string, call llm.ToolCall) string {
+	var args struct {
+		Path      string `json:"path"`
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+		Content   string `json:"content"`
+	}
+	if err := json.Unmarshal(call.Function.Arguments, &args); err != nil || args.Path == "" {
+		return ""
+	}
+	full, err := approvePath(ws, args.Path)
+	if err != nil {
+		return ""
+	}
+	var oldText, newText string
+	switch call.Function.Name {
+	case "fs_edit":
+		oldText, newText = args.OldString, args.NewString
+	case "fs_write":
+		if data, err := os.ReadFile(full); err == nil {
+			oldText = string(data)
+		}
+		newText = args.Content
+	default:
+		return ""
+	}
+	return renderApprovalDiff(oldText, newText)
+}
+
+// approvePath resolves a model path relative to the workspace, rejecting
+// escapes (mirrors tools.resolvePath).
+func approvePath(ws, p string) (string, error) {
+	if p == "" || filepath.IsAbs(p) {
+		return "", fmt.Errorf("bad path %q", p)
+	}
+	abs := filepath.Clean(filepath.Join(ws, p))
+	root := filepath.Clean(ws)
+	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes workspace", p)
+	}
+	return abs, nil
+}
+
+// renderApprovalDiff is a crude colorized line diff (additions green,
+// removals red) for approval previews.
+func renderApprovalDiff(oldText, newText string) string {
+	oldLines := splitKeepEmpty(oldText)
+	newLines := splitKeepEmpty(newText)
+	green := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	red := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	var b strings.Builder
+	max := len(oldLines)
+	if len(newLines) > max {
+		max = len(newLines)
+	}
+	for i := 0; i < max; i++ {
+		o, n := "", ""
+		hasO, hasN := i < len(oldLines), i < len(newLines)
+		if hasO {
+			o = oldLines[i]
+		}
+		if hasN {
+			n = newLines[i]
+		}
+		switch {
+		case hasO && hasN && o == n:
+			b.WriteString("  " + o + "\n")
+		case hasO && hasN:
+			b.WriteString(red.Render("- "+o) + "\n")
+			b.WriteString(green.Render("+ "+n) + "\n")
+		case hasO:
+			b.WriteString(red.Render("- "+o) + "\n")
+		default:
+			b.WriteString(green.Render("+ "+n) + "\n")
+		}
+	}
+	if b.Len() == 0 {
+		return "(no changes)"
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func splitKeepEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(s, "\n"), "\n")
 }
 
 // flushStream commits the current streamed answer into the transcript.

@@ -230,6 +230,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	valFails := make(map[string]int)
 	blocked := make(map[string]bool)
 	turnCalls := 0
+	used := make(map[string]bool)
 
 	for i := 0; i < a.cfg.MaxIterations; i++ {
 		// Budget before every request: plain chat turns (no tool calls)
@@ -237,7 +238,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		if err := a.budget(ctx); err != nil {
 			return "", err
 		}
-		resp, err := a.llm.ChatStream(ctx, a.assembleContext(recall, code), a.registry.Schemas(), a.cfg.OnToken)
+		resp, err := a.llm.ChatStream(ctx, a.assembleContext(recall, code), a.activeToolSchemas(input, used), a.cfg.OnToken)
 		if err != nil {
 			return "", err
 		}
@@ -252,6 +253,9 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 			return resp.Message.Content, nil // final answer, done
 		}
 		turnCalls += len(resp.ToolCalls)
+		for _, tc := range resp.ToolCalls {
+			used[tc.Function.Name] = true
+		}
 		slog.Debug("model requested tools", "n", len(resp.ToolCalls), "iteration", i)
 
 		results := a.dispatchAll(ctx, resp.ToolCalls, valFails, blocked)
@@ -419,6 +423,66 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 		return header + b.String()[:maxChars] + "\n…"
 	}
 	return header + b.String()
+}
+
+// Tool groups for dynamic schema filtering (docs/design/agent-loop.md).
+// The core set is always offered; the web/index/skill_manage schemas are added
+// only when the input signals that domain or the model already used them this
+// turn. Filtering only shrinks what the model *sees* — the registry still
+// holds every tool, so a tool the model calls anyway still works.
+var (
+	coreToolNames = []string{
+		"fs_read", "fs_write", "fs_edit", "glob", "grep", "shell_exec",
+		"git_status", "git_diff", "git_log", "memory_save", "memory_search",
+		"skills_list", "skill_view",
+	}
+	webToolNames    = []string{"web_search", "web_fetch"}
+	indexToolNames  = []string{"index_search", "index_repo"}
+	skillManageName = []string{"skill_manage"}
+)
+
+// activeToolSchemas returns the tool schemas to offer for the next request:
+// the core set plus domain tools the input signals or the model already used
+// this turn.
+func (a *Agent) activeToolSchemas(input string, used map[string]bool) []llm.ToolSchema {
+	names := coreToolNames
+	if used["web_search"] || used["web_fetch"] || researchSignal(input) {
+		names = append(names, webToolNames...)
+	}
+	if used["index_search"] || used["index_repo"] || codeSignal(input) {
+		names = append(names, indexToolNames...)
+	}
+	if used["skill_manage"] || strings.Contains(strings.ToLower(input), "skill") {
+		names = append(names, skillManageName...)
+	}
+	return a.registry.SchemasFor(names)
+}
+
+func researchSignal(s string) bool {
+	l := strings.ToLower(s)
+	for _, kw := range []string{
+		"web", "internet", "online", "search", "latest", "news", "research",
+		"find out", "look up", "how do i", "how to", "url", "http",
+		"weather", "price", "compare", "supported", "install", "tutorial", "guide",
+	} {
+		if strings.Contains(l, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func codeSignal(s string) bool {
+	l := strings.ToLower(s)
+	for _, kw := range []string{
+		"code", "function", "repo", "source", "implement", "bug", "fix",
+		"where is", "where does", "find", "index", "file", "method",
+	} {
+		if strings.Contains(l, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // assembleContext prepends ONE system message — system prompt + L0 skills

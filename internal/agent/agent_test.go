@@ -19,6 +19,7 @@ import (
 	"yagent/internal/memory"
 	"yagent/internal/skills"
 	"yagent/internal/tools"
+	"yagent/internal/web"
 )
 
 // memoryOpen / memoryOpenVector are thin wrappers so agent tests can use the
@@ -901,5 +902,58 @@ func TestMemorySaveSelfGated(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("memory not saved: %+v", mem)
+	}
+}
+
+func TestActiveToolSchemasFilters(t *testing.T) {
+	ws := t.TempDir()
+	sk, err := skills.Open(ws, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wc, err := web.New(web.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := index.Open(ws, ws, "http://127.0.0.1:1", "e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry(ws, tools.Options{Skills: sk, Web: wc, Index: idx, SkillsWriteApproval: true})
+	a := New(nil, reg, nil, Config{MaxIterations: 5}, ws)
+
+	has := func(schemas []llm.ToolSchema, name string) bool {
+		for _, s := range schemas {
+			if s.Function.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	// no signal -> web/index/skill_manage excluded, core present
+	schemas := a.activeToolSchemas("hi there, how are you doing today", map[string]bool{})
+	if has(schemas, "web_search") || has(schemas, "index_search") || has(schemas, "skill_manage") {
+		t.Error("domain tools offered without a signal")
+	}
+	for _, c := range coreToolNames {
+		if !has(schemas, c) {
+			t.Errorf("core tool %s missing", c)
+		}
+	}
+	// research signal -> web included
+	if !has(a.activeToolSchemas("search the web for the latest news", map[string]bool{}), "web_search") {
+		t.Error("web_search missing with a research signal")
+	}
+	// code signal -> index included
+	if !has(a.activeToolSchemas("where is the validate function in the repo", map[string]bool{}), "index_search") {
+		t.Error("index_search missing with a code signal")
+	}
+	// used this turn -> included regardless of signal
+	if !has(a.activeToolSchemas("read the file", map[string]bool{"web_search": true}), "web_search") {
+		t.Error("web_search missing after being used this turn")
+	}
+	if !has(a.activeToolSchemas("read the file", map[string]bool{"skill_manage": true}), "skill_manage") {
+		t.Error("skill_manage missing after being used this turn")
 	}
 }

@@ -1,7 +1,7 @@
 # Yagent improvement roadmap
 
-Consolidated, prioritized plan for post-M6 work. Status: **in progress** — the
-three P0 items are implemented; the rest are queued for the next pass.
+Consolidated, prioritized plan for post-M6 work. Status: **P0 and P1 complete** —
+the remaining items are P2/deferred.
 
 Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
@@ -28,11 +28,15 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   (the first build stays an explicit `index_repo`).
 - ✅ Real versioning (`git describe` via `make build`) instead of `v0.0.0`;
   added a `Makefile` (`make build|test|vet|race|version`).
-- 🟡 Dynamic tool-schema filtering: omit irrelevant tool definitions (e.g. web
-  tools outside research turns) to reclaim ~1.5k system-prompt tokens/turn.
-- 🟡 TUI diff overlay for `fs_edit`/`fs_write` approvals (colorized side-by-side
-  instead of raw patch lines).
-- 🟡 Shell completions (bash/zsh) for `chat|sessions|skills|doctor`.
+- ✅ Dynamic tool-schema filtering: the core tool set is always offered; web /
+  index / `skill_manage` schemas are added only when the input signals that
+  domain or the model already used them this turn. Filtering shrinks what the
+  model *sees* (saves ~1k tokens/turn); the registry still holds every tool,
+  so a tool the model calls anyway still works.
+- ✅ TUI diff overlay: `fs_edit`/`fs_write` approval prompts render a colorized
+  before/after diff instead of raw argument JSON.
+- ✅ Shell completions: `yagent completion bash|zsh` emits a completion script
+  for `chat|sessions|skills|doctor`.
 
 ## P2 — deferred / gated
 
