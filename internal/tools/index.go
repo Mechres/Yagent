@@ -124,3 +124,43 @@ func kindNote(kind string) string {
 	}
 	return " of kind " + kind + " "
 }
+
+// ---------- code_references ----------
+
+type codeReferencesTool struct{ store *index.Store }
+
+type codeReferencesArgs struct {
+	Symbol string `json:"symbol"`
+}
+
+var codeReferencesSchema = fnSchema("code_references", "find every call site of a function by name: returns 'path:line' for each caller (call-graph, from the code index). Pair with index_search symbol lookup: search tells you where X is declared, code_references tells you who calls it",
+	map[string]any{
+		"symbol": strProp("the function name to find callers of, e.g. AssembleContext"),
+	},
+	[]string{"symbol"})
+
+func (t *codeReferencesTool) Schema() llm.ToolSchema { return codeReferencesSchema }
+func (t *codeReferencesTool) Risk() RiskLevel        { return RiskReadOnly }
+
+func (t *codeReferencesTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	var a codeReferencesArgs
+	if err := decodeArgs(raw, &a); err != nil {
+		return "", err
+	}
+	if a.Symbol == "" {
+		return "", validationErrorf(`argument "symbol" is required`)
+	}
+	if t.store == nil {
+		return "error: code index is not configured for this session", nil
+	}
+	refs := t.store.References(ctx, a.Symbol)
+	if len(refs) == 0 {
+		return fmt.Sprintf("no call sites for %q (run index_repo first?)", a.Symbol), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d call site(s) for %s:\n", len(refs), a.Symbol)
+	for _, r := range refs {
+		fmt.Fprintf(&b, "  %s:%d\n", r.Path, r.Line)
+	}
+	return capResult(b.String(), maxResultBytes), nil
+}

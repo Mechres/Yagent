@@ -281,19 +281,20 @@ func structuralChunks(path, content string, lang *language) []Chunk {
 	return chunksFromDecls(path, content, decls)
 }
 
-// parseDecls parses a supported file once and returns its top-level
-// declarations (text, line, name, kind), with adjacent doc comments attached.
-func parseDecls(path, content string, lang *language) []declInfo {
+// parseDeclsWithTree parses a supported file once and returns its top-level
+// declarations (text, line, name, kind), with adjacent doc comments attached,
+// plus the root node and tree so call refs can be extracted from the same
+// parse. The caller is responsible for closing the returned tree.
+func parseDeclsWithTree(path, content string, lang *language) ([]declInfo, *sitter.Node, *sitter.Tree) {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(lang.lang); err != nil {
-		return nil
+		return nil, nil, nil
 	}
 	tree := parser.Parse([]byte(content), nil)
 	if tree == nil {
-		return nil
+		return nil, nil, nil
 	}
-	defer tree.Close()
 	root := tree.RootNode()
 
 	var kids []*sitter.Node
@@ -325,7 +326,7 @@ func parseDecls(path, content string, lang *language) []declInfo {
 			kind:      friendlyKind(k.Kind()),
 		})
 	}
-	return out
+	return out, root, tree
 }
 
 // declInfo is one parsed top-level declaration. startLine includes any
@@ -407,16 +408,28 @@ func symbolsFromDecls(path string, decls []declInfo) []Symbol {
 // chunkAndSymbols parses a file once and returns both its chunks and symbols
 // (falling back to line windows for unsupported files). Used by Index() to
 // avoid a double parse.
-func chunkAndSymbols(path, content string) ([]Chunk, []Symbol) {
+func chunkAndSymbols(path, content string) ([]Chunk, []Symbol, []CallRef) {
 	lang := languageFor(path)
 	if lang == nil {
-		return lineWindowChunks(path, content, fallbackWindow), nil
+		return lineWindowChunks(path, content, fallbackWindow), nil, nil
 	}
-	decls := parseDecls(path, content, lang)
+	decls, root, tree := parseDeclsWithTree(path, content, lang)
+	defer tree.Close()
+	refs := refsFromTree(path, lang, root, []byte(content))
 	if len(decls) == 0 {
-		return lineWindowChunks(path, content, fallbackWindow), nil
+		return lineWindowChunks(path, content, fallbackWindow), nil, refs
 	}
-	return chunksFromDecls(path, content, decls), symbolsFromDecls(path, decls)
+	return chunksFromDecls(path, content, decls), symbolsFromDecls(path, decls), refs
+}
+
+// parseDecls extracts declarations, parsing the file once and returning the
+// root node so call refs can be extracted from the same parse.
+func parseDecls(path, content string, lang *language) []declInfo {
+	decls, _, tree := parseDeclsWithTree(path, content, lang)
+	if tree != nil {
+		tree.Close()
+	}
+	return decls
 }
 
 // splitChunk splits an oversized chunk into windows bounded by both

@@ -121,6 +121,43 @@ func validateToolInput(name string) error {
 	}
 }
 
+func TestCodeReferences(t *testing.T) {
+	ts := indexEmbedServer(t)
+	defer ts.Close()
+	ws := t.TempDir()
+	writeFile(t, ws, "pkg/a.go", `package pkg
+
+func caller() {
+	helper(1)
+	_ = helper
+}
+`)
+	writeFile(t, ws, "pkg/b.go", `package pkg
+
+func helper(x int) int { return x }
+`)
+	idx, err := index.Open(ws, t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(ws, Options{Index: idx})
+	if got := skillExec(t, reg, "index_repo", map[string]any{}); !strings.Contains(got, "indexed 2 files") {
+		t.Fatalf("index_repo = %q", got)
+	}
+	got := skillExec(t, reg, "code_references", map[string]any{"symbol": "helper"})
+	if !strings.Contains(got, "pkg/a.go:4") {
+		t.Errorf("code_references = %q", got)
+	}
+	// validation: missing symbol
+	if got := skillExec(t, reg, "code_references", map[string]any{}); !strings.Contains(got, "validation-error") {
+		t.Errorf("code_references no symbol = %q", got)
+	}
+	// no callers
+	if got := skillExec(t, reg, "code_references", map[string]any{"symbol": "nope"}); !strings.Contains(got, "no call sites") {
+		t.Errorf("code_references no match = %q", got)
+	}
+}
+
 func TestCodeOutline(t *testing.T) {
 	ws := t.TempDir()
 	writeFile(t, ws, "pkg/one.go", `package pkg
@@ -249,5 +286,23 @@ func TestRegistryRestrict(t *testing.T) {
 	ro := NewRegistry(t.TempDir(), Options{ReadOnly: true})
 	if _, err := ro.Restrict([]string{"shell_exec"}); err == nil {
 		t.Error("restricting a read-only registry to shell_exec should fail")
+	}
+}
+
+func TestCompactLines(t *testing.T) {
+	in := "error: build failed\n" + strings.Repeat("  FAIL: test_x\n", 5) + "ok\n"
+	got := compactLines(in)
+	if !strings.Contains(got, "[5×]") || strings.Contains(got, "FAIL: test_x\n  FAIL") {
+		t.Errorf("compactLines = %q", got)
+	}
+	// blank-line runs collapse
+	blanks := "a\n\n\n\n\n\nb\n"
+	if got := compactLines(blanks); strings.Contains(got, "\n\n\n\n") {
+		t.Errorf("blank run not collapsed: %q", got)
+	}
+	// single lines pass through untouched
+	uniq := "one\ntwo\nthree\n"
+	if got := compactLines(uniq); got != uniq {
+		t.Errorf("unique lines altered: %q", got)
 	}
 }

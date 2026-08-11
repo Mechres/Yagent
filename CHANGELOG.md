@@ -46,6 +46,25 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## v0.1.1 — 2026-08-11
 
 ### Added
+- **Fuzzy tool arguments**: `decodeArgs` now maps unknown keys onto the closest
+  schema field (synonyms like `filename`→`path`, plus Levenshtein) so small
+  models stop burning retry turns on `{"filename":"x"}` instead of
+  `{"path":"x"}`; canonical keys win when both are present.
+- **Workspace checkpoints**: goal mode auto-snapshots the workspace to
+  `.yagent/checkpoints/goal/` before running; `/checkpoint list | save
+  <name> | restore <name> | delete <name>` reverts a stray autonomous run
+  (snapshots exclude `.git`/`.yagent`).
+- **Call graph**: the indexer now records function-call edges (tree-sitter
+  queries for go/python/js/ts/rust/c/cpp/java) and a new `code_references`
+  tool answers "who calls X?" with `path:line` call sites.
+- **Subagent scratchpad**: `scratch_write`/`scratch_read` let parallel
+  subagents share structured notes under `.yagent/scratch/` (scratch_write is
+  the one confined write tool available to read-only subagents).
+- **Context compactor**: `capResult` collapses runs of identical lines
+  (`… [N×]`) and blank-line runs, so repetitive build/test logs stop flooding
+  the context window.
+- **fs_patch approval preview**: the TUI now shows a colorized unified-diff
+  preview before approving a multi-file patch.
 - **Reasoning display**: the model's thinking (`reasoning_content`, emitted by
   Qwythos/Qwen3.5 templates) now streams into the UI as a dimmed/italic
   "thinking" block above the answer — TUI and REPL. It stays display-only and

@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS index_symbols (
     line  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON index_symbols(name, kind);
+CREATE TABLE IF NOT EXISTS index_calls (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    path    TEXT NOT NULL,
+    line    INTEGER NOT NULL,
+    callee  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_calls_callee ON index_calls(callee);
 `
 
 // Summary reports what one Index pass did.
@@ -159,12 +166,18 @@ func (s *Store) Index(ctx context.Context) (Summary, error) {
 		if err := s.removeSymbols(ctx, rel); err != nil {
 			return sum, err
 		}
-		chunks, syms := chunkAndSymbols(rel, string(content))
-		if len(chunks) == 0 {
+		if err := s.removeRefs(ctx, rel); err != nil {
+			return sum, err
+		}
+		chunks, syms, refs := chunkAndSymbols(rel, string(content))
+		if len(chunks) == 0 && len(refs) == 0 {
 			continue
 		}
 		newChunks = append(newChunks, chunks...)
 		if err := s.insertSymbols(ctx, syms); err != nil {
+			return sum, err
+		}
+		if err := s.insertRefs(ctx, refs); err != nil {
 			return sum, err
 		}
 		sum.Files++
@@ -206,6 +219,9 @@ func (s *Store) Index(ctx context.Context) (Summary, error) {
 			return sum, err
 		}
 		if err := s.removeSymbols(ctx, rel); err != nil {
+			return sum, err
+		}
+		if err := s.removeRefs(ctx, rel); err != nil {
 			return sum, err
 		}
 		if _, err := s.db.ExecContext(ctx, `DELETE FROM index_files WHERE path = ?`, rel); err != nil {
@@ -321,6 +337,46 @@ func (s *Store) removeSymbols(ctx context.Context, rel string) error {
 		return fmt.Errorf("remove symbols: %w", err)
 	}
 	return nil
+}
+
+// insertRefs stores a file's call sites (already parsed by chunkAndSymbols).
+func (s *Store) insertRefs(ctx context.Context, refs []CallRef) error {
+	for _, r := range refs {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO index_calls (path, line, callee) VALUES (?, ?, ?)`,
+			r.Path, r.Line, r.Callee); err != nil {
+			return fmt.Errorf("insert call ref: %w", err)
+		}
+	}
+	return nil
+}
+
+// removeRefs deletes a file's call sites.
+func (s *Store) removeRefs(ctx context.Context, rel string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM index_calls WHERE path = ?`, rel); err != nil {
+		return fmt.Errorf("remove call refs: %w", err)
+	}
+	return nil
+}
+
+// References returns every indexed call site of callee, in path/line order.
+func (s *Store) References(ctx context.Context, callee string) []CallRef {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT path, line FROM index_calls WHERE callee = ? ORDER BY path, line`, callee)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []CallRef
+	for rows.Next() {
+		var r CallRef
+		if err := rows.Scan(&r.Path, &r.Line); err != nil {
+			return out
+		}
+		r.Callee = callee
+		out = append(out, r)
+	}
+	return out
 }
 
 // SymbolResult is one exact-name symbol match.

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -411,6 +412,29 @@ func TestStreamTailWraps(t *testing.T) {
 	}
 	if w := lipgloss.Width(m.statusView()); w > 40 {
 		t.Errorf("status width %d > 40", w)
+	}
+}
+
+func TestFsPatchApprovalPreview(t *testing.T) {
+	ws := t.TempDir()
+	patch := `--- a/a.go
++++ b/a.go
+@@ -1,2 +1,2 @@
+ func old() int {
+-    return 1
++    return 2
+ }`
+	args, _ := json.Marshal(map[string]string{"patch": patch})
+	call := llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_patch", Arguments: args}}
+	d := fsApprovalDiff(tokyoNight, ws, call)
+	ansi := ansiStrip(d)
+	if !strings.Contains(ansi, "+    return 2") || !strings.Contains(ansi, "-    return 1") || !strings.Contains(ansi, "@@") {
+		t.Errorf("fs_patch preview = %q", ansi)
+	}
+	// empty patch -> explicit marker
+	empty := llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_patch", Arguments: []byte(`{"patch":""}`)}}
+	if got := ansiStrip(fsApprovalDiff(tokyoNight, ws, empty)); !strings.Contains(got, "empty patch") {
+		t.Errorf("empty patch preview = %q", got)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/checkpoint"
 	"github.com/Mechres/Yagent/internal/config"
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/jobs"
@@ -271,6 +272,13 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 	if env.forkSource != "" {
 		fmt.Printf("(forked from %s)\n", env.forkSource)
 	}
+	if ws, err := os.Getwd(); err == nil {
+		if dir, err := checkpoint.Save(ws, checkpoint.GoalName); err != nil {
+			fmt.Fprintf(w, "(warning: could not snapshot workspace for rollback: %v)\n", err)
+		} else {
+			fmt.Fprintf(w, "workspace snapshotted (%s) — revert later with /checkpoint restore goal\n", dir)
+		}
+	}
 	answer, err := ag.RunGoal(ctx, goal, rounds, func(r int, _ string) {
 		fmt.Fprintf(w, "\n—— round %d ——\n", r)
 	})
@@ -466,6 +474,8 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.setSetting(rest)
 	case rest == "undo":
 		return h.undoLastTurn()
+	case rest == "checkpoint" || strings.HasPrefix(rest, "checkpoint "):
+		return h.handleCheckpoint(rest)
 	default:
 		// /skill-name: load a SKILL.md into context and continue.
 		content, warning, err := h.store.View(rest, "")
@@ -648,6 +658,59 @@ func (h *skillsHandler) undoLastTurn() (bool, error) {
 	return true, nil
 }
 
+// handleCheckpoint manages workspace snapshots: /checkpoint [list], save,
+// restore, delete. Goal mode auto-saves a "goal" snapshot before running.
+func (h *skillsHandler) handleCheckpoint(rest string) (bool, error) {
+	ws, err := os.Getwd()
+	if err != nil {
+		return true, fmt.Errorf("workspace: %w", err)
+	}
+	parts := strings.Fields(strings.TrimSpace(strings.TrimPrefix(rest, "checkpoint")))
+	usage := "usage: /checkpoint save <name> | restore <name> | delete <name>"
+	if len(parts) == 0 {
+		names := checkpoint.List(ws)
+		if len(names) == 0 {
+			fmt.Fprintln(h.w, "no checkpoints yet (goal mode auto-saves a 'goal' snapshot)")
+			return true, nil
+		}
+		for _, n := range names {
+			fmt.Fprintf(h.w, "  %s  (%s)\n", n, checkpoint.FormatAge(ws, n))
+		}
+		fmt.Fprintln(h.w, usage)
+		return true, nil
+	}
+	switch parts[0] {
+	case "save":
+		if len(parts) < 2 {
+			return true, errors.New(usage)
+		}
+		dir, err := checkpoint.Save(ws, parts[1])
+		if err != nil {
+			return true, err
+		}
+		fmt.Fprintf(h.w, "  saved checkpoint %s -> %s\n", parts[1], dir)
+	case "restore":
+		if len(parts) < 2 {
+			return true, errors.New(usage)
+		}
+		if err := checkpoint.Restore(ws, parts[1]); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(h.w, "  restored workspace from checkpoint %s\n", parts[1])
+	case "delete":
+		if len(parts) < 2 {
+			return true, errors.New(usage)
+		}
+		if err := checkpoint.Delete(ws, parts[1]); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(h.w, "  deleted checkpoint %s\n", parts[1])
+	default:
+		return true, fmt.Errorf("unknown checkpoint subcommand %q; %s", parts[0], usage)
+	}
+	return true, nil
+}
+
 // showSettings prints every editable setting and its current value.
 func (h *skillsHandler) showSettings() (bool, error) {
 	for _, s := range config.Settings() {
@@ -768,6 +831,13 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 // a round marker per round; the answers stream through the UI's OnToken.
 func (h *skillsHandler) runGoal(ag *agent.Agent, goal string) (bool, error) {
 	fmt.Fprintf(h.w, "goal mode — working toward: %s\n", goal)
+	if ws, err := os.Getwd(); err == nil {
+		if dir, err := checkpoint.Save(ws, checkpoint.GoalName); err != nil {
+			fmt.Fprintf(h.w, "(warning: could not snapshot workspace for rollback: %v)\n", err)
+		} else {
+			fmt.Fprintf(h.w, "workspace snapshotted (%s) — revert later with /checkpoint restore goal\n", dir)
+		}
+	}
 	_, err := ag.RunGoal(h.ctx, goal, agent.DefaultGoalRounds, func(r int, _ string) {
 		fmt.Fprintf(h.w, "\n—— round %d ——\n", r)
 	})

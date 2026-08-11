@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -134,6 +135,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	if opts.Index != nil {
 		reg["index_repo"] = &indexRepoTool{store: opts.Index, onProgress: opts.IndexProgress}
 		reg["index_search"] = &indexSearchTool{store: opts.Index}
+		reg["code_references"] = &codeReferencesTool{store: opts.Index}
 	}
 	if opts.Web != nil {
 		reg["web_search"] = &webSearchTool{client: opts.Web}
@@ -150,9 +152,13 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		reg["shell_logs"] = &shellLogsTool{jobs: opts.Jobs}
 		reg["shell_kill"] = &shellKillTool{jobs: opts.Jobs}
 	}
+	// Scratchpad: available to everyone, including read-only subagents (its
+	// writes are strictly confined to .yagent/scratch/).
+	reg["scratch_write"] = &scratchWriteTool{ws: r.workspace}
+	reg["scratch_read"] = &scratchReadTool{ws: r.workspace}
 	for name, t := range reg {
-		if opts.ReadOnly && t.Risk() != RiskReadOnly {
-			continue // subagents get read-only tools only
+		if opts.ReadOnly && t.Risk() != RiskReadOnly && name != "scratch_write" {
+			continue // subagents get read-only tools (plus the confined scratch_write)
 		}
 		r.tools[name] = t
 	}
@@ -273,24 +279,167 @@ func numProp(description string) map[string]any {
 // decodeArgs strictly decodes the model's JSON arguments into v. Unknown
 // fields and malformed JSON produce ValidationErrors the model can fix. Minor
 // JSON slips (trailing commas, raw newlines inside strings) get one repair
-// pass first so a small model doesn't burn a retry turn on them.
+// pass first, then a fuzzy key-alias pass, so a small model doesn't burn a
+// retry turn on {"filename": "x"} instead of {"path": "x"}.
 func decodeArgs(args json.RawMessage, v any) error {
 	if len(bytes.TrimSpace(args)) == 0 {
 		return validationErrorf("no arguments provided; pass a JSON object with the required fields")
 	}
+	if err := strictDecode(args, v); err == nil {
+		return nil
+	}
+	if repaired := repairJSON(args); string(repaired) != string(args) {
+		if err := strictDecode(repaired, v); err == nil {
+			return nil
+		}
+		args = repaired
+	}
+	if aliased := aliasKeys(args, v); aliased != nil {
+		if err := strictDecode(aliased, v); err == nil {
+			return nil
+		}
+	}
+	return validationErrorf("invalid arguments: unknown or malformed fields; pass a JSON object matching the tool schema")
+}
+
+func strictDecode(args json.RawMessage, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(args))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		if repaired := repairJSON(args); string(repaired) != string(args) {
-			dec2 := json.NewDecoder(bytes.NewReader(repaired))
-			dec2.DisallowUnknownFields()
-			if err2 := dec2.Decode(v); err2 == nil {
-				return nil
-			}
-		}
 		return validationErrorf("invalid arguments: %v; pass a JSON object matching the schema", err)
 	}
 	return nil
+}
+
+// aliasKeys rewrites an arguments object, mapping unknown keys onto the closest
+// schema field by synonym or Levenshtein distance ({"filename":"main.go"} →
+// {"path":"main.go"}). Returns nil when nothing was remapped. The model sees
+// the corrected arguments in the next history turn, so it learns the real
+// names.
+func aliasKeys(args json.RawMessage, v any) json.RawMessage {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(args, &m); err != nil || len(m) == 0 {
+		return nil
+	}
+	fields := jsonFieldNames(v)
+	if len(fields) == 0 {
+		return nil
+	}
+	changed := false
+	for key, val := range m {
+		if _, ok := fields[key]; ok {
+			continue
+		}
+		alias, ok := fuzzyFieldName(key, fields)
+		if !ok {
+			continue
+		}
+		if _, taken := m[alias]; taken {
+			// canonical key already present; the alias is redundant
+			delete(m, key)
+			changed = true
+			continue
+		}
+		m[alias] = val
+		delete(m, key)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// jsonFieldNames returns the JSON field names of a flat struct (json tags).
+func jsonFieldNames(v any) map[string]bool {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return nil
+	}
+	rt := rv.Elem().Type()
+	if rt.Kind() != reflect.Struct {
+		return nil
+	}
+	names := make(map[string]bool, rt.NumField())
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		name := strings.Split(tag, ",")[0]
+		names[name] = true
+	}
+	return names
+}
+
+// fuzzyFieldName maps an unknown key to the closest schema field using a small
+// synonym table first, then Levenshtein distance (allowing one edit per ~3
+// characters).
+func fuzzyFieldName(key string, fields map[string]bool) (string, bool) {
+	lk := strings.ToLower(key)
+	// synonyms: only applied when the target field actually exists
+	for _, syn := range []struct{ alias, canonical string }{
+		{"filename", "path"}, {"file", "path"}, {"dir", "path"}, {"folder", "path"},
+		{"filepath", "path"}, {"cmd", "command"}, {"shell", "command"},
+		{"regex", "pattern"}, {"content", "body"}, {"text", "content"},
+		{"output", "content"}, {"timeout", "timeout_sec"},
+	} {
+		if lk == syn.alias && fields[syn.canonical] {
+			return syn.canonical, true
+		}
+	}
+	// Levenshtein against each candidate field
+	best, bestD := "", 0
+	for f := range fields {
+		d := levenshtein(lk, strings.ToLower(f))
+		limit := 1 + len(f)/3
+		if d <= limit && (best == "" || d < bestD) {
+			best, bestD = f, d
+		}
+	}
+	if best != "" && bestD > 0 {
+		return best, true
+	}
+	return "", false
+}
+
+// levenshtein computes the edit distance between two strings.
+func levenshtein(a, b string) int {
+	la, lb := len(a), len(b)
+	prev := make([]int, lb+1)
+	cur := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		cur[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			cur[j] = min3(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[lb]
+}
+
+func min3(a, b, c int) int {
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
 }
 
 // repairJSON fixes the most common small-model JSON slips without changing
@@ -424,8 +573,52 @@ func capResult(s string, maxBytes int) string {
 	if maxBytes <= 0 {
 		maxBytes = maxResultBytes
 	}
-	if len(s) <= maxBytes {
-		return s
+	// Collapse repeated runs of identical lines first: build/test logs spam
+	// the same line (repeating errors, progress ticks) and eat the budget.
+	compact := compactLines(s)
+	if len(compact) <= maxBytes {
+		return compact
 	}
-	return s[:maxBytes] + fmt.Sprintf("\n... truncated (%d bytes omitted)", len(s)-maxBytes)
+	return compact[:maxBytes] + fmt.Sprintf("\n... truncated (%d bytes omitted)", len(compact)-maxBytes)
+}
+
+// compactLines collapses consecutive duplicate lines into "line" + "… [N×]",
+// and drops runs of 3+ blank lines. Used to keep repetitive tool output
+// (build logs, test errors) from flooding the context window.
+func compactLines(s string) string {
+	lines := strings.Split(s, "\n")
+	var out []string
+	run, prev := 1, ""
+	flush := func() {
+		if prev == "" {
+			return
+		}
+		if run > 1 {
+			prev = fmt.Sprintf("%s … [%d×]", prev, run)
+		}
+		out = append(out, prev)
+	}
+	blank := 0
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			blank++
+			if blank > 3 {
+				continue
+			}
+		} else {
+			blank = 0
+		}
+		if ln == prev && prev != "" {
+			run++
+			continue
+		}
+		flush()
+		prev, run = ln, 1
+	}
+	flush()
+	joined := strings.Join(out, "\n")
+	if strings.HasSuffix(s, "\n") && !strings.HasSuffix(joined, "\n") {
+		joined += "\n"
+	}
+	return joined
 }

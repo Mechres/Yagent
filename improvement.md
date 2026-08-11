@@ -75,9 +75,14 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   is scoped to the requested read-only tools (invalid/destructive requests are
   rejected and fed back), and the child's summary already feeds back into the
   parent as the tool result.
-- 🟡 M7 beyond v2 (remaining): richer orchestration — results feeding back
-  into the parent beyond a summary string (shared scratchpad). Only if real
-  use shows the summary is the bottleneck.
+- ✅ M7 beyond v2 (more): shared subagent scratchpad (`scratch_write`/
+  `scratch_read` under `.yagent/scratch/`), call-graph `code_references`,
+  workspace checkpoints for goal mode (`/checkpoint`), fuzzy tool-argument
+  aliasing, and tool-output compaction.
+- 🟡 M7 beyond v2 (remaining): deeper orchestration — a shared structured
+  memory beyond a string summary (a true subagent workspace), and an
+  interactive per-hunk fs_patch approval modal. Only if real use shows the
+  summary / atomic approval is the bottleneck.
 - 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and
   hybrid search.
 - ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site —

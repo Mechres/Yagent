@@ -590,36 +590,76 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// fsApprovalDiff renders a colorized before/after preview for fs_edit and
-// fs_write approval prompts. Returns "" when the call isn't one of those or
-// can't be read.
+// fsApprovalDiff renders a colorized before/after preview for fs_edit,
+// fs_write and fs_patch approval prompts. Returns "" when the call isn't one
+// of those or can't be read.
 func fsApprovalDiff(th Theme, ws string, call llm.ToolCall) string {
 	var args struct {
 		Path      string `json:"path"`
 		OldString string `json:"old_string"`
 		NewString string `json:"new_string"`
 		Content   string `json:"content"`
+		Patch     string `json:"patch"`
 	}
-	if err := json.Unmarshal(call.Function.Arguments, &args); err != nil || args.Path == "" {
+	if err := json.Unmarshal(call.Function.Arguments, &args); err != nil {
 		return ""
 	}
-	full, err := approvePath(ws, args.Path)
-	if err != nil {
-		return ""
-	}
-	var oldText, newText string
 	switch call.Function.Name {
 	case "fs_edit":
-		oldText, newText = args.OldString, args.NewString
+		if args.Path == "" {
+			return ""
+		}
+		if _, err := approvePath(ws, args.Path); err != nil {
+			return ""
+		}
+		return renderApprovalDiff(th, args.OldString, args.NewString)
 	case "fs_write":
+		if args.Path == "" {
+			return ""
+		}
+		full, err := approvePath(ws, args.Path)
+		if err != nil {
+			return ""
+		}
+		oldText := ""
 		if data, err := os.ReadFile(full); err == nil {
 			oldText = string(data)
 		}
-		newText = args.Content
+		return renderApprovalDiff(th, oldText, args.Content)
+	case "fs_patch":
+		// The patch is already a unified diff; render its lines colorized
+		// (add/remove/hunk markers) so the user sees exactly what will change.
+		return renderPatchPreview(th, args.Patch)
 	default:
 		return ""
 	}
-	return renderApprovalDiff(th, oldText, newText)
+}
+
+// renderPatchPreview colorizes a unified-diff string for approval previews.
+func renderPatchPreview(th Theme, patch string) string {
+	if patch == "" {
+		return "(empty patch)"
+	}
+	add := lipgloss.NewStyle().Foreground(th.Success)
+	del := lipgloss.NewStyle().Foreground(th.Error)
+	hunk := lipgloss.NewStyle().Foreground(th.Secondary)
+	meta := lipgloss.NewStyle().Foreground(th.Muted)
+	var lines []string
+	for _, ln := range strings.Split(strings.TrimRight(patch, "\n"), "\n") {
+		switch {
+		case strings.HasPrefix(ln, "+++") || strings.HasPrefix(ln, "---"):
+			lines = append(lines, meta.Render(ln))
+		case strings.HasPrefix(ln, "@@"):
+			lines = append(lines, hunk.Render(ln))
+		case strings.HasPrefix(ln, "+"):
+			lines = append(lines, add.Render(ln))
+		case strings.HasPrefix(ln, "-"):
+			lines = append(lines, del.Render(ln))
+		default:
+			lines = append(lines, ln)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // approvePath resolves a model path against the workspace, rejecting escapes
