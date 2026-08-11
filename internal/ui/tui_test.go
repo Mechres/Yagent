@@ -523,6 +523,30 @@ func TestReasoningToggleAndCap(t *testing.T) {
 	}
 }
 
+func TestMouseToggle(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 24
+	if m.mouseOn {
+		t.Fatal("mouse must start off so drag-select works")
+	}
+	m.toggleMouse()
+	if !m.mouseOn {
+		t.Fatal("toggle should enable mouse")
+	}
+	if st, _ := m.statusText(); !strings.Contains(st, "mouse") {
+		t.Error("status should flag mouse capture when on")
+	}
+	m.toggleMouse()
+	if m.mouseOn {
+		t.Fatal("toggle should disable mouse")
+	}
+	if st, _ := m.statusText(); strings.Contains(st, "mouse") {
+		t.Error("status should clear the mouse marker when off")
+	}
+}
+
 func TestThinkingClickToggles(t *testing.T) {
 	m := testModel(t)
 	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())

@@ -112,11 +112,10 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	m.viewport = viewport.New(80, 20)
 	m.viewport.KeyMap.Up.SetEnabled(false) // avoid clashing with the text input
 	m.viewport.KeyMap.Down.SetEnabled(false)
-	// Mouse is captured so the thinking block can be clicked to expand/collapse
-	// and the wheel scrolls the transcript. Keyboard scroll (PgUp/PgDn, arrows
-	// when the input is empty, Ctrl-U/D) still works; the cost is that
-	// drag-selecting transcript text is no longer handed to the terminal.
-	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Mouse starts OFF so drag-selecting transcript text stays with the
+	// terminal. Ctrl+M (or /mouse) enables capture to click the thinking block
+	// and wheel-scroll; Ctrl+M again hands selection back.
+	p := tea.NewProgram(&m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
@@ -211,6 +210,7 @@ type tuiModel struct {
 	tabIndex           int
 	lastInput          string
 	err                error
+	mouseOn            bool // mouse capture enabled (click thinking / wheel scroll)
 
 	// fs_patch per-hunk review state (see handleHunkKey).
 	hunkHunks   []tools.PatchHunk
@@ -474,6 +474,38 @@ func (m *tuiModel) scroll(up bool) {
 	}
 }
 
+// quitCmd quits, disabling mouse capture first if it's on (so the terminal
+// doesn't keep swallowing clicks after the TUI exits).
+func (m *tuiModel) quitCmd() tea.Cmd {
+	if m.mouseOn {
+		return tea.Batch(mouseCmd(false), tea.Quit)
+	}
+	return tea.Quit
+}
+
+// mouseCmd returns a Cmd that enables or disables terminal mouse reporting at
+// runtime (EnableMouseCellMotion/DisableMouse are Msg values, so they're
+// wrapped as commands).
+func mouseCmd(on bool) tea.Cmd {
+	if on {
+		return func() tea.Msg { return tea.EnableMouseCellMotion() }
+	}
+	return func() tea.Msg { return tea.DisableMouse() }
+}
+
+// toggleMouse switches mouse capture on/off at runtime: off (default) keeps
+// drag-select with the terminal; on enables clicking the thinking block and
+// wheel-scrolling the transcript.
+func (m *tuiModel) toggleMouse() tea.Cmd {
+	m.mouseOn = !m.mouseOn
+	if m.mouseOn {
+		m.append("  mouse capture on — click 🧠 to expand thinking, wheel to scroll (Ctrl+M to release)")
+		return mouseCmd(true)
+	}
+	m.append("  mouse capture off — drag-select text in the terminal works again")
+	return mouseCmd(false)
+}
+
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -523,7 +555,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.append("  turn still running — quit anyway? (y/n)")
 				return m, m.nextCmd()
 			}
-			return m, tea.Quit
+			return m, m.quitCmd()
+		case "ctrl+m":
+			return m, m.toggleMouse()
 		case "t", "T":
 			// Toggle the last thinking block when the input is empty (so
 			// typing isn't hijacked) and a toggleable block exists.
@@ -533,7 +567,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			if m.confirmQuit {
-				return m, tea.Quit
+				return m, m.quitCmd()
 			}
 			return m.submitLine()
 		case "tab":
@@ -559,7 +593,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "y", "Y":
 			if m.confirmQuit {
-				return m, tea.Quit
+				return m, m.quitCmd()
 			}
 		case "n", "N":
 			if m.confirmQuit {
@@ -649,11 +683,14 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	}
 	switch text {
 	case "/exit":
-		return m, tea.Quit
+		return m, m.quitCmd()
+	case "/mouse":
+		m.input.Reset()
+		return m, m.toggleMouse()
 	case "/help":
 		m.input.Reset()
-		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|approve|reject|approval /skill-name")
-		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty")
+		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /mouse /skills list|pending|diff|approve|reject|approval /skill-name")
+		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty; mouse capture: Ctrl+M")
 		return m, m.nextCmd()
 	case "/settings":
 		m.input.Reset()
@@ -1532,6 +1569,9 @@ func (m *tuiModel) statusText() (string, lipgloss.Color) {
 	}
 	if m.yoloToggler != nil && m.yoloToggler.IsYOLO() {
 		state += " · yolo"
+	}
+	if m.mouseOn {
+		state += " · mouse"
 	}
 	base := marker + " " + state
 	if m.busy {

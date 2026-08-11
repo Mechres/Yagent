@@ -113,10 +113,11 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   `🧠 thought (N tok)` header by default; **clicking the header** (or pressing
   `t` with an empty input) expands/collapses the full dimmed reasoning in
   place. The live streaming block follows the same toggle, and the preference
-  persists across turns. Mouse capture is enabled for this — the wheel now
-  also scrolls the transcript; drag-selecting transcript text is handed to the
-  terminal no longer. Combined with the existing `ui.show_reasoning` toggle
-  and per-turn cap.
+  persists across turns. Mouse capture is **off by default** so drag-selecting
+  transcript text stays with the terminal — `Ctrl+M` or `/mouse` toggles it on
+  (click thinking, wheel-scroll, status shows `· mouse`), and the toggle
+  releases capture on quit. Combined with the existing `ui.show_reasoning`
+  toggle and per-turn cap.
 - Main loop is cloud-capable: `api_key`/`YAGENT_API_KEY` sends
   `Authorization: Bearer` on chat + embedding requests (local stays the
   default); `consult` already had its own.
