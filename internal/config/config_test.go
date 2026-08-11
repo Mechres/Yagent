@@ -384,3 +384,26 @@ func TestSettingsCatalogAndGet(t *testing.T) {
 		t.Errorf("Get(write_approval) = %q", cfg.Get("skills.write_approval"))
 	}
 }
+
+func TestLoadConfigShellSandbox(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarShellSandbox, "")
+	t.Setenv(EnvVarDataDir, "")
+	t.Setenv(EnvVarModel, "")
+	t.Setenv(EnvVarServerURL, "")
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Shell.Sandbox != "" {
+		t.Errorf("sandbox should default empty, got %q", cfg.Shell.Sandbox)
+	}
+	t.Setenv(EnvVarShellSandbox, "bwrap")
+	cfg, err = LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Shell.Sandbox != "bwrap" {
+		t.Errorf("sandbox = %q", cfg.Shell.Sandbox)
+	}
+}

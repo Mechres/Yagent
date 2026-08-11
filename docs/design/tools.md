@@ -21,7 +21,7 @@ The ui implements `Approver`; prompts show the tool name, args (command/diff), a
 | `fs_edit` | Write | `path` (req), `old_string` (req), `new_string` (req) | exact match, must be unique in file; on 0 or >1 matches return a precise error the model can fix |
 | `glob` | RO | `pattern` (req), `path` | `**/*.go` style; cap 200 results |
 | `grep` | RO | `pattern` (req), `path`, `include` | regex via stdlib `regexp` over file walk; cap 100 matches |
-| `shell_exec` | Destructive | `command` (req), `timeout_sec` | pipes through `sh -c`; stdout+stderr captured, cap 32 KiB; default timeout 30s (max 300); env scrubbed of secrets (`*_TOKEN`, `*_KEY`, `*_SECRET`) |
+| `shell_exec` | Destructive | `command` (req), `timeout_sec` | pipes through `sh -c`; stdout+stderr captured, cap 32 KiB; default timeout 30s (max 300); env scrubbed of secrets (`*_TOKEN`, `*_KEY`, `*_SECRET`). `shell.sandbox: bwrap` (Linux) wraps commands in bubblewrap: workspace writable, system read-only, private `/tmp`, no network, `--die-with-parent`. Fails loudly if bubblewrap isn't installed — never silently runs unsandboxed. |
 | `git_status` | RO | none | porcelain output |
 | `git_diff` | RO | `path`, `staged` | cap 32 KiB |
 | `git_log` | RO | `n` (≤50) | oneline |

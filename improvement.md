@@ -56,13 +56,15 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 - ✅ Chunker grammars for bash/html/css (M6.16); SQL stays on the line-window
   fallback (its tree-sitter grammar isn't fetchable).
 - ✅ Goal-mode eval + chunker/symbol/search benchmarks (M6.16).
+- ✅ Sandboxed shell (M6.17): `shell.sandbox: bwrap` wraps `shell_exec` in
+  bubblewrap (workspace rw, system ro, private /tmp, no network). It exists to
+  contain *consented-but-unsafe* work under `--yolo` on untrusted repos, not to
+  replace the approval gate. Fails loudly when bubblewrap is missing (Linux
+  only).
 - 🟡 Subagent primitive (`SpawnSubagent`) — M7 proper. Gated: only start if the
   loop-mode evals show the single loop is the bottleneck.
 - 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and
   hybrid search.
-- ⚪ Sandboxed shell execution (docker/podman/landlock) — not a fit: the tool is
-  approval-gated and personal; a container wrapper adds heavy surface for
-  marginal gain on trusted projects.
 - ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site / CI —
   not a fit for a local-first single binary; would add surface and, for
   telemetry, conflict with the privacy stance.

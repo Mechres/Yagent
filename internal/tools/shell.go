@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,7 +16,11 @@ import (
 
 // ---------- shell_exec ----------
 
-type shellExecTool struct{ ws string }
+type shellExecTool struct {
+	ws       string
+	sandbox  string
+	hasBwrap func() bool // injectable in tests; nil = exec.LookPath
+}
 
 type shellExecArgs struct {
 	Command    string `json:"command"`
@@ -56,7 +61,20 @@ func (t *shellExecTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", a.Command)
+	var cmd *exec.Cmd
+	if t.sandbox == "bwrap" {
+		if !t.bwrapAvailable() {
+			return "error: shell.sandbox is bwrap but bubblewrap is not installed (install it, or set shell.sandbox to empty)", nil
+		}
+		home, _ := os.UserHomeDir()
+		args, err := bwrapArgs(t.ws, home, a.Command)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		cmd = exec.CommandContext(ctx, "bwrap", args...)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", a.Command)
+	}
 	cmd.Dir = t.ws
 	cmd.Env = scrubEnv(os.Environ())
 	var out, errBuf bytes.Buffer
@@ -79,6 +97,51 @@ func (t *shellExecTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		return "(no output)", nil
 	}
 	return capResult(b.String(), shellMaxOutput), nil
+}
+
+func (t *shellExecTool) bwrapAvailable() bool {
+	if t.hasBwrap != nil {
+		return t.hasBwrap()
+	}
+	_, err := exec.LookPath("bwrap")
+	return err == nil
+}
+
+// bwrapArgs builds a bubblewrap command line: the workspace is writable, the
+// rest of the system is read-only, /tmp is private, and the network is
+// unshared. Common dev caches ($HOME/.cache, $HOME/go) stay writable so builds
+// that don't need the network can still run.
+func bwrapArgs(workspace, home, command string) ([]string, error) {
+	ws, err := filepath.Abs(workspace)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{
+		"--die-with-parent", "--new-session",
+		"--unshare-pid", "--unshare-net",
+		"--tmpfs", "/tmp",
+		"--dev", "/dev",
+		"--proc", "/proc",
+		"--bind", ws, ws,
+		"--chdir", ws,
+	}
+	for _, d := range []string{"/usr", "/usr/local", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt"} {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			args = append(args, "--ro-bind", d, d)
+		}
+	}
+	if home != "" {
+		if fi, err := os.Stat(home); err == nil && fi.IsDir() {
+			args = append(args, "--ro-bind", home, home)
+		}
+		for _, cache := range []string{filepath.Join(home, ".cache"), filepath.Join(home, "go")} {
+			if fi, err := os.Stat(cache); err == nil && fi.IsDir() {
+				args = append(args, "--bind", cache, cache)
+			}
+		}
+	}
+	args = append(args, "sh", "-c", command)
+	return args, nil
 }
 
 // scrubEnv drops secret-looking variables (e.g. API_TOKEN, OPENAI_API_KEY,

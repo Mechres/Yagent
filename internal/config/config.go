@@ -24,6 +24,7 @@ type Config struct {
 	ContextWindow      int          `yaml:"context_window"`
 	Skills             SkillsConfig `yaml:"skills"`
 	Web                WebConfig    `yaml:"web_search"`
+	Shell              ShellConfig  `yaml:"shell"`
 	// Consult points the `consult` tool at a second local model ("advisor")
 	// the agent can ask for guidance. Empty = disabled.
 	Consult ConsultConfig `yaml:"consult"`
@@ -51,6 +52,15 @@ type WebConfig struct {
 	Provider string `yaml:"provider"`
 	// SearxngURL is the base URL of a SearXNG instance with format=json enabled.
 	SearxngURL string `yaml:"searxng_url"`
+}
+
+// ShellConfig configures shell_exec.
+type ShellConfig struct {
+	// Sandbox wraps shell commands in bubblewrap when set to "bwrap"
+	// (workspace writable, system read-only, no network, private /tmp). It
+	// fails loudly when bubblewrap is not installed — it never silently runs
+	// unsandboxed. Empty disables the sandbox.
+	Sandbox string `yaml:"sandbox"`
 }
 
 // ConsultConfig configures the `consult` tool (an "advisor" model). Two
@@ -91,6 +101,7 @@ const (
 	EnvVarConsultServer   = "YAGENT_CONSULT_SERVER_URL"
 	EnvVarConsultModel    = "YAGENT_CONSULT_MODEL"
 	EnvVarConsultAPIKey   = "YAGENT_CONSULT_API_KEY"
+	EnvVarShellSandbox    = "YAGENT_SHELL_SANDBOX"
 )
 
 // DefaultPath is the config file used when no explicit path is given.
@@ -197,6 +208,9 @@ func LoadConfig(path string) (*Config, error) {
 	if v := os.Getenv(EnvVarConsultAPIKey); v != "" {
 		cfg.Consult.APIKey = v
 	}
+	if v := os.Getenv(EnvVarShellSandbox); v != "" {
+		cfg.Shell.Sandbox = v
+	}
 
 	if cfg.ServerURL == "" {
 		cfg.ServerURL = DefaultServerURL
@@ -254,6 +268,7 @@ func Settings() []SettingKey {
 		{Key: "skills.write_approval", Label: "Skills write approval", Options: []string{"false", "true"}},
 		{Key: "skills.data_dir", Label: "Skills data dir"},
 		{Key: "skills.project_dir", Label: "Skills project dir"},
+		{Key: "shell.sandbox", Label: "Shell sandbox", Options: []string{"", "bwrap"}},
 		{Key: "consult.server_url", Label: "Consult server URL"},
 		{Key: "consult.model", Label: "Consult model"},
 		{Key: "consult.api_key", Label: "Consult API key"},
@@ -285,6 +300,8 @@ func (c *Config) Get(key string) string {
 		return c.Skills.DataDir
 	case "skills.project_dir":
 		return c.Skills.ProjectDir
+	case "shell.sandbox":
+		return c.Shell.Sandbox
 	case "consult.server_url":
 		return c.Consult.ServerURL
 	case "consult.model":
@@ -364,6 +381,7 @@ func validateKey(parts []string, value string) error {
 		"embedding_server_url": true, "context_window": true, "data_dir": true,
 		"web_search.provider": true, "web_search.searxng_url": true,
 		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
+		"shell.sandbox":      true,
 		"consult.server_url": true, "consult.model": true, "consult.api_key": true,
 	}
 	key := strings.Join(parts, ".")
@@ -385,6 +403,10 @@ func validateKey(parts []string, value string) error {
 		case "duckduckgo", "mojeek", "searxng":
 		default:
 			return &ValidationError{msg: "web_search.provider must be duckduckgo, mojeek or searxng"}
+		}
+	case "shell.sandbox":
+		if value != "" && value != "bwrap" {
+			return &ValidationError{msg: "shell.sandbox must be empty or bwrap"}
 		}
 	default:
 		if value == "" {

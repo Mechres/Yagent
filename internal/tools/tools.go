@@ -76,6 +76,8 @@ type Options struct {
 	Consult *llm.Client
 	// Undo records file writes for /undo (may be nil).
 	Undo *undo.Buffer
+	// ShellSandbox wraps shell_exec in bubblewrap when set to "bwrap".
+	ShellSandbox string
 	// ConsultCmd is an installed terminal AI app used as the advisor, e.g.
 	// ["claude", "-p"] (the prompt is appended as the final argument).
 	ConsultCmd []string
@@ -105,7 +107,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"fs_edit":       &fsEditTool{ws: r.workspace, undo: opts.Undo},
 		"glob":          &globTool{ws: r.workspace},
 		"grep":          &grepTool{ws: r.workspace},
-		"shell_exec":    &shellExecTool{ws: r.workspace},
+		"shell_exec":    &shellExecTool{ws: r.workspace, sandbox: opts.ShellSandbox},
 		"git_status":    &gitStatusTool{ws: r.workspace},
 		"git_diff":      &gitDiffTool{ws: r.workspace},
 		"git_log":       &gitLogTool{ws: r.workspace},

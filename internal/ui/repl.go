@@ -350,6 +350,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		Consult:             consultClient,
 		ConsultCmd:          cfg.Consult.Cmd,
 		Undo:                env.undo,
+		ShellSandbox:        cfg.Shell.Sandbox,
 		SkillsWriteApproval: cfg.Skills.WriteApproval,
 	})
 	return env, nil
@@ -666,6 +667,8 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 		c.Skills.DataDir = value
 	case "skills.project_dir":
 		c.Skills.ProjectDir = value
+	case "shell.sandbox":
+		c.Shell.Sandbox = value
 	case "consult.server_url":
 		c.Consult.ServerURL = value
 	case "consult.model":
