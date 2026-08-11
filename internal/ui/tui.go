@@ -201,6 +201,7 @@ type tuiModel struct {
 	sessionsOpen    bool
 	sessionsIdx     int
 	sessionsConfirm bool
+	sessionsAction  string
 	sessions        []memory.SessionSummary
 }
 
@@ -669,12 +670,13 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		id := m.sessions[m.sessionsIdx].ID
-		m.append(fmt.Sprintf("  session %s — resume: yagent chat --continue %s | export: yagent sessions export %s", id, id, id))
+		m.sessionsAction = fmt.Sprintf("resume: yagent chat --continue %s   ·   fork: yagent chat --fork %s   ·   export: yagent sessions export %s", id, id, id)
 		return m, nil
 	}
 	if msg.String() != "d" && msg.String() != "x" {
 		m.sessionsConfirm = false
 	}
+	m.sessionsAction = ""
 	return m, nil
 }
 
@@ -768,14 +770,19 @@ func (m *tuiModel) sessionsView() string {
 	if len(m.sessions) == 0 {
 		rows = append(rows, "  "+dim.Render("no sessions yet"))
 	}
+	body := strings.Join(rows, "\n")
 	hint := dim.Render("↑/↓ pick · enter show commands · d delete (twice) · esc close")
 	if m.sessionsConfirm {
 		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("  delete this session? press d again to confirm, any key to cancel")
 	}
-	body := lipgloss.NewStyle().Foreground(lipgloss.Color("188")).Render(strings.Join(rows, "\n"))
+	if m.sessionsAction != "" {
+		action := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Render(m.sessionsAction)
+		body += "\n\n" + action
+	}
+	bodyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("188")).Render(body)
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("240")).
-		Padding(0, 1).Render(title + "\n\n" + body + "\n\n" + hint)
+		Padding(0, 1).Render(title + "\n\n" + bodyStyle + "\n\n" + hint)
 }
 
 // flushStream commits the current streamed answer into the transcript.
