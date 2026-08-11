@@ -333,3 +333,54 @@ func TestLoadConfigConsultAPIKey(t *testing.T) {
 		t.Errorf("consult = %+v", cfg.Consult)
 	}
 }
+
+func TestSetGeneralAndValidation(t *testing.T) {
+	path := writeConfig(t, "server_url: http://example.test\nmodel: some-model\n")
+	if err := Set(path, "consult.model", "gemini-2.0-flash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Set(path, "context_window", "8192"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Consult.Model != "gemini-2.0-flash" || cfg.ContextWindow != 8192 || cfg.ServerURL != "http://example.test" {
+		t.Errorf("cfg = %+v", cfg)
+	}
+	// validation
+	if err := Set(path, "nope", "x"); err == nil {
+		t.Error("unknown key should error")
+	}
+	if err := Set(path, "context_window", "50"); err == nil {
+		t.Error("small context_window should error")
+	}
+	if err := Set(path, "web_search.provider", "bogus"); err == nil {
+		t.Error("bad provider should error")
+	}
+	if err := Set(path, "skills.write_approval", "true"); err != nil {
+		t.Errorf("write_approval set: %v", err)
+	}
+}
+
+func TestSettingsCatalogAndGet(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarServerURL, "")
+	t.Setenv(EnvVarModel, "")
+	t.Setenv(EnvVarEmbeddingModel, "")
+	t.Setenv(EnvVarDataDir, "")
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(Settings()) < 10 {
+		t.Errorf("settings catalog too small: %d", len(Settings()))
+	}
+	if cfg.Get("server_url") != DefaultServerURL {
+		t.Errorf("Get(server_url) = %q", cfg.Get("server_url"))
+	}
+	if cfg.Get("skills.write_approval") != "false" {
+		t.Errorf("Get(write_approval) = %q", cfg.Get("skills.write_approval"))
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -180,7 +181,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			fmt.Fprintln(w, "history cleared")
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /help /yolo /export [file] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
@@ -406,6 +407,11 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 			return true, fmt.Errorf("usage: /goal <what to achieve>")
 		}
 		return h.runGoal(ag, strings.TrimSpace(strings.TrimPrefix(rest, "goal")))
+	case rest == "settings" || strings.HasPrefix(rest, "set "):
+		if rest == "settings" {
+			return h.showSettings()
+		}
+		return h.setSetting(rest)
 	default:
 		// /skill-name: load a SKILL.md into context and continue.
 		content, warning, err := h.store.View(rest, "")
@@ -579,6 +585,84 @@ func (h *skillsHandler) pendingIDs(id string) ([]string, error) {
 		ids = append(ids, p.ID)
 	}
 	return ids, nil
+}
+
+// showSettings prints every editable setting and its current value.
+func (h *skillsHandler) showSettings() (bool, error) {
+	for _, s := range config.Settings() {
+		fmt.Fprintf(h.w, "%-24s %s\n", s.Key, h.cfg.Get(s.Key))
+	}
+	fmt.Fprintf(h.w, "config file: %s\n", h.cfg.Path)
+	fmt.Fprintf(h.w, "edit with: /set <key> <value>  (most keys take effect on the next chat session)\n")
+	return true, nil
+}
+
+// setSetting persists a dotted config key and applies it to the running
+// config; only skills.write_approval affects the live session.
+func (h *skillsHandler) setSetting(rest string) (bool, error) {
+	parts := strings.SplitN(rest, " ", 3)
+	if len(parts) < 3 {
+		return true, fmt.Errorf("usage: /set <key> <value>  (see /settings for keys)")
+	}
+	key, value := parts[1], parts[2]
+	if err := config.Set(h.cfg.Path, key, value); err != nil {
+		return true, err
+	}
+	if err := applySetting(h.cfg, h.reg, key, value); err != nil {
+		return true, err
+	}
+	fmt.Fprintf(h.w, "%s = %s (saved to %s)\n", key, value, h.cfg.Path)
+	if key != "skills.write_approval" {
+		fmt.Fprintf(h.w, "note: takes effect on the next chat session\n")
+	}
+	return true, nil
+}
+
+// applySetting mirrors a persisted value into the running Config and, where
+// possible, the live registry.
+func applySetting(c *config.Config, reg *tools.Registry, key, value string) error {
+	switch key {
+	case "server_url":
+		c.ServerURL = value
+	case "model":
+		c.Model = value
+	case "embedding_model":
+		c.EmbeddingModel = value
+	case "embedding_server_url":
+		c.EmbeddingServerURL = value
+	case "data_dir":
+		c.DataDir = value
+	case "context_window":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		c.ContextWindow = n
+	case "web_search.provider":
+		c.Web.Provider = value
+	case "web_search.searxng_url":
+		c.Web.SearxngURL = value
+	case "skills.write_approval":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		c.Skills.WriteApproval = b
+		if reg != nil {
+			reg.SetSkillsWriteApproval(b)
+		}
+	case "skills.data_dir":
+		c.Skills.DataDir = value
+	case "skills.project_dir":
+		c.Skills.ProjectDir = value
+	case "consult.server_url":
+		c.Consult.ServerURL = value
+	case "consult.model":
+		c.Consult.Model = value
+	case "consult.api_key":
+		c.Consult.APIKey = value
+	}
+	return nil
 }
 
 // runGoal drives the current agent through the autonomous goal loop, printing

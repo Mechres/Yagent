@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+
+	tea "github.com/charmbracelet/bubbletea"
 	"strings"
 	"testing"
 
+	"yagent/internal/config"
 	"yagent/internal/llm"
 	"yagent/internal/skills"
 	"yagent/internal/tools"
@@ -118,5 +121,39 @@ func TestToggleableApprover(t *testing.T) {
 	a.SetYOLO(false)
 	if a.IsYOLO() {
 		t.Error("IsYOLO should be false after off")
+	}
+}
+
+func TestSettingsPageOpensAndEdits(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{
+		ServerURL: "http://localhost:8089", Model: "m", ContextWindow: 16384,
+		Path: "/tmp/fake.yaml", Skills: config.SkillsConfig{},
+	}
+	m.input.SetValue("/settings")
+	if got, _ := m.submitLine(); got.(*tuiModel) != m {
+		t.Fatal("submitLine returned a different model")
+	}
+	if !m.settingsOpen {
+		t.Fatal("/settings did not open the page")
+	}
+	v := m.settingsView()
+	if !strings.Contains(v, "Yagent settings") || !strings.Contains(v, "server_url") {
+		t.Errorf("settingsView = %q", v)
+	}
+	// navigate down and start editing
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyDown})
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.editing {
+		t.Fatal("enter did not start editing")
+	}
+	// esc closes editing
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.editing {
+		t.Error("esc did not stop editing")
+	}
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.settingsOpen {
+		t.Error("esc did not close the settings page")
 	}
 }

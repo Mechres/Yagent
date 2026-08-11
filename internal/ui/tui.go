@@ -186,6 +186,11 @@ type tuiModel struct {
 	tabIndex    int
 	lastInput   string
 	err         error
+
+	settingsOpen bool
+	settingsIdx  int
+	editing      bool
+	editInput    textinput.Model
 }
 
 func newInput() textinput.Model {
@@ -217,6 +222,53 @@ func (m *tuiModel) refreshViewport() {
 	}
 }
 
+// handleSettingsKey drives the settings page: up/down to choose a row, enter
+// to edit it (persisted immediately), esc to leave editing or the page.
+func (m *tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editing {
+		switch msg.String() {
+		case "enter":
+			entry := config.Settings()[m.settingsIdx]
+			value := m.editInput.Value()
+			if err := config.Set(m.cfg.Path, entry.Key, value); err != nil {
+				m.append("  error: " + err.Error())
+			} else if err := applySetting(m.cfg, m.env.registry, entry.Key, value); err != nil {
+				m.append("  error: " + err.Error())
+			} else {
+				m.append(fmt.Sprintf("  %s = %s (saved)", entry.Key, value))
+			}
+			m.editing = false
+			return m, nil
+		case "esc":
+			m.editing = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.editInput, cmd = m.editInput.Update(msg)
+		return m, cmd
+	}
+	switch msg.String() {
+	case "esc", "q":
+		m.settingsOpen = false
+		return m, nil
+	case "up":
+		if m.settingsIdx > 0 {
+			m.settingsIdx--
+		}
+	case "down":
+		if m.settingsIdx < len(config.Settings())-1 {
+			m.settingsIdx++
+		}
+	case "enter":
+		m.editing = true
+		entry := config.Settings()[m.settingsIdx]
+		in := newInput()
+		in.SetValue(m.cfg.Get(entry.Key))
+		m.editInput = in
+	}
+	return m, nil
+}
+
 // scroll moves the viewport and drops follow mode when scrolling up.
 func (m *tuiModel) scroll(up bool) {
 	if up {
@@ -239,6 +291,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.settingsOpen {
+			return m.handleSettingsKey(msg)
+		}
 		if m.pending != nil {
 			switch msg.String() {
 			case "y", "Y":
@@ -356,9 +411,15 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "/help":
 		m.input.Reset()
-		m.append("commands: /exit /clear /help /yolo /export [file] /skills list|pending|diff|approve|reject|approval /skill-name")
+		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /skills list|pending|diff|approve|reject|approval /skill-name")
 		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty")
 		return m, waitIncoming(m.incoming)
+	case "/settings":
+		m.input.Reset()
+		m.settingsOpen = true
+		m.settingsIdx = 0
+		m.editing = false
+		return m, nil
 	case "/clear":
 		m.input.Reset()
 		m.ag.Reset()
@@ -496,6 +557,35 @@ func splitKeepEmpty(s string) []string {
 	return strings.Split(strings.TrimRight(s, "\n"), "\n")
 }
 
+// settingsView renders the interactive settings page.
+func (m *tuiModel) settingsView() string {
+	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	var b strings.Builder
+	b.WriteString(dim.Render("Yagent settings — ↑/↓ choose · enter edit (saved immediately) · esc close\n\n"))
+	keys := config.Settings()
+	start := m.settingsIdx
+	if start > 12 {
+		start = 12
+	}
+	for i, s := range keys {
+		if i < start-12 || i > start+12 {
+			continue
+		}
+		line := fmt.Sprintf("%-24s %s", s.Key, m.cfg.Get(s.Key))
+		if i == m.settingsIdx {
+			b.WriteString(selected.Render("▸ "+line) + "\n")
+		} else {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+	b.WriteString("\n")
+	if m.editing {
+		b.WriteString("edit " + keys[m.settingsIdx].Key + ": " + m.editInput.View() + "\n")
+	}
+	return b.String()
+}
+
 // flushStream commits the current streamed answer into the transcript.
 func (m *tuiModel) flushStream() {
 	if m.stream.Len() > 0 {
@@ -508,7 +598,7 @@ func (m *tuiModel) flushStream() {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/help", "/export [file]", "/yolo", "/goal <what>",
+		"/exit", "/clear", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}
@@ -556,6 +646,9 @@ func (m *tuiModel) completeCommand() {
 func (m *tuiModel) View() string {
 	if m.err != nil {
 		return m.err.Error() + "\n"
+	}
+	if m.settingsOpen {
+		return m.settingsView()
 	}
 	// The viewport holds the transcript; the streaming tail renders as its own
 	// line below it so scrolling is never reset by per-frame content updates.

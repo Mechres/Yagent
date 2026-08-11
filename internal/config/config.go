@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -225,38 +226,121 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// SetWriteApproval persists skills.write_approval to the config file at path
-// (creating it if needed), preserving every other key. Returns an error only
-// on I/O or YAML problems; the caller may fall back to an in-memory toggle.
+// SetWriteApproval persists skills.write_approval to the config file at path.
 func SetWriteApproval(path string, on bool) error {
+	return Set(path, "skills.write_approval", strconv.FormatBool(on))
+}
+
+// SettingKey is a dotted config key; Settings lists them for the /settings UI.
+type SettingKey struct {
+	Key   string
+	Label string
+}
+
+// Settings is the ordered catalog of editable settings.
+func Settings() []SettingKey {
+	return []SettingKey{
+		{Key: "server_url", Label: "Server URL"},
+		{Key: "model", Label: "Model"},
+		{Key: "embedding_model", Label: "Embedding model"},
+		{Key: "embedding_server_url", Label: "Embedding server URL"},
+		{Key: "context_window", Label: "Context window (tokens)"},
+		{Key: "data_dir", Label: "Data dir"},
+		{Key: "web_search.provider", Label: "Web search provider"},
+		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
+		{Key: "skills.write_approval", Label: "Skills write approval"},
+		{Key: "skills.data_dir", Label: "Skills data dir"},
+		{Key: "skills.project_dir", Label: "Skills project dir"},
+		{Key: "consult.server_url", Label: "Consult server URL"},
+		{Key: "consult.model", Label: "Consult model"},
+		{Key: "consult.api_key", Label: "Consult API key"},
+	}
+}
+
+// Get returns the current value of a dotted setting key.
+func (c *Config) Get(key string) string {
+	switch key {
+	case "server_url":
+		return c.ServerURL
+	case "model":
+		return c.Model
+	case "embedding_model":
+		return c.EmbeddingModel
+	case "embedding_server_url":
+		return c.EmbeddingServerURL
+	case "context_window":
+		return strconv.Itoa(c.ContextWindow)
+	case "data_dir":
+		return c.DataDir
+	case "web_search.provider":
+		return c.Web.Provider
+	case "web_search.searxng_url":
+		return c.Web.SearxngURL
+	case "skills.write_approval":
+		return strconv.FormatBool(c.Skills.WriteApproval)
+	case "skills.data_dir":
+		return c.Skills.DataDir
+	case "skills.project_dir":
+		return c.Skills.ProjectDir
+	case "consult.server_url":
+		return c.Consult.ServerURL
+	case "consult.model":
+		return c.Consult.Model
+	case "consult.api_key":
+		return c.Consult.APIKey
+	}
+	return ""
+}
+
+// Set persists a dotted config key (e.g. "web_search.provider",
+// "consult.model") to the config file at path, validating known keys and
+// values. Returns a ValidationError for unknown keys or bad values.
+func Set(path, key, value string) error {
+	if path == "" {
+		return fmt.Errorf("no config file path is known")
+	}
+	parts := strings.Split(key, ".")
+	if err := validateKey(parts, value); err != nil {
+		return err
+	}
+	doc, m, err := loadConfigNode(path)
+	if err != nil {
+		return err
+	}
+	node := m
+	for _, part := range parts[:len(parts)-1] {
+		child := mappingValue(node, part)
+		if child == nil || child.Kind != yaml.MappingNode {
+			child = &yaml.Node{Kind: yaml.MappingNode}
+			setMappingKey(node, part, child)
+		}
+		node = child
+	}
+	setMappingKey(node, parts[len(parts)-1], typedScalar(parts[len(parts)-1], value))
+	return saveConfigNode(doc, path)
+}
+
+// loadConfigNode reads the config file into yaml nodes (creating an empty one
+// when the file does not exist) and returns the document and root mapping.
+func loadConfigNode(path string) (*yaml.Node, *yaml.Node, error) {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read config %s: %w", path, err)
+		return nil, nil, fmt.Errorf("read config %s: %w", path, err)
 	}
-	var root yaml.Node
-	if len(bytes.TrimSpace(data)) == 0 {
-		root = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
-	} else if err := yaml.Unmarshal(data, &root); err != nil {
-		return fmt.Errorf("parse config %s: %w", path, err)
-	}
-	doc := &root
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		doc = &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	doc := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err := yaml.Unmarshal(data, doc); err != nil {
+			return nil, nil, fmt.Errorf("parse config %s: %w", path, err)
+		}
 	}
 	m := doc.Content[0]
 	if m.Kind != yaml.MappingNode {
-		return fmt.Errorf("config %s is not a mapping", path)
+		return nil, nil, fmt.Errorf("config %s is not a mapping", path)
 	}
-	skills := mappingValue(m, "skills")
-	if skills == nil {
-		skills = &yaml.Node{Kind: yaml.MappingNode}
-		m.Content = append(m.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "skills"},
-			skills)
-	}
-	setMappingKey(skills, "write_approval",
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: strconv.FormatBool(on)})
+	return doc, m, nil
+}
 
+func saveConfigNode(doc *yaml.Node, path string) error {
 	out, err := yaml.Marshal(doc)
 	if err != nil {
 		return fmt.Errorf("render config: %w", err)
@@ -269,6 +353,59 @@ func SetWriteApproval(path string, on bool) error {
 	}
 	return nil
 }
+
+// validateKey rejects unknown keys and invalid values.
+func validateKey(parts []string, value string) error {
+	known := map[string]bool{
+		"server_url": true, "model": true, "embedding_model": true,
+		"embedding_server_url": true, "context_window": true, "data_dir": true,
+		"web_search.provider": true, "web_search.searxng_url": true,
+		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
+		"consult.server_url": true, "consult.model": true, "consult.api_key": true,
+	}
+	key := strings.Join(parts, ".")
+	if !known[key] {
+		return &ValidationError{msg: fmt.Sprintf("unknown setting %q (see /settings)", key)}
+	}
+	switch key {
+	case "context_window":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 100 {
+			return &ValidationError{msg: "context_window must be an integer >= 100"}
+		}
+	case "skills.write_approval":
+		if value != "true" && value != "false" {
+			return &ValidationError{msg: "skills.write_approval must be true or false"}
+		}
+	case "web_search.provider":
+		switch value {
+		case "duckduckgo", "mojeek", "searxng":
+		default:
+			return &ValidationError{msg: "web_search.provider must be duckduckgo, mojeek or searxng"}
+		}
+	default:
+		if value == "" {
+			return &ValidationError{msg: key + " cannot be empty"}
+		}
+	}
+	return nil
+}
+
+// typedScalar renders a leaf value as the right scalar tag.
+func typedScalar(key, value string) *yaml.Node {
+	switch key {
+	case "write_approval":
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
+	case "context_window":
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
+	}
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+}
+
+// ValidationError marks a bad setting key or value (feeds back to the UI).
+type ValidationError struct{ msg string }
+
+func (e *ValidationError) Error() string { return e.msg }
 
 // mappingValue returns the value node for key in a mapping, or nil.
 func mappingValue(m *yaml.Node, key string) *yaml.Node {
