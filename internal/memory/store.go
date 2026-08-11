@@ -81,7 +81,7 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
 	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, "sessions.db"))
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "sessions.db")+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open session db: %w", err)
 	}
@@ -97,7 +97,10 @@ func Open(dir string) (*Store, error) {
 	return st, nil
 }
 
-// backfillFTS indexes messages written before the FTS table existed.
+// backfillFTS indexes messages written before the FTS table existed. It reads
+// every row into memory first, then writes inside one transaction, so it never
+// holds a read cursor while inserting (which would deadlock the rollback
+// journal across pooled connections).
 func (s *Store) backfillFTS() error {
 	var msgs, fts int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&msgs); err != nil {
@@ -113,18 +116,34 @@ func (s *Store) backfillFTS() error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	type msgRow struct {
+		id      int64
+		content string
+	}
+	var data []msgRow
 	for rows.Next() {
-		var id int64
-		var content string
-		if err := rows.Scan(&id, &content); err != nil {
+		var r msgRow
+		if err := rows.Scan(&r.id, &r.content); err != nil {
+			rows.Close()
 			return err
 		}
-		if _, err := s.db.Exec(`INSERT INTO messages_fts (rowid, content) VALUES (?, ?)`, id, scrub.Text(content)); err != nil {
+		data = append(data, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, r := range data {
+		if _, err := tx.Exec(`INSERT INTO messages_fts (rowid, content) VALUES (?, ?)`, r.id, scrub.Text(r.content)); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return tx.Commit()
 }
 
 // Close releases the database handle.
