@@ -114,3 +114,43 @@ of reality:
   benchmarks for subagent fan-out/fan-in and patch split/rebuild.
   *Already present:* evals for subagent/toolset, fuzzy args, code_references;
   chunker/symbol/hybrid-search benchmarks.
+
+A second external agent's plan (2026-08-11). Its section A (fs_patch modal v2)
+was superseded mid-inspection — that work is already shipped (per-hunk walker
++ `RebuildPatch`). Sections B/C/D recorded for evaluation:
+
+### B — quick wins (no new deps, local-first)
+
+- 🟡 **B1 eval-coverage gaps** — golden evals for `/skills verify` PASS/FAIL,
+  `/undo` revert, `/checkpoint` save|restore, consult soft-fail, and
+  `shell.sandbox: bwrap` loud-deny. Scripted httptest servers, no network.
+- 🟡 **B2 `--trace` prompt dump** — `yagent chat --trace <file>` writes each
+  assembled context with per-section token estimates (system / L0 / summary /
+  recall / code / history). Local file only (fits privacy stance). Acceptance:
+  segments sum to `ContextUsage`.
+- 🟡 **B3 TUI transcript search** — in-viewport find (Ctrl-/ or similar) that
+  jumps to the next match. *Already present:* scrollable viewport.
+- 🟡 **B4 config schema completeness** — `consult.cmd` and shell/job timeouts
+  aren't editable via `/set`; expose missing keys (with choosers where apt) so
+  `/settings` is the single surface. Acceptance: `/set consult.cmd [...]`
+  round-trips and reloads.
+
+### C — capability features (medium effort)
+
+- 🟡 **C1 accurate token counting via `/tokenize`** — `llm.CountTokens()` calls
+  the server's tokenizer when exposed, falling back to len/4; wire into
+  `estTokensLocked`/`ContextUsage` so the gauge and summarization trigger are
+  accurate. *Note:* dev llama.cpp `llama-server` exposes `POST /tokenize` at
+  the root, so C1 is feasible on :8089 without a workaround.
+- 🟡 **C2 goal-mode resume across restarts** — wire `RunGoal` to the checkpoint
+  store so each round auto-saves and `--resume-goal` continues. *Already
+  present:* pre-goal snapshot (`/checkpoint restore goal`).
+- 🟡 **C3 subagent structured returns** — children return structured JSON
+  (findings + paths + confidence) the parent can index/act on, plus a shared
+  read-only subagent workspace. Gated: only if string-summary is the real
+  bottleneck. (Same target as the Copilot artifact item above.)
+
+### D — out of scope (local-first / privacy)
+
+Telemetry/metrics, Docker/systemd units, man pages, docs site, embedded
+inference, MCP client, cloud provider SDKs (CI already ships).
