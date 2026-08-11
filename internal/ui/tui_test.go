@@ -165,3 +165,49 @@ func TestSettingsPageOpensAndEdits(t *testing.T) {
 		t.Error("esc did not close the settings page")
 	}
 }
+
+func TestSettingsPageChooser(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{
+		ServerURL: "http://x", Model: "m", ContextWindow: 16384,
+		Path: filepath.Join(t.TempDir(), "config.yaml"),
+		Web:  config.WebConfig{Provider: "duckduckgo"},
+	}
+	m.settingsOpen = true
+
+	idx := -1
+	for i, s := range config.Settings() {
+		if s.Key == "web_search.provider" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("web_search.provider not in settings catalog")
+	}
+	m.settingsIdx = idx
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.choosing {
+		t.Fatal("chooser did not open for a choice field")
+	}
+	if m.choosingIdx != 0 {
+		t.Errorf("choosingIdx = %d, want 0 (duckduckgo)", m.choosingIdx)
+	}
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyRight})
+	if m.choosingIdx != 1 {
+		t.Errorf("after right = %d, want 1 (mojeek)", m.choosingIdx)
+	}
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.choosing {
+		t.Error("chooser still open after enter")
+	}
+	if m.cfg.Web.Provider != "mojeek" {
+		t.Errorf("provider = %q, want mojeek", m.cfg.Web.Provider)
+	}
+	// text fields still open the text editor
+	m.settingsIdx = 0 // server_url
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.editing == false || m.choosing {
+		t.Error("text field should open the text editor")
+	}
+}

@@ -191,6 +191,8 @@ type tuiModel struct {
 	settingsIdx  int
 	editing      bool
 	editInput    textinput.Model
+	choosing     bool
+	choosingIdx  int
 }
 
 func newInput() textinput.Model {
@@ -224,7 +226,23 @@ func (m *tuiModel) refreshViewport() {
 
 // handleSettingsKey drives the settings page: up/down to choose a row, enter
 // to edit it (persisted immediately), esc to leave editing or the page.
+// Choice fields (Options set) open a left/right chooser instead of free text.
 func (m *tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.choosing {
+		entry := config.Settings()[m.settingsIdx]
+		switch msg.String() {
+		case "left":
+			m.choosingIdx = (m.choosingIdx + len(entry.Options) - 1) % len(entry.Options)
+		case "right":
+			m.choosingIdx = (m.choosingIdx + 1) % len(entry.Options)
+		case "enter":
+			m.saveChoice(entry)
+			m.choosing = false
+		case "esc":
+			m.choosing = false
+		}
+		return m, nil
+	}
 	if m.editing {
 		switch msg.String() {
 		case "enter":
@@ -260,8 +278,16 @@ func (m *tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.settingsIdx++
 		}
 	case "enter":
-		m.editing = true
 		entry := config.Settings()[m.settingsIdx]
+		if len(entry.Options) > 0 {
+			m.choosing = true
+			m.choosingIdx = indexOf(entry.Options, m.cfg.Get(entry.Key))
+			if m.choosingIdx < 0 {
+				m.choosingIdx = 0
+			}
+			return m, nil
+		}
+		m.editing = true
 		in := textinput.New()
 		in.Placeholder = "type value, enter to save, esc to cancel"
 		in.CharLimit = 2000
@@ -271,6 +297,32 @@ func (m *tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editInput = in
 	}
 	return m, nil
+}
+
+// saveChoice persists the selected option for a choice field.
+func (m *tuiModel) saveChoice(entry config.SettingKey) {
+	if m.choosingIdx < 0 || m.choosingIdx >= len(entry.Options) {
+		return
+	}
+	value := entry.Options[m.choosingIdx]
+	if err := config.Set(m.cfg.Path, entry.Key, value); err != nil {
+		m.append("  error: " + err.Error())
+		return
+	}
+	if err := applySetting(m.cfg, m.env.registry, entry.Key, value); err != nil {
+		m.append("  error: " + err.Error())
+		return
+	}
+	m.append(fmt.Sprintf("  %s = %s (saved)", entry.Key, value))
+}
+
+func indexOf(list []string, value string) int {
+	for i, v := range list {
+		if v == value {
+			return i
+		}
+	}
+	return -1
 }
 
 // scroll moves the viewport and drops follow mode when scrolling up.
@@ -603,6 +655,22 @@ func (m *tuiModel) settingsView() string {
 		prompt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
 			Render("edit " + field + ": ")
 		page += "\n\n" + prompt + m.editInput.View()
+	}
+	if m.choosing {
+		field := keys[m.settingsIdx].Key
+		cur := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+		var opts []string
+		for i, o := range keys[m.settingsIdx].Options {
+			if i == m.choosingIdx {
+				opts = append(opts, cur.Render("<"+o+">"))
+			} else {
+				opts = append(opts, o)
+			}
+		}
+		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
+			Render("choose "+field+": ") + strings.Join(opts, "   ") +
+			"\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+			Render("←/→ change   ·   enter save   ·   esc cancel")
 	}
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("240")).

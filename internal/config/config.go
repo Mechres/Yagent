@@ -232,9 +232,12 @@ func SetWriteApproval(path string, on bool) error {
 }
 
 // SettingKey is a dotted config key; Settings lists them for the /settings UI.
+// Options, when non-empty, makes the field a chooser (select from the list)
+// instead of free text.
 type SettingKey struct {
-	Key   string
-	Label string
+	Key     string
+	Label   string
+	Options []string
 }
 
 // Settings is the ordered catalog of editable settings.
@@ -246,9 +249,9 @@ func Settings() []SettingKey {
 		{Key: "embedding_server_url", Label: "Embedding server URL"},
 		{Key: "context_window", Label: "Context window (tokens)"},
 		{Key: "data_dir", Label: "Data dir"},
-		{Key: "web_search.provider", Label: "Web search provider"},
+		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng"}},
 		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
-		{Key: "skills.write_approval", Label: "Skills write approval"},
+		{Key: "skills.write_approval", Label: "Skills write approval", Options: []string{"false", "true"}},
 		{Key: "skills.data_dir", Label: "Skills data dir"},
 		{Key: "skills.project_dir", Label: "Skills project dir"},
 		{Key: "consult.server_url", Label: "Consult server URL"},
