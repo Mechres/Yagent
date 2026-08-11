@@ -321,6 +321,41 @@ func (a *Agent) offerSkillCreation(ctx context.Context) error {
 
 var skillToolNames = []string{"skills_list", "skill_view", "skill_manage"}
 
+// verifySkillPrompt drives the verification harness: the staged skill's
+// SKILL.md is injected into context and the model must execute its
+// "## Verification" section with the workspace tools, then report a verdict.
+const verifySkillPrompt = `You are verifying a staged skill (procedural memory). The skill's SKILL.md is loaded in your context.
+
+Execute its "## Verification" section exactly, using the available tools, in this workspace. To inspect anything, call a tool NOW — never just describe what you would run. Base your verdict on actual tool output. If the Verification section cannot be run (missing files, unknown commands, contradictions), report FAIL.
+
+End your reply with a single verdict line:
+PASS <one-line reason>
+or
+FAIL <one-line reason>`
+
+// VerifySkill runs one verification pass for a staged skill and returns the
+// model's final answer. It uses a fresh, self-contained agent (no session
+// store), so the verification does not pollute the active conversation.
+func VerifySkill(ctx context.Context, client ChatLLM, reg *tools.Registry, approver Approver, skillContent, workspace string) (string, error) {
+	a := New(client, reg, approver, Config{MaxIterations: 12, Window: 8000, Reserve: 1000}, workspace)
+	a.InjectSystem("Staged skill to verify (SKILL.md):\n\n" + skillContent)
+	return a.Run(ctx, verifySkillPrompt)
+}
+
+// ParseVerdict extracts PASS/FAIL from a verification answer.
+func ParseVerdict(answer string) string {
+	for _, line := range strings.Split(answer, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "PASS") {
+			return "PASS"
+		}
+		if strings.HasPrefix(t, "FAIL") {
+			return "FAIL"
+		}
+	}
+	return ""
+}
+
 // appendMessage records a message in memory and persists it when a store is
 // configured, returning its store row id (0 when not persisted).
 func (a *Agent) appendMessage(ctx context.Context, msg llm.Message) (int64, error) {
@@ -439,10 +474,14 @@ func (a *Agent) skillIndex() string {
 	var b strings.Builder
 	b.WriteString("Available skills (procedural memory) — call skill_view <name> when a trigger matches:\n")
 	for _, m := range metas {
+		stale := ""
+		if m.Failures >= skills.MaxSkillFailures {
+			stale = " (stale — verification failed repeatedly)"
+		}
 		if m.Category != "" {
-			fmt.Fprintf(&b, "- %s [%s, %s]: %s\n", m.Name, m.Category, m.Source, m.Description)
+			fmt.Fprintf(&b, "- %s [%s, %s]%s: %s\n", m.Name, m.Category, m.Source, stale, m.Description)
 		} else {
-			fmt.Fprintf(&b, "- %s [%s]: %s\n", m.Name, m.Source, m.Description)
+			fmt.Fprintf(&b, "- %s [%s]%s: %s\n", m.Name, m.Source, stale, m.Description)
 		}
 	}
 	if b.Len() > maxL0Tokens*4 {

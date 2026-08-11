@@ -787,3 +787,45 @@ func TestRunSkipsEmptyIndexInjection(t *testing.T) {
 		t.Error("empty index must not be injected")
 	}
 }
+
+// ---------- M3.5: verification harness ----------
+
+func TestVerifySkillPass(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
+		finalContent("PASS the file exists"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "data")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	skillContent := "---\nname: read-a\ndescription: read file a\n---\n## When to Use\nwhen asked\n## Procedure\n1. read a.txt\n## Verification\nread a.txt\n"
+
+	answer, err := VerifySkill(context.Background(), client, reg, &stubApprover{allow: true}, skillContent, ws)
+	if err != nil {
+		t.Fatalf("VerifySkill: %v", err)
+	}
+	if ParseVerdict(answer) != "PASS" {
+		t.Errorf("verdict = %q (answer %q)", ParseVerdict(answer), answer)
+	}
+	// the staged skill content must be in the request context
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req := string(s.requests[0])
+	if !strings.Contains(req, "Staged skill to verify") || !strings.Contains(req, "## Verification") {
+		t.Errorf("skill content not injected: %q", req[:300])
+	}
+}
+
+func TestParseVerdict(t *testing.T) {
+	cases := map[string]string{
+		"PASS it works":                        "PASS",
+		"everything ok\nFAIL the file is gone": "FAIL",
+		"no verdict here":                      "",
+	}
+	for in, want := range cases {
+		if got := ParseVerdict(in); got != want {
+			t.Errorf("ParseVerdict(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -80,7 +80,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	}()
 
 	m := tuiModel{
-		cfg: cfg, env: env, ag: ag,
+		cfg: cfg, env: env, ag: ag, client: client,
 		incoming: incoming, inputCh: inputCh,
 		runnerCancel: runnerCancel, runnerDone: runnerDone,
 		input: newInput(),
@@ -139,9 +139,10 @@ func (a *tuiApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools
 // ---------- model ----------
 
 type tuiModel struct {
-	cfg *config.Config
-	env *chatEnv
-	ag  *agent.Agent
+	cfg    *config.Config
+	env    *chatEnv
+	ag     *agent.Agent
+	client *llm.Client
 
 	incoming     chan tea.Msg
 	inputCh      chan string
@@ -330,6 +331,9 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 			cfg:      m.cfg,
 			w:        &appendWriter{m: m},
 			approval: &m.cfg.Skills.WriteApproval,
+			ctx:      context.Background(),
+			client:   m.client,
+			env:      m.env,
 		}
 		if handled, err := skillsCmd.handle(text, m.ag); handled || err != nil {
 			if err != nil {

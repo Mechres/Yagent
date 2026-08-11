@@ -33,6 +33,9 @@ const (
 // Anti-hoarding guard: at most this many staged skill writes per session.
 const MaxStagedPerSession = 2
 
+// MaxSkillFailures is how many failed verifications mark a skill stale at L0.
+const MaxSkillFailures = 2
+
 // SkillMeta is the L0 listing entry shown in the system prompt.
 type SkillMeta struct {
 	Name        string
@@ -42,6 +45,7 @@ type SkillMeta struct {
 	Root        string // "global" | "project"
 	CreatedAt   int64
 	LastUsed    int64
+	Failures    int // failed verifications; >= MaxSkillFailures marks stale
 }
 
 // Store is a filesystem store with two read roots. The project store
@@ -167,7 +171,52 @@ func (s *Store) readMeta(name, dir, root string) SkillMeta {
 	}
 	m.CreatedAt = fm.CreatedAt
 	m.LastUsed = fm.LastUsed
+	m.Failures = fm.Failures
 	return m
+}
+
+// RecordFailure increments a skill's failure counter (a verification run
+// failed); at MaxSkillFailures it is shown as stale in the L0 index.
+func (s *Store) RecordFailure(name string) error {
+	dir, _, ok := s.findSkill(name)
+	if !ok {
+		return fmt.Errorf("unknown skill %q", name)
+	}
+	fm, body, err := s.readFrontmatter(dir)
+	if err != nil {
+		return err
+	}
+	return writeFrontmatter(dir, fm, body, fm.Failures+1)
+}
+
+// ClearFailures resets a skill's failure counter (a verification run passed).
+func (s *Store) ClearFailures(name string) error {
+	dir, _, ok := s.findSkill(name)
+	if !ok {
+		return fmt.Errorf("unknown skill %q", name)
+	}
+	fm, body, err := s.readFrontmatter(dir)
+	if err != nil {
+		return err
+	}
+	return writeFrontmatter(dir, fm, body, 0)
+}
+
+func (s *Store) readFrontmatter(dir string) (frontmatter, string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		return frontmatter{}, "", fmt.Errorf("read skill: %w", err)
+	}
+	fm, body, err := parseFrontmatter(string(data))
+	if err != nil {
+		return frontmatter{}, "", fmt.Errorf("parse skill: %w", err)
+	}
+	return fm, body, nil
+}
+
+func writeFrontmatter(dir string, fm frontmatter, body string, failures int) error {
+	fm.Failures = failures
+	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(renderSkill(fm, body)), 0o644)
 }
 
 // Exists reports whether a skill with this name is present in any root.

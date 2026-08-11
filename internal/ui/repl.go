@@ -84,8 +84,14 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		})
 
 	skillsCmd := &skillsHandler{
-		store: env.sk, reg: env.registry, cfg: cfg, w: w,
+		store:    env.sk,
+		reg:      env.registry,
+		cfg:      cfg,
+		w:        w,
 		approval: &cfg.Skills.WriteApproval,
+		ctx:      ctx,
+		client:   client,
+		env:      env,
 	}
 
 	fmt.Printf("yagent chat — session %s (/exit, /clear, /help)\n", env.sessionID)
@@ -241,6 +247,17 @@ type skillsHandler struct {
 	cfg      *config.Config
 	w        io.Writer
 	approval *bool
+	ctx      context.Context
+	client   *llm.Client
+	env      *chatEnv
+}
+
+// denyWriteApprover allows only read-only tools during skill verification
+// (safety: a verification pass must never auto-approve side effects).
+type denyWriteApprover struct{}
+
+func (denyWriteApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
+	return risk == tools.RiskReadOnly, nil
 }
 
 func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
@@ -293,7 +310,13 @@ func (h *skillsHandler) handleSkills(args []string) (bool, error) {
 			return true, nil
 		}
 		for _, p := range pending {
-			fmt.Fprintf(h.w, "%s  %-11s %s\n", shortID(p.ID), p.Action, p.Name)
+			note := ""
+			if p.Failures >= skills.MaxSkillFailures {
+				note = fmt.Sprintf("  (failed verification %d×)", p.Failures)
+			} else if p.Failures > 0 {
+				note = fmt.Sprintf("  (verification FAIL %d×)", p.Failures)
+			}
+			fmt.Fprintf(h.w, "%s  %-11s %s%s\n", shortID(p.ID), p.Action, p.Name, note)
 		}
 		return true, nil
 	case "diff":
@@ -306,6 +329,14 @@ func (h *skillsHandler) handleSkills(args []string) (bool, error) {
 		}
 		fmt.Fprintln(h.w, diff)
 		return true, nil
+	case "verify":
+		if len(args) < 2 {
+			return true, fmt.Errorf("verify needs an id")
+		}
+		if err := h.verifyPending(args[1]); err != nil {
+			return true, err
+		}
+		return true, nil
 	case "approve":
 		if len(args) < 2 {
 			return true, fmt.Errorf("approve needs an id or 'all'")
@@ -315,6 +346,13 @@ func (h *skillsHandler) handleSkills(args []string) (bool, error) {
 			return true, err
 		}
 		for _, id := range ids {
+			// warn when the staged write failed verification repeatedly
+			pending, _ := h.store.ListPending()
+			for _, p := range pending {
+				if p.ID == id && p.Failures >= skills.MaxSkillFailures {
+					fmt.Fprintf(h.w, "warning: %s failed verification %d× — approving anyway\n", shortID(id), p.Failures)
+				}
+			}
 			if warning, err := h.store.ApprovePending(id); err != nil {
 				fmt.Fprintf(h.w, "error: %s: %v\n", id, err)
 			} else {
@@ -372,6 +410,47 @@ func (h *skillsHandler) pendingIDs(id string) ([]string, error) {
 		ids = append(ids, p.ID)
 	}
 	return ids, nil
+}
+
+// verifyPending runs the verification harness on a staged skill write: the
+// model executes the skill's "## Verification" section with the workspace
+// tools (read-only) and reports PASS/FAIL. A FAIL increments the skill's
+// failure counter (staleness); a PASS resets it.
+func (h *skillsHandler) verifyPending(id string) error {
+	content, err := h.store.PendingSkillContent(id)
+	if err != nil {
+		return err
+	}
+	if content == "" {
+		fmt.Fprintln(h.w, "nothing to verify (delete/remove_file write)")
+		return nil
+	}
+	fmt.Fprintln(h.w, "verifying staged skill — executing its Verification section (read-only tools)...")
+	ws, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	reg := tools.NewRegistry(ws, tools.Options{Index: h.env.idx, Web: h.env.web})
+	answer, err := agent.VerifySkill(h.ctx, h.client, reg, denyWriteApprover{}, content, ws)
+	if err != nil {
+		return err
+	}
+	// record staleness against the skill and the staged write
+	name, _ := h.store.PendingName(id)
+	switch agent.ParseVerdict(answer) {
+	case "PASS":
+		if name != "" {
+			_ = h.store.ClearFailures(name)
+		}
+		_ = h.store.ClearPendingFailures(id)
+	case "FAIL":
+		if name != "" {
+			_ = h.store.RecordFailure(name)
+		}
+		_ = h.store.RecordPendingFailure(id)
+	}
+	fmt.Fprintln(h.w, answer)
+	return nil
 }
 
 func shortID(id string) string {

@@ -20,7 +20,8 @@ const (
 )
 
 // frontmatter is the agentskills.io-compatible subset of SKILL.md metadata.
-// source/created_at/last_used are store-managed: the model never sets them.
+// source/created_at/last_used/failures are store-managed: the model never sets
+// them.
 type frontmatter struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
@@ -30,6 +31,7 @@ type frontmatter struct {
 	Source      string   `yaml:"source,omitempty"`
 	CreatedAt   int64    `yaml:"created_at,omitempty"`
 	LastUsed    int64    `yaml:"last_used,omitempty"`
+	Failures    int      `yaml:"failures,omitempty"`
 }
 
 // parseFrontmatter splits content into the metadata block and the body.

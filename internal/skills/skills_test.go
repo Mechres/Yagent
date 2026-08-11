@@ -501,3 +501,80 @@ func TestImportFileUserSkill(t *testing.T) {
 		t.Error("import without frontmatter should fail")
 	}
 }
+
+func TestPendingContentAndFailures(t *testing.T) {
+	s := openStore(t)
+	content := validSkill("verify-me", "verify me carefully")
+	id, _, err := s.Stage(Op{Action: ActionCreate, Name: "verify-me", Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PendingSkillContent(id)
+	if err != nil || got != content {
+		t.Fatalf("PendingSkillContent = %q / %v", got, err)
+	}
+	name, _ := s.PendingName(id)
+	if name != "verify-me" {
+		t.Errorf("PendingName = %q", name)
+	}
+
+	// verification failures accumulate on the pending item and surface in list
+	if err := s.RecordPendingFailure(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordPendingFailure(id); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := s.ListPending()
+	if len(pending) != 1 || pending[0].Failures != 2 {
+		t.Fatalf("pending = %+v", pending)
+	}
+	if err := s.ClearPendingFailures(id); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := s.ListPending(); pending[0].Failures != 0 {
+		t.Errorf("failures not cleared: %+v", pending[0])
+	}
+}
+
+func TestFailuresOnSkill(t *testing.T) {
+	s := openStore(t)
+	createSkill(t, s, "flaky", "flaky skill")
+	if err := s.RecordFailure("flaky"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordFailure("flaky"); err != nil {
+		t.Fatal(err)
+	}
+	metas := s.List()
+	if len(metas) != 1 || metas[0].Failures != 2 {
+		t.Fatalf("meta = %+v", metas)
+	}
+	if err := s.ClearFailures("flaky"); err != nil {
+		t.Fatal(err)
+	}
+	if metas := s.List(); metas[0].Failures != 0 {
+		t.Errorf("failures not cleared: %+v", metas[0])
+	}
+}
+
+func TestPendingSkillContentForPatch(t *testing.T) {
+	s := openStore(t)
+	createSkill(t, s, "patchy", "patch me")
+	id, _, err := s.Stage(Op{Action: ActionPatch, Name: "patchy", OldString: "## Procedure", NewString: "## Procedure\n0. pre-step"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := s.PendingSkillContent(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "0. pre-step") {
+		t.Errorf("patched content missing the change: %q", content)
+	}
+	// delete has nothing to verify
+	delID, _, _ := s.Stage(Op{Action: ActionDelete, Name: "patchy"})
+	if c, _ := s.PendingSkillContent(delID); c != "" {
+		t.Errorf("delete should have no content, got %q", c)
+	}
+}

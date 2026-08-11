@@ -52,6 +52,7 @@ type pending struct {
 	CreatedAt int64
 	Op        Op
 	Diff      string
+	Failures  int // failed verification runs against this staged write
 }
 
 // PendingSummary is one row of `/skills pending`.
@@ -60,6 +61,7 @@ type PendingSummary struct {
 	Action    string
 	Name      string
 	CreatedAt int64
+	Failures  int
 }
 
 // validate checks an op against the authoring rules, the safety scanner and
@@ -549,10 +551,38 @@ func (s *Store) ListPending() ([]PendingSummary, error) {
 		if err != nil {
 			continue
 		}
-		out = append(out, PendingSummary{ID: p.ID, Action: p.Op.Action, Name: p.Op.Name, CreatedAt: p.CreatedAt})
+		out = append(out, PendingSummary{ID: p.ID, Action: p.Op.Action, Name: p.Op.Name, CreatedAt: p.CreatedAt, Failures: p.Failures})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out, nil
+}
+
+// RecordPendingFailure increments a staged write's failed-verification count.
+func (s *Store) RecordPendingFailure(id string) error {
+	p, err := s.loadPending(id)
+	if err != nil {
+		return err
+	}
+	p.Failures++
+	return s.savePending(p)
+}
+
+// ClearPendingFailures resets a staged write's verification failures.
+func (s *Store) ClearPendingFailures(id string) error {
+	p, err := s.loadPending(id)
+	if err != nil {
+		return err
+	}
+	p.Failures = 0
+	return s.savePending(p)
+}
+
+func (s *Store) savePending(p pending) error {
+	data, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal pending: %w", err)
+	}
+	return os.WriteFile(filepath.Join(s.pendingRoot(), p.ID, "item.json"), data, 0o644)
 }
 
 // PendingDiff returns the review diff for a staged write.
@@ -562,6 +592,39 @@ func (s *Store) PendingDiff(id string) (string, error) {
 		return "", err
 	}
 	return p.Diff, nil
+}
+
+// PendingSkillContent returns the SKILL.md content a staged write would
+// produce, for the verification harness. Returns "" for writes that remove a
+// skill or change no SKILL.md.
+func (s *Store) PendingSkillContent(id string) (string, error) {
+	p, err := s.loadPending(id)
+	if err != nil {
+		return "", err
+	}
+	switch p.Op.Action {
+	case ActionCreate, ActionEdit:
+		return p.Op.Content, nil
+	case ActionPatch:
+		if dir, _, ok := s.findSkill(p.Op.Name); ok {
+			cur := readFile(filepath.Join(dir, "SKILL.md"))
+			return strings.Replace(cur, p.Op.OldString, p.Op.NewString, 1), nil
+		}
+	case ActionWriteFile:
+		if dir, _, ok := s.findSkill(p.Op.Name); ok {
+			return readFile(filepath.Join(dir, "SKILL.md")), nil
+		}
+	}
+	return "", nil
+}
+
+// PendingName returns the skill name a staged write targets.
+func (s *Store) PendingName(id string) (string, error) {
+	p, err := s.loadPending(id)
+	if err != nil {
+		return "", err
+	}
+	return p.Op.Name, nil
 }
 
 // ApprovePending applies a staged write and removes it from the queue.
