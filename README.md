@@ -7,13 +7,13 @@ A local-first AI agent for **code, audit, review, web search and research** — 
 
 ## Features
 
-- **Agent loop with tools** — streaming chat, tool calling with risk-gated approvals, validation + retry, `/yolo` mode.
+- **Agent loop with tools** — streaming chat, tool calling with risk-gated approvals, validation + retry with fuzzy argument aliasing, `/yolo` mode, goal mode with **workspace checkpoints** (`/checkpoint`) for safe autonomous runs.
 - **Memory** — SQLite sessions (`yagent sessions`, `chat --continue`, auto-titles, `/undo`), running-summary context budgeting, and hybrid semantic recall (vector + FTS5 + importance + recency).
 - **Skills** — procedural memory as `SKILL.md` files; the agent creates, discovers and applies its own skills.
-- **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, per-turn code retrieval.
+- **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, **call-graph references** (`code_references`: who calls X), per-turn code retrieval.
 - **Web tools** — `web_search` (DuckDuckGo by default, Mojeek or SearXNG as alternatives) and `web_fetch` with HTML→text extraction.
-- **Orchestration** — goal mode, parallel subagents, an advisor (`consult`) model.
-- **Two UIs** — a bubbletea TUI and a plain REPL, sharing one runtime. The TUI has a 24-bit theme system (Tokyo Night default; Catppuccin Mocha and Nord selectable in `/settings`), a pill-style header/status bar with a live context gauge, and markdown rendering for assistant messages.
+- **Orchestration** — goal mode, parallel subagents with per-subagent **tool subsets** and a shared **scratchpad** (`scratch_write`/`scratch_read`), an advisor (`consult`) model, tool-output compaction to protect the context window.
+- **Two UIs** — a bubbletea TUI and a plain REPL, sharing one runtime. The TUI has a 24-bit theme system (Tokyo Night default; Catppuccin Mocha and Nord selectable in `/settings`), a pill-style header/status bar with a live context gauge, markdown rendering for assistant messages, and **dimmed "thinking" blocks** for reasoning models.
 - **Diagnostics** — `yagent doctor`, slog logging, a golden YAML eval harness.
 
 ## Install
