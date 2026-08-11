@@ -5,9 +5,12 @@ import (
 	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
+	tsbash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
 	tsc "github.com/tree-sitter/tree-sitter-c/bindings/go"
 	tscpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
+	tscss "github.com/tree-sitter/tree-sitter-css/bindings/go"
 	tsgo "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tshtml "github.com/tree-sitter/tree-sitter-html/bindings/go"
 	tsjava "github.com/tree-sitter/tree-sitter-java/bindings/go"
 	tsjs "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
 	tspy "github.com/tree-sitter/tree-sitter-python/bindings/go"
@@ -219,6 +222,30 @@ var languages = []language{
 		decl: map[string]bool{
 			"method_declaration": true, "class_declaration": true, "interface_declaration": true,
 			"enum_declaration": true, "record_declaration": true, "constructor_declaration": true,
+		},
+	},
+	{
+		name: "bash",
+		ext:  []string{".sh", ".bash"},
+		lang: sitter.NewLanguage(tsbash.Language()),
+		decl: map[string]bool{
+			"function_definition": true,
+		},
+	},
+	{
+		name: "html",
+		ext:  []string{".html", ".htm", ".xhtml"},
+		lang: sitter.NewLanguage(tshtml.Language()),
+		decl: map[string]bool{
+			"element": true, "style_element": true, "script_element": true,
+		},
+	},
+	{
+		name: "css",
+		ext:  []string{".css", ".scss"},
+		lang: sitter.NewLanguage(tscss.Language()),
+		decl: map[string]bool{
+			"rule_set": true, "at_rule": true, "media_statement": true,
 		},
 	},
 }

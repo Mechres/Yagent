@@ -185,3 +185,57 @@ int free_helper() {
 		t.Fatalf("cpp chunks = %d, want >= 2", len(chunks))
 	}
 }
+
+func TestChunkerBashHTMLCSS(t *testing.T) {
+	bash := `#!/bin/bash
+set -euo pipefail
+
+build() {
+    echo "building the project in release mode..."
+    go build -ldflags "-s -w" -o ./app ./cmd/yagent
+    echo "build complete"
+}
+
+deploy() {
+    build
+    scp ./app user@host:/srv/app
+    ssh user@host systemctl restart app
+    echo "deployed successfully"
+}
+`
+	if chunks := chunkSource("deploy.sh", bash); len(chunks) < 2 {
+		t.Fatalf("bash chunks = %d, want >= 2", len(chunks))
+	}
+
+	html := `<!doctype html>
+<html>
+<head><title>App</title></head>
+<body>
+<header><nav><a href="/">Home</a><a href="/docs">Docs</a></nav></header>
+<main><h1>Hello world</h1><p>This is the main content area of the documentation page.</p></main>
+<footer>Copyright notice and links</footer>
+</body>
+</html>
+`
+	// HTML nests everything inside one <html> element, so the structural chunk
+	// is the whole document (split by size when huge) — not line windows.
+	if chunks := chunkSource("index.html", html); len(chunks) < 1 || !strings.Contains(chunks[0].Content, "<footer>") {
+		t.Fatalf("html chunks = %+v", chunks)
+	}
+
+	css := `/* reset */
+* { margin: 0; padding: 0; }
+
+body {
+    font-family: sans-serif;
+    color: #333;
+}
+
+@media (max-width: 600px) {
+    .container { padding: 8px; }
+}
+`
+	if chunks := chunkSource("app.css", css); len(chunks) < 2 {
+		t.Fatalf("css chunks = %d, want >= 2", len(chunks))
+	}
+}

@@ -45,6 +45,10 @@ type Task struct {
 	// Summary makes budget summarization deterministic (the value is returned
 	// as the running summary) instead of consuming a scripted step.
 	Summary string `yaml:"summary"`
+	// Goal runs the agent in loop mode toward a goal (DONE/CONTINUE verdicts);
+	// Rounds caps it. Takes precedence over Input/Inputs.
+	Goal   string `yaml:"goal"`
+	Rounds int    `yaml:"rounds"`
 
 	Assert Assertions `yaml:"assert"`
 }
@@ -174,10 +178,17 @@ func Run(t *testing.T, task Task) {
 	}
 	var answer string
 	var err error
-	for _, in := range inputs {
-		answer, err = a.Run(context.Background(), in)
+	if task.Goal != "" {
+		answer, err = a.RunGoal(context.Background(), task.Goal, task.Rounds, nil)
 		if err != nil {
-			t.Fatalf("Run(%q): %v", in, err)
+			t.Fatalf("RunGoal: %v", err)
+		}
+	} else {
+		for _, in := range inputs {
+			answer, err = a.Run(context.Background(), in)
+			if err != nil {
+				t.Fatalf("Run(%q): %v", in, err)
+			}
 		}
 	}
 	history := a.History()

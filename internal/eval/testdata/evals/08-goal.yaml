@@ -1,0 +1,8 @@
+name: goal-loop
+description: M6.13 — autonomous goal loop ends on a DONE verdict
+goal: make the build pass
+steps:
+  - answer: I ran the build and it passes now
+  - answer: DONE the build passes
+assert:
+  final_answer_contains: "passes now"

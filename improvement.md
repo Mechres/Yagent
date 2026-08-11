@@ -53,10 +53,16 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   turn's fs_write/fs_edit (incl. created files).
 - ✅ Symbol-aware search (M6.15): top-level decls indexed into `index_symbols`;
   `index_search` supports `symbol:`/`type:` exact lookups.
+- ✅ Chunker grammars for bash/html/css (M6.16); SQL stays on the line-window
+  fallback (its tree-sitter grammar isn't fetchable).
+- ✅ Goal-mode eval + chunker/symbol/search benchmarks (M6.16).
 - 🟡 Subagent primitive (`SpawnSubagent`) — M7 proper. Gated: only start if the
   loop-mode evals show the single loop is the bottleneck.
 - 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and
   hybrid search.
+- ⚪ Sandboxed shell execution (docker/podman/landlock) — not a fit: the tool is
+  approval-gated and personal; a container wrapper adds heavy surface for
+  marginal gain on trusted projects.
 - ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site / CI —
   not a fit for a local-first single binary; would add surface and, for
   telemetry, conflict with the privacy stance.
