@@ -559,31 +559,50 @@ func splitKeepEmpty(s string) []string {
 
 // settingsView renders the interactive settings page.
 func (m *tuiModel) settingsView() string {
-	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	var b strings.Builder
-	b.WriteString(dim.Render("Yagent settings — ↑/↓ choose · enter edit (saved immediately) · esc close\n\n"))
 	keys := config.Settings()
-	start := m.settingsIdx
-	if start > 12 {
-		start = 12
-	}
+	keyW := 24
+	valueW := 44
+
+	marker := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Render("▸")
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+	var rows []string
 	for i, s := range keys {
-		if i < start-12 || i > start+12 {
-			continue
+		value := m.cfg.Get(s.Key)
+		if value == "" {
+			value = "(unset)"
 		}
-		line := fmt.Sprintf("%-24s %s", s.Key, m.cfg.Get(s.Key))
+		if len(value) > valueW {
+			value = value[:valueW-1] + "…"
+		}
 		if i == m.settingsIdx {
-			b.WriteString(selected.Render("▸ "+line) + "\n")
+			line := fmt.Sprintf("%-*s %s", keyW, s.Key, value)
+			rows = append(rows, marker+" "+lipgloss.NewStyle().
+				Background(lipgloss.Color("237")).
+				Bold(true).
+				Render(line))
 		} else {
-			b.WriteString("  " + line + "\n")
+			rows = append(rows, "  "+keyStyle.Render(fmt.Sprintf("%-*s", keyW, s.Key))+" "+valStyle.Render(value))
 		}
 	}
-	b.WriteString("\n")
+
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
+		Render("⚙ Yagent settings")
+	body := lipgloss.NewStyle().Foreground(lipgloss.Color("188")).Render(strings.Join(rows, "\n"))
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+		Render("↑/↓ move   ·   enter edit (saved immediately)   ·   esc close")
+
+	page := title + "\n\n" + body + "\n\n" + hint
 	if m.editing {
-		b.WriteString("edit " + keys[m.settingsIdx].Key + ": " + m.editInput.View() + "\n")
+		field := keys[m.settingsIdx].Key
+		prompt := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).
+			Render("edit " + field + ": ")
+		page += "\n\n" + prompt + m.editInput.View()
 	}
-	return b.String()
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1).Render(page)
 }
 
 // flushStream commits the current streamed answer into the transcript.
