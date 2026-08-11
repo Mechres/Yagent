@@ -147,6 +147,14 @@ func TestSettingsPageOpensAndEdits(t *testing.T) {
 	if !m.editing {
 		t.Fatal("enter did not start editing")
 	}
+	if !m.editInput.Focused() {
+		t.Fatal("edit input is not focused (typing would be ignored)")
+	}
+	// typing updates the value
+	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("mojeek")})
+	if !strings.Contains(m.editInput.Value(), "mojeek") {
+		t.Errorf("edit value = %q, want to contain mojeek", m.editInput.Value())
+	}
 	// esc closes editing
 	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.editing {

@@ -262,8 +262,12 @@ func (m *tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.editing = true
 		entry := config.Settings()[m.settingsIdx]
-		in := newInput()
+		in := textinput.New()
+		in.Placeholder = "type value, enter to save, esc to cancel"
+		in.CharLimit = 2000
+		in.Width = 60
 		in.SetValue(m.cfg.Get(entry.Key))
+		in.Focus()
 		m.editInput = in
 	}
 	return m, nil
