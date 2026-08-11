@@ -919,7 +919,11 @@ func TestActiveToolSchemasFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg := tools.NewRegistry(ws, tools.Options{Skills: sk, Web: wc, Index: idx, SkillsWriteApproval: true})
+	reg := tools.NewRegistry(ws, tools.Options{
+		Skills: sk, Web: wc, Index: idx,
+		Consult:             llm.NewClient("http://127.0.0.1:1", "advisor"),
+		SkillsWriteApproval: true,
+	})
 	a := New(nil, reg, nil, Config{MaxIterations: 5}, ws)
 
 	has := func(schemas []llm.ToolSchema, name string) bool {
@@ -955,5 +959,58 @@ func TestActiveToolSchemasFilters(t *testing.T) {
 	}
 	if !has(a.activeToolSchemas("read the file", map[string]bool{"skill_manage": true}), "skill_manage") {
 		t.Error("skill_manage missing after being used this turn")
+	}
+}
+
+func TestRunGoalDoneFirstRound(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{
+		finalContent("I fixed the build"),
+		finalContent("DONE the build passes now"),
+	})
+	a, _, _, _ := setup(t, s, true, 10)
+	answer, err := a.RunGoal(context.Background(), "make the build pass", 5, nil)
+	if err != nil {
+		t.Fatalf("RunGoal: %v", err)
+	}
+	if answer != "I fixed the build" {
+		t.Errorf("answer = %q", answer)
+	}
+}
+
+func TestRunGoalContinuesUntilDone(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{
+		finalContent("first attempt done"),
+		finalContent("CONTINUE the tests still fail"),
+		finalContent("second attempt done"),
+		finalContent("DONE all tests pass now"),
+	})
+	a, _, _, _ := setup(t, s, true, 10)
+	var rounds []int
+	answer, err := a.RunGoal(context.Background(), "make the tests pass", 5, func(r int, _ string) {
+		rounds = append(rounds, r)
+	})
+	if err != nil {
+		t.Fatalf("RunGoal: %v", err)
+	}
+	if answer != "second attempt done" {
+		t.Errorf("answer = %q", answer)
+	}
+	if len(rounds) != 2 || rounds[0] != 1 || rounds[1] != 2 {
+		t.Errorf("rounds = %v, want [1 2]", rounds)
+	}
+}
+
+func TestRunGoalCaps(t *testing.T) {
+	// never DONE -> capped at 2 rounds
+	s := newScriptedLLM(t, [][]string{
+		finalContent("a1"),
+		finalContent("CONTINUE still going"),
+		finalContent("a2"),
+		finalContent("CONTINUE still going"),
+	})
+	a, _, _, _ := setup(t, s, true, 10)
+	_, err := a.RunGoal(context.Background(), "goal", 2, nil)
+	if err == nil || !strings.Contains(err.Error(), "after 2 rounds") {
+		t.Errorf("err = %v, want cap error", err)
 	}
 }

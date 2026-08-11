@@ -378,6 +378,70 @@ func ParseVerdict(answer string) string {
 	return ""
 }
 
+// DefaultGoalRounds caps an autonomous goal loop.
+const DefaultGoalRounds = 8
+
+// goalDonePrompt asks the model whether the goal is fully achieved; the reply
+// is parsed for a DONE/CONTINUE verdict.
+const goalDonePrompt = `You set out to fully achieve this goal: %s
+
+Have you achieved it completely? Reply with exactly one line, nothing else:
+DONE <what you verified>
+or
+CONTINUE <what still remains>`
+
+// RunGoal drives the agent autonomously toward a goal: each round runs the
+// normal loop with the goal as the instruction, then a verification pass asks
+// for a DONE/CONTINUE verdict. History persists across rounds, so each round
+// builds on the last (the budget condenses old rounds). onRound, when set, is
+// called with the 1-based round and its final answer. The verdict is model
+// self-reported; maxRounds caps the loop.
+func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound func(round int, answer string)) (string, error) {
+	if maxRounds <= 0 {
+		maxRounds = DefaultGoalRounds
+	}
+	var last string
+	for round := 1; round <= maxRounds; round++ {
+		var err error
+		last, err = a.Run(ctx, goal)
+		if err != nil {
+			return last, fmt.Errorf("round %d: %w", round, err)
+		}
+		if onRound != nil {
+			onRound(round, last)
+		}
+		done, err := a.goalDone(ctx, goal)
+		if err != nil {
+			return last, nil // can't verify (server hiccup); stop cleanly
+		}
+		if done {
+			return last, nil
+		}
+	}
+	return last, fmt.Errorf("goal not achieved after %d rounds", maxRounds)
+}
+
+// goalDone asks the model for a DONE/CONTINUE verdict without touching history
+// (the exchange is not persisted).
+func (a *Agent) goalDone(ctx context.Context, goal string) (bool, error) {
+	prompt := llm.Message{Role: "user", Content: fmt.Sprintf(goalDonePrompt, goal)}
+	msgs := append(a.assembleContext("", ""), prompt)
+	resp, err := a.llm.ChatStream(ctx, msgs, nil, func(string) {})
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(resp.Message.Content), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "DONE") {
+			return true, nil
+		}
+		if strings.HasPrefix(t, "CONTINUE") {
+			return false, nil
+		}
+	}
+	return false, nil // no verdict: assume not done
+}
+
 // appendMessage records a message in memory and persists it when a store is
 // configured, returning its store row id (0 when not persisted).
 func (a *Agent) appendMessage(ctx context.Context, msg llm.Message) (int64, error) {
@@ -434,7 +498,7 @@ var (
 	coreToolNames = []string{
 		"fs_read", "fs_write", "fs_edit", "glob", "grep", "shell_exec",
 		"git_status", "git_diff", "git_log", "memory_save", "memory_search",
-		"skills_list", "skill_view",
+		"skills_list", "skill_view", "consult",
 	}
 	webToolNames    = []string{"web_search", "web_fetch"}
 	indexToolNames  = []string{"index_search", "index_repo"}
@@ -778,5 +842,6 @@ Rules:
 - Never claim you ran a tool you did not run, and never invent file contents or command output.
 - Side-effecting tools (fs_write, fs_edit, shell_exec) prompt the user for approval. If the user denies, find another approach or explain why you cannot proceed.
 - When you answer from web_search / web_fetch results, cite the source URLs.
+- When stuck, unsure, or before a risky change, you may use the consult tool to ask a second AI advisor model for a second opinion.
 - When you have the final answer, reply with plain text and no tool calls.`, workspace)
 }

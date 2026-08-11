@@ -71,6 +71,8 @@ type Options struct {
 	Index *index.Store
 	// Web enables the M5 web tools (may be nil).
 	Web *web.Client
+	// Consult enables the `consult` advisor tool (may be nil).
+	Consult *llm.Client
 	// SkillsWriteApproval gates skill writes (stage instead of apply).
 	SkillsWriteApproval bool
 	// IndexProgress reports index_repo progress lines to the UI (optional).
@@ -116,6 +118,9 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	if opts.Web != nil {
 		reg["web_search"] = &webSearchTool{client: opts.Web}
 		reg["web_fetch"] = &webFetchTool{client: opts.Web}
+	}
+	if opts.Consult != nil {
+		reg["consult"] = &consultTool{client: opts.Consult}
 	}
 	for name, t := range reg {
 		r.tools[name] = t

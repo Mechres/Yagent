@@ -42,7 +42,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	defer env.vs.Close()
 	defer env.idx.Close()
 
-	incoming := make(chan tea.Msg, 256)
+	incoming := make(chan tea.Msg, 4096)
 	inputCh := make(chan string, 1)
 	runnerCtx, runnerCancel := context.WithCancel(ctx)
 	runnerDone := make(chan struct{})
@@ -52,15 +52,20 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		env.registry.SetSkillsWriteApproval(false)
 	}
 
+	// Stream/progress messages are best-effort (dropped if the buffer is full)
+	// so a synchronous command like /goal can never deadlock the UI. Approval
+	// requests and turn completion stay blocking — they carry semantics.
+	send := func(msg tea.Msg) {
+		select {
+		case incoming <- msg:
+		default:
+		}
+	}
 	ag := newAgent(client, cfg, env, ap,
-		func(delta string) { incoming <- tokenMsg{delta: delta} },
-		func(call llm.ToolCall) { incoming <- toolMsg{call: call} })
-	env.registry.SetIndexProgress(func(line string) {
-		incoming <- progressMsg{text: line}
-	})
-	startBackgroundIndex(runnerCtx, env, func(line string) {
-		incoming <- progressMsg{text: line}
-	})
+		func(delta string) { send(tokenMsg{delta: delta}) },
+		func(call llm.ToolCall) { send(toolMsg{call: call}) })
+	env.registry.SetIndexProgress(func(line string) { send(progressMsg{text: line}) })
+	startBackgroundIndex(runnerCtx, env, func(line string) { send(progressMsg{text: line}) })
 
 	// Agent runner: one turn per input line; on cancel, wraps up the session.
 	go func() {
@@ -503,7 +508,7 @@ func (m *tuiModel) flushStream() {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/help", "/export [file]", "/yolo",
+		"/exit", "/clear", "/help", "/export [file]", "/yolo", "/goal <what>",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}

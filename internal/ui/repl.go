@@ -31,6 +31,10 @@ type Options struct {
 	// Fork branches a new session from an existing session id (the original
 	// history is copied, the original session is untouched).
 	Fork string
+	// Goal runs the agent autonomously toward a goal (loop mode) instead of
+	// interactive chat; Rounds caps the loop (default 8).
+	Goal   string
+	Rounds int
 }
 
 // autoApprover grants every approval without prompting (--yolo).
@@ -92,6 +96,17 @@ func (t *toggleableApprover) IsYOLO() bool {
 //	/skills approval on|off
 //	/skill-name            load a SKILL.md into context
 func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, opts Options) error {
+	// Goal mode: autonomous loop toward a goal, then exit.
+	if opts.Goal != "" {
+		env, err := newChatEnv(ctx, cfg, continueID, opts.Fork)
+		if err != nil {
+			return err
+		}
+		defer env.st.Close()
+		defer env.vs.Close()
+		defer env.idx.Close()
+		return runGoalMode(ctx, client, cfg, env, opts.Goal, opts.Rounds, opts.YOLO)
+	}
 	// TUI by default on a real terminal; --plain (or piped stdin) falls back
 	// to the streaming REPL.
 	if !opts.Plain && isTerminal(os.Stdin) {
@@ -216,6 +231,43 @@ type chatEnv struct {
 	forkSource     string
 }
 
+// runGoalMode drives the agent autonomously toward a goal: each round runs the
+// full loop, streams its answer, and a DONE/CONTINUE verdict decides whether to
+// continue. Ends with the session id for later resume.
+func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, goal string, rounds int, yolo bool) error {
+	w := os.Stdout
+	ap := newToggleableApprover(&replApprover{reader: bufio.NewReader(os.Stdin), writer: w})
+	ap.SetYOLO(yolo)
+	if yolo {
+		env.registry.SetSkillsWriteApproval(false)
+	}
+	ag := newAgent(client, cfg, env, ap,
+		func(delta string) { _, _ = io.WriteString(w, delta) },
+		func(call llm.ToolCall) {
+			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
+		})
+
+	fmt.Printf("goal mode — working toward: %s\n", goal)
+	if env.forkSource != "" {
+		fmt.Printf("(forked from %s)\n", env.forkSource)
+	}
+	answer, err := ag.RunGoal(ctx, goal, rounds, func(r int, _ string) {
+		fmt.Fprintf(w, "\n—— round %d ——\n", r)
+	})
+	if err != nil {
+		fmt.Fprintf(w, "\ngoal loop: %v\n", err)
+	}
+	if err := ag.Finish(ctx); err != nil {
+		fmt.Fprintf(w, "\nwarning: skill review: %v\n", err)
+	}
+	if err := memory.SummarizeSession(ctx, client, env.st, env.vs, env.sessionID); err != nil {
+		fmt.Fprintf(w, "\nwarning: session summary: %v\n", err)
+	}
+	_ = answer
+	fmt.Fprintf(w, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
+	return nil
+}
+
 // startBackgroundIndex refreshes the code index at session start when it is
 // already built (Count > 0): Index() hash-checks every file and only re-embeds
 // the changed ones, so an unchanged repo is near-free. The first build is left
@@ -264,6 +316,14 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 	if err != nil {
 		return nil, fmt.Errorf("web search config: %w", err)
 	}
+	var consultClient *llm.Client
+	if cfg.Consult.Model != "" {
+		consultURL := cfg.Consult.ServerURL
+		if consultURL == "" {
+			consultURL = cfg.ServerURL
+		}
+		consultClient = llm.NewClient(consultURL, cfg.Consult.Model)
+	}
 
 	sessionID, initialHistory, initialSummary, forkSource, err := resolveSession(ctx, st, ws, continueID, forkID)
 	if err != nil {
@@ -281,6 +341,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		Skills:              sk,
 		Index:               idx,
 		Web:                 webClient,
+		Consult:             consultClient,
 		SkillsWriteApproval: cfg.Skills.WriteApproval,
 	})
 	return env, nil
@@ -337,6 +398,12 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.exportSession(rest, ag)
 	case rest == "yolo" || strings.HasPrefix(rest, "yolo "):
 		return h.handleYOLO(rest)
+	case rest == "goal" || strings.HasPrefix(rest, "goal "):
+		parts := strings.Fields(rest)
+		if len(parts) < 2 {
+			return true, fmt.Errorf("usage: /goal <what to achieve>")
+		}
+		return h.runGoal(ag, strings.TrimSpace(strings.TrimPrefix(rest, "goal")))
 	default:
 		// /skill-name: load a SKILL.md into context and continue.
 		content, warning, err := h.store.View(rest, "")
@@ -510,6 +577,21 @@ func (h *skillsHandler) pendingIDs(id string) ([]string, error) {
 		ids = append(ids, p.ID)
 	}
 	return ids, nil
+}
+
+// runGoal drives the current agent through the autonomous goal loop, printing
+// a round marker per round; the answers stream through the UI's OnToken.
+func (h *skillsHandler) runGoal(ag *agent.Agent, goal string) (bool, error) {
+	fmt.Fprintf(h.w, "goal mode — working toward: %s\n", goal)
+	_, err := ag.RunGoal(h.ctx, goal, agent.DefaultGoalRounds, func(r int, _ string) {
+		fmt.Fprintf(h.w, "\n—— round %d ——\n", r)
+	})
+	if err != nil {
+		fmt.Fprintf(h.w, "\ngoal loop: %v\n", err)
+		return true, nil
+	}
+	fmt.Fprintf(h.w, "\ngoal achieved.\n")
+	return true, nil
 }
 
 // handleYOLO toggles yolo mode at runtime: /yolo flips it, /yolo on|off sets

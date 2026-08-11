@@ -49,13 +49,17 @@ func main() {
 		fs := flag.NewFlagSet("chat", flag.ContinueOnError)
 		continueID := fs.String("continue", "", "resume session by id")
 		forkID := fs.String("fork", "", "branch a new session from an existing session id")
+		goal := fs.String("goal", "", "run the agent autonomously toward this goal (loop mode), then exit")
+		rounds := fs.Int("rounds", 0, "max goal-loop rounds (default 8; only with --goal)")
 		plain := fs.Bool("plain", false, "force the plain REPL instead of the TUI")
 		yolo := fs.Bool("yolo", false, "auto-approve every write/destructive tool and apply skills immediately")
 		if err := fs.Parse(args[1:]); err != nil {
 			os.Exit(2)
 		}
 		client := llm.NewClient(cfg.ServerURL, cfg.Model)
-		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{Plain: *plain, YOLO: *yolo, Fork: *forkID}); err != nil {
+		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{
+			Plain: *plain, YOLO: *yolo, Fork: *forkID, Goal: *goal, Rounds: *rounds,
+		}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}

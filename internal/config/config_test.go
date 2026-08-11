@@ -284,3 +284,30 @@ func TestSetWriteApprovalCreatesMissingFile(t *testing.T) {
 		t.Error("write_approval should be false in the created file")
 	}
 }
+
+func TestLoadConfigConsult(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarServerURL, "http://chat.test")
+	t.Setenv(EnvVarConsultServer, "")
+	t.Setenv(EnvVarConsultModel, "")
+	t.Setenv(EnvVarDataDir, "")
+	t.Setenv(EnvVarModel, "")
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Consult.Model != "" {
+		t.Errorf("consult should default disabled, got %+v", cfg.Consult)
+	}
+	// env override
+	t.Setenv(EnvVarConsultServer, "http://advisor.test")
+	t.Setenv(EnvVarConsultModel, "advisor-3b")
+	cfg, err = LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Consult.ServerURL != "http://advisor.test" || cfg.Consult.Model != "advisor-3b" {
+		t.Errorf("consult = %+v", cfg.Consult)
+	}
+}

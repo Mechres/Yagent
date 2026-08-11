@@ -23,6 +23,9 @@ type Config struct {
 	ContextWindow      int          `yaml:"context_window"`
 	Skills             SkillsConfig `yaml:"skills"`
 	Web                WebConfig    `yaml:"web_search"`
+	// Consult points the `consult` tool at a second local model ("advisor")
+	// the agent can ask for guidance. Empty = disabled.
+	Consult ConsultConfig `yaml:"consult"`
 	// Path is the config file this was loaded from ("" when none existed);
 	// used to persist runtime toggles like skills.write_approval.
 	Path string `yaml:"-"`
@@ -49,6 +52,14 @@ type WebConfig struct {
 	SearxngURL string `yaml:"searxng_url"`
 }
 
+// ConsultConfig configures the `consult` tool (a second, "advisor" model).
+type ConsultConfig struct {
+	// ServerURL of the advisor model (defaults to server_url when Model is set).
+	ServerURL string `yaml:"server_url"`
+	// Model is the advisor model name; consult is disabled until both are set.
+	Model string `yaml:"model"`
+}
+
 // Defaults applied when no config file and no env override is present.
 const (
 	DefaultServerURL      = "http://localhost:11434"
@@ -69,6 +80,8 @@ const (
 	EnvVarContextWindow   = "YAGENT_CONTEXT_WINDOW"
 	EnvVarWebProvider     = "YAGENT_WEB_SEARCH_PROVIDER"
 	EnvVarSearxngURL      = "YAGENT_SEARXNG_URL"
+	EnvVarConsultServer   = "YAGENT_CONSULT_SERVER_URL"
+	EnvVarConsultModel    = "YAGENT_CONSULT_MODEL"
 )
 
 // DefaultPath is the config file used when no explicit path is given.
@@ -165,6 +178,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if v := os.Getenv(EnvVarSearxngURL); v != "" {
 		cfg.Web.SearxngURL = v
+	}
+	if v := os.Getenv(EnvVarConsultServer); v != "" {
+		cfg.Consult.ServerURL = v
+	}
+	if v := os.Getenv(EnvVarConsultModel); v != "" {
+		cfg.Consult.Model = v
 	}
 
 	if cfg.ServerURL == "" {

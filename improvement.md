@@ -40,8 +40,14 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
 ## P2 — deferred / gated
 
-- 🟡 Subagent primitive (`SpawnSubagent`) — M7. Gated: only start if eval
-  evidence shows the single agent loop is the bottleneck.
+- ✅ Loop mode (M6.13): `yagent chat --goal "..."` / `/goal <text>` runs the
+  agent toward a goal in DONE/CONTINUE rounds (capped by `--rounds`, default 8).
+  This is also the natural M7 evidence: run an autonomous goal and watch whether
+  the single loop bottlenecks.
+- ✅ `consult` tool (M6.13): a second local "advisor" model (`consult.server_url`
+  / `consult.model`) the agent can ask for a second opinion.
+- 🟡 Subagent primitive (`SpawnSubagent`) — M7 proper. Gated: only start if the
+  loop-mode evals show the single loop is the bottleneck.
 - 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and
   hybrid search.
 - ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site / CI —
