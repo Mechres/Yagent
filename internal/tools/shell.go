@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Mechres/Yagent/internal/llm"
@@ -77,26 +78,45 @@ func (t *shellExecTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	}
 	cmd.Dir = t.ws
 	cmd.Env = scrubEnv(os.Environ())
+	// Run the command in its own process group so a timeout can kill
+	// descendants too (`sh -c "sleep 5"` forks sleep; CommandContext only
+	// SIGKILLs the shell, and the grandchild keeps the stdout pipe open,
+	// stalling the wait until it exits on its own).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 
-	err := cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Sprintf("error: command timed out after %s:\n%s%s", timeout, out.String(), errBuf.String()), nil
+	if err := cmd.Start(); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
 	}
-	var b strings.Builder
-	b.WriteString(out.String())
-	if errBuf.Len() > 0 {
-		fmt.Fprintf(&b, "stderr:\n%s", errBuf.String())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case <-ctx.Done():
+		// Kill the whole process group (negative pid), not just the direct
+		// child, so orphaned grandchildren die and the pipes close.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Sprintf("error: command timed out after %s:\n%s%s", timeout, out.String(), errBuf.String()), nil
+		}
+		return fmt.Sprintf("error: command canceled:\n%s%s", out.String(), errBuf.String()), nil
+	case err := <-done:
+		var b strings.Builder
+		b.WriteString(out.String())
+		if errBuf.Len() > 0 {
+			fmt.Fprintf(&b, "stderr:\n%s", errBuf.String())
+		}
+		if err != nil {
+			fmt.Fprintf(&b, "exit status: %v", err)
+		}
+		if b.Len() == 0 {
+			return "(no output)", nil
+		}
+		return capResult(b.String(), shellMaxOutput), nil
 	}
-	if err != nil {
-		fmt.Fprintf(&b, "exit status: %v", err)
-	}
-	if b.Len() == 0 {
-		return "(no output)", nil
-	}
-	return capResult(b.String(), shellMaxOutput), nil
 }
 
 func (t *shellExecTool) bwrapAvailable() bool {

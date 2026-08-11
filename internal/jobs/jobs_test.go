@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,31 @@ func TestJobLifecycle(t *testing.T) {
 		t.Error("killing unknown job should error")
 	}
 	r.StopAll()
+}
+
+func TestKillKillsDescendants(t *testing.T) {
+	ws := t.TempDir()
+	marker := ws + "/done"
+	r := New()
+	// "& echo" forces sh to fork a child that writes a marker later; killing
+	// the job must take the whole process group down before the marker can
+	// appear (regression: only the shell was killed, the child survived).
+	job, err := r.Start("sleep 3 & (sleep 2; touch " + marker + ") & wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if err := r.Kill(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if job.Alive() {
+		t.Error("job still alive after kill")
+	}
+	// descendants should be dead too: the marker must not appear
+	time.Sleep(2500 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("descendant survived the kill and wrote the marker")
+	}
 }
 
 func TestJobsList(t *testing.T) {

@@ -170,7 +170,10 @@ func TestLoadConfigBadYAML(t *testing.T) {
 }
 
 func TestDefaultPath(t *testing.T) {
+	// UserConfigDir prefers $XDG_CONFIG_HOME over $HOME, so clear it: some CI
+	// runners inherit an XDG path that would override the fake HOME below.
 	t.Setenv("HOME", "/tmp/fakehome")
+	t.Setenv("XDG_CONFIG_HOME", "")
 	p, err := DefaultPath()
 	if err != nil {
 		t.Fatalf("DefaultPath: %v", err)

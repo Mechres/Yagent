@@ -35,7 +35,11 @@ func TestShellExec(t *testing.T) {
 func TestShellExecTimeout(t *testing.T) {
 	_, reg := fakeWorkspace(t)
 	start := time.Now()
-	got := execTool(t, reg, "shell_exec", map[string]any{"command": "sleep 5", "timeout_sec": 1})
+	// "& wait" forces sh to fork the sleeper as a child: a plain `sleep 5`
+	// may be exec-optimized by /bin/sh, masking the need to kill the whole
+	// process group (regression: the timeout only SIGKILLed the shell, so the
+	// grandchild kept the stdout pipe open and the call stalled ~5s).
+	got := execTool(t, reg, "shell_exec", map[string]any{"command": "sleep 5 & wait", "timeout_sec": 1})
 	if !strings.Contains(got, "timed out") {
 		t.Errorf("shell_exec timeout = %q", got)
 	}

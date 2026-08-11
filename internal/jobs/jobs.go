@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -70,6 +71,10 @@ func (r *Registry) Start(command string) (*Job, error) {
 	j.proc = exec.CommandContext(ctx, "sh", "-c", command)
 	j.proc.Stdout = writer(j.write)
 	j.proc.Stderr = writer(j.write)
+	// Own process group so Kill can terminate descendants too (CommandContext
+	// only SIGKILLs the shell; a grandchild like `sleep 5` would survive and
+	// keep the log pipe open).
+	j.proc.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := j.proc.Start(); err != nil {
 		cancel()
 		return nil, err
@@ -101,13 +106,14 @@ func (r *Registry) List() []*Job {
 	return out
 }
 
-// Kill terminates a job by id.
+// Kill terminates a job by id, killing the whole process group so descendant
+// processes (backgrounded commands) die too.
 func (r *Registry) Kill(id string) error {
 	j, ok := r.Get(id)
 	if !ok {
 		return fmt.Errorf("unknown job %q", id)
 	}
-	j.cancel()
+	killGroup(j)
 	<-j.done
 	return nil
 }
@@ -121,9 +127,18 @@ func (r *Registry) StopAll() {
 	}
 	r.mu.Unlock()
 	for _, j := range jobs {
-		j.cancel()
+		killGroup(j)
 		<-j.done
 	}
+}
+
+// killGroup SIGKILLs a job's process group (negative pid). Safe to call even
+// if the job already exited (the wait loop reaps it).
+func killGroup(j *Job) {
+	if j.proc.Process != nil && j.proc.ProcessState == nil {
+		_ = syscall.Kill(-j.proc.Process.Pid, syscall.SIGKILL)
+	}
+	j.cancel()
 }
 
 type writer func([]byte) (int, error)

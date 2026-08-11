@@ -24,6 +24,15 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   chunks and again for symbols; symbol lines now point at the declaration,
   not its doc comment.
 
+### Fixed
+- `shell_exec`/`shell_bg` timeouts now kill the whole process group, so
+  descendant commands (`sh -c "sleep 5 & wait"`) can no longer hold the
+  output pipe open and stall the timeout until they finish on their own.
+- `TestDefaultPath` clears an inherited `$XDG_CONFIG_HOME` so it resolves
+  `$HOME` deterministically on CI runners.
+- CI pins Go 1.25 (matches `go.mod`) instead of relying on toolchain
+  auto-download from 1.22.
+
 ## v0.1.0 — 2026-08-11
 
 ### Added
