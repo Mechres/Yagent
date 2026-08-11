@@ -97,6 +97,7 @@ type diffFile struct {
 
 type diffHunk struct {
 	oldStart int // 1-based line in the original
+	newStart int // 1-based line in the result
 	lines    []diffLine
 }
 
@@ -130,14 +131,14 @@ func parseUnifiedDiff(patch string) ([]diffFile, error) {
 				cur.path = diffPath(strings.TrimPrefix(l, "+++ "))
 			}
 		case strings.HasPrefix(l, "@@ "):
-			start, err := parseHunkStart(l)
+			oldStart, newStart, err := parseHunkStart(l)
 			if err != nil {
 				return nil, err
 			}
 			if cur == nil {
 				return nil, fmt.Errorf("hunk appears before any file header")
 			}
-			cur.hunks = append(cur.hunks, diffHunk{oldStart: start})
+			cur.hunks = append(cur.hunks, diffHunk{oldStart: oldStart, newStart: newStart})
 		case cur != nil && len(cur.hunks) > 0:
 			h := &cur.hunks[len(cur.hunks)-1]
 			switch {
@@ -173,19 +174,32 @@ func diffPath(p string) string {
 	return p
 }
 
-func parseHunkStart(l string) (int, error) {
+func parseHunkStart(l string) (oldStart, newStart int, err error) {
 	// @@ -12,5 +12,5 @@
 	fields := strings.Fields(l)
 	if len(fields) < 2 {
-		return 0, fmt.Errorf("malformed hunk header %q", l)
+		return 0, 0, fmt.Errorf("malformed hunk header %q", l)
 	}
-	old := strings.TrimPrefix(fields[1], "-")
-	if i := strings.IndexByte(old, ','); i >= 0 {
-		old = old[:i]
+	oldStart, err = parseStartField(fields[1])
+	if err != nil {
+		return 0, 0, err
 	}
-	n, err := strconv.Atoi(old)
+	newStart, err = parseStartField(fields[2])
+	if err != nil {
+		return 0, 0, err
+	}
+	return oldStart, newStart, nil
+}
+
+// parseStartField parses "-12,5" / "+12,5" into the start line.
+func parseStartField(f string) (int, error) {
+	f = strings.TrimLeft(f, "-+")
+	if i := strings.IndexByte(f, ','); i >= 0 {
+		f = f[:i]
+	}
+	n, err := strconv.Atoi(f)
 	if err != nil || n < 1 {
-		return 0, fmt.Errorf("malformed hunk start %q", l)
+		return 0, fmt.Errorf("malformed hunk start %q", f)
 	}
 	return n, nil
 }
@@ -220,4 +234,81 @@ func applyHunks(fileLines []string, hunks []diffHunk) ([]string, error) {
 		fileLines = out
 	}
 	return fileLines, nil
+}
+
+// PatchHunk is one reviewable hunk (used by the TUI's per-hunk approval).
+type PatchHunk struct {
+	File  string
+	Index int // index within its file
+	Start int // original line of the hunk header
+	Lines []string
+}
+
+// PatchHunks splits a unified diff into reviewable hunks in file order.
+func PatchHunks(patch string) ([]PatchHunk, error) {
+	files, err := parseUnifiedDiff(patch)
+	if err != nil {
+		return nil, err
+	}
+	var out []PatchHunk
+	for _, f := range files {
+		for i, h := range f.hunks {
+			lines := make([]string, 0, len(h.lines)+1)
+			lines = append(lines, fmt.Sprintf("@@ -%d", h.oldStart))
+			for _, dl := range h.lines {
+				lines = append(lines, string(dl.kind)+dl.text)
+			}
+			out = append(out, PatchHunk{File: f.path, Index: i, Start: h.oldStart, Lines: lines})
+		}
+	}
+	return out, nil
+}
+
+// RebuildPatch returns a unified diff containing only the hunks whose global
+// index is in keep. Hunk headers are recomputed so the filtered patch still
+// applies cleanly. Indexes follow PatchHunks order (0-based).
+func RebuildPatch(patch string, keep []bool) (string, error) {
+	files, err := parseUnifiedDiff(patch)
+	if err != nil {
+		return "", err
+	}
+	var keptFiles []diffFile
+	gi := 0
+	for _, f := range files {
+		nf := diffFile{path: f.path}
+		for _, h := range f.hunks {
+			// Hunk headers are always relative to the original file, so a
+			// kept hunk keeps its oldStart/newStart unchanged.
+			if gi < len(keep) && keep[gi] {
+				nf.hunks = append(nf.hunks, h)
+			}
+			gi++
+		}
+		if len(nf.hunks) > 0 {
+			keptFiles = append(keptFiles, nf)
+		}
+	}
+	var b strings.Builder
+	for _, f := range keptFiles {
+		fmt.Fprintf(&b, "diff --git a/%s b/%s\n", f.path, f.path)
+		fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n", f.path, f.path)
+		for _, h := range f.hunks {
+			var oldCount, newCount int
+			for _, dl := range h.lines {
+				switch dl.kind {
+				case '-', ' ':
+					oldCount++
+				case '+':
+					newCount++
+				}
+			}
+			fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", h.oldStart, oldCount, h.newStart, newCount)
+			for _, dl := range h.lines {
+				b.WriteByte(dl.kind)
+				b.WriteString(dl.text)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
 }

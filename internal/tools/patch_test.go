@@ -92,3 +92,47 @@ func TestFSPatchMultiFileAndUndo(t *testing.T) {
 		t.Errorf("one.txt not reverted: %q", one)
 	}
 }
+
+func TestRebuildPatchFiltersHunks(t *testing.T) {
+	patch := `diff --git a/a.go b/a.go
+--- a/a.go
++++ b/a.go
+@@ -1,3 +1,3 @@
+ func old() int {
+-    return 1
++    return 2
+ }
+@@ -10,1 +10,1 @@
+-func keep() {}
++func keep2() {}
+`
+	hunks, err := PatchHunks(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hunks) != 2 {
+		t.Fatalf("hunks = %d", len(hunks))
+	}
+	// keep only the first hunk
+	filtered, err := RebuildPatch(patch, []bool{true, false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(filtered, "keep2") {
+		t.Errorf("skipped hunk leaked into filtered patch: %q", filtered)
+	}
+	if !strings.Contains(filtered, "return 2") {
+		t.Errorf("kept hunk missing: %q", filtered)
+	}
+	// keep only the second hunk: its oldStart must shift (-3) to match the file
+	filtered2, err := RebuildPatch(patch, []bool{false, true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(filtered2, "return 1") {
+		t.Errorf("first hunk leaked: %q", filtered2)
+	}
+	if !strings.Contains(filtered2, "@@ -10,1 +10,1 @@") {
+		t.Errorf("kept hunk header wrong: %q", filtered2)
+	}
+}

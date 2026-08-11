@@ -105,9 +105,9 @@ type stubApprover struct {
 	n     int
 }
 
-func (s *stubApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
+func (s *stubApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (Approval, error) {
 	s.n++
-	return s.allow, nil
+	return Approval{OK: s.allow}, nil
 }
 
 type captureTokens struct {
@@ -523,6 +523,39 @@ func TestBudgetPersistsSummary(t *testing.T) {
 	got, until, err := st.Summary(ctx, sess.ID)
 	if err != nil || got != "persisted summary text" || until == 0 {
 		t.Errorf("stored summary = %q/%d/%v", got, until, err)
+	}
+}
+
+func TestDedupIdenticalToolCalls(t *testing.T) {
+	// Model calls the SAME tool+args twice in a row; the second must be
+	// skipped, not executed twice.
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
+		toolCall("c2", "fs_read", `{"path": "a.txt"}`),
+		finalContent("done"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "data")
+	reg := tools.NewRegistry(ws, tools.Options{})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 10}, ws)
+
+	answer, err := a.Run(context.Background(), "read a.txt twice")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_ = answer
+	// the model's final request must show the dedup-skip notice for the
+	// second identical call (proving it was skipped, not re-executed)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	last := string(s.requests[len(s.requests)-1])
+	if !strings.Contains(last, "duplicate of the previous tool call") {
+		t.Errorf("skip notice not fed back to the model: %q", last[:400])
+	}
+	// and the file content must appear only once as a tool result
+	if n := strings.Count(last, "data"); n != 1 {
+		t.Errorf("fs_read appears %d times in the final context, want 1", n)
 	}
 }
 
@@ -1024,7 +1057,7 @@ func TestRunSubagent(t *testing.T) {
 	writeWorkspaceFile(t, ws, "a.txt", "data")
 	reg := tools.NewRegistry(ws, tools.Options{ReadOnly: true})
 	client := llm.NewClient(s.ts.URL, "test-model")
-	answer, err := RunSubagent(context.Background(), client, reg, "check a.txt", ws)
+	answer, _, err := RunSubagent(context.Background(), client, reg, "check a.txt", ws)
 	if err != nil {
 		t.Fatalf("RunSubagent: %v", err)
 	}

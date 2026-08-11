@@ -46,6 +46,20 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## v0.1.1 — 2026-08-11
 
 ### Added
+- **fs_patch per-hunk approval**: multi-hunk patches now open an interactive
+  hunk walker in the TUI (y accept / n skip / q finish); only accepted hunks
+  are applied — the `Approver` interface returns an optional rewritten-args
+  override for this.
+- **Tool-call dedup**: a repeated identical (tool+args) call is skipped
+  instead of re-executed (small-model habit); repeated *failing* calls still
+  count toward the validation block.
+- **Subagent token accounting**: subagent results now report a heuristic token
+  tally per child.
+- **Reasoning controls**: `ui.show_reasoning` toggles the thinking block
+  (default on), and the per-turn reasoning buffer is capped (tail kept with an
+  omission marker) so a verbose model can't flood the terminal.
+- **Consult soft-fail**: an unavailable advisor returns "consult unavailable —
+  continue without the advisor" so the turn degrades instead of derailing.
 - **Fuzzy tool arguments**: `decodeArgs` now maps unknown keys onto the closest
   schema field (synonyms like `filename`→`path`, plus Levenshtein) so small
   models stop burning retry turns on `{"filename":"x"}` instead of

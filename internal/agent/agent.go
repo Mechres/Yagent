@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -130,9 +131,17 @@ type Config struct {
 	InitialSummary string
 }
 
+// Approval is an approver's verdict. Args, when non-nil, overrides the tool
+// arguments the agent will execute — used by the TUI's fs_patch hunk reviewer
+// to apply only the accepted hunks.
+type Approval struct {
+	OK   bool
+	Args json.RawMessage
+}
+
 // Approver gates Write/Destructive tool calls; implemented by the UI.
 type Approver interface {
-	Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error)
+	Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (Approval, error)
 }
 
 // ChatLLM is the model client the loop needs. *llm.Client satisfies it.
@@ -151,6 +160,11 @@ type Agent struct {
 	summ     ChatLLM
 	registry *tools.Registry
 	approver Approver
+
+	// lastCallSig dedups identical consecutive tool calls (small-model habit).
+	// Guarded by dedupMu because read-only batches dispatch concurrently.
+	lastCallSig string
+	dedupMu     sync.Mutex
 
 	workspace      string
 	systemPrompt   string
@@ -260,6 +274,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	blocked := make(map[string]bool)
 	turnCalls := 0
 	used := make(map[string]bool)
+	a.lastCallSig = ""
 
 	for i := 0; i < a.cfg.MaxIterations; i++ {
 		// Budget before every request: plain chat turns (no tool calls)
@@ -399,13 +414,18 @@ func VerifySkill(ctx context.Context, client ChatLLM, reg *tools.Registry, appro
 const subagentSystemPrompt = `You are a subagent of Yagent working on a delegated subtask in a workspace. You have read-only tools (%s). Investigate, gather evidence (paths, lines, URLs), and finish with a concise summary or conclusion. Never modify files.`
 
 // RunSubagent executes a self-contained subtask in an isolated read-only agent
-// and returns its final message. The caller supplies a read-only registry; the
-// child runs with its own context window, so long investigations do not pollute
-// the parent conversation (M7 v1).
-func RunSubagent(ctx context.Context, client ChatLLM, reg *tools.Registry, task, workspace string) (string, error) {
-	a := New(client, reg, nil, Config{MaxIterations: 15, Window: 8000, Reserve: 1000}, workspace)
+// and returns its final message plus a heuristic token count. The caller
+// supplies a read-only registry; the child runs with its own context window,
+// so long investigations do not pollute the parent conversation (M7 v1).
+func RunSubagent(ctx context.Context, client ChatLLM, reg *tools.Registry, task, workspace string) (string, int, error) {
+	var tokens int
+	a := New(client, reg, nil, Config{
+		MaxIterations: 15, Window: 8000, Reserve: 1000,
+		OnToken: func(d string) { tokens += len(d) / 4 },
+	}, workspace)
 	a.InjectSystem(fmt.Sprintf(subagentSystemPrompt, strings.Join(reg.Names(), ", ")))
-	return a.Run(ctx, task)
+	answer, err := a.Run(ctx, task)
+	return answer, tokens, err
 }
 
 // ParseVerdict extracts PASS/FAIL from a verification answer.
@@ -881,6 +901,26 @@ func (a *Agent) allReadOnly(calls []llm.ToolCall) bool {
 func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[string]int, blocked map[string]bool) string {
 	name := call.Function.Name
 
+	// Dedup: small models occasionally repeat an identical tool call back to
+	// back; skip it instead of running the same side effect twice. Only
+	// successful calls arm the dedup — repeated *failing* calls still count
+	// toward the validation block.
+	sig := name + " " + string(call.Function.Arguments)
+	a.dedupMu.Lock()
+	dup := a.lastCallSig != "" && sig == a.lastCallSig
+	a.dedupMu.Unlock()
+	if dup {
+		return "skipped: duplicate of the previous tool call (same tool and arguments); do not repeat it"
+	}
+	armed := false
+	defer func() {
+		if armed {
+			a.dedupMu.Lock()
+			a.lastCallSig = sig
+			a.dedupMu.Unlock()
+		}
+	}()
+
 	tool, ok := a.registry.Get(name)
 	if !ok {
 		return fmt.Sprintf("error: unknown tool %q, available: %s", name, strings.Join(a.registry.Names(), ", "))
@@ -895,12 +935,17 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		if sg, ok := tool.(interface{ SelfGated() bool }); ok && sg.SelfGated() {
 			// skills gate inside the tool
 		} else {
-			allowed, err := a.approver.Approve(ctx, call, tool.Risk())
+			appr, err := a.approver.Approve(ctx, call, tool.Risk())
 			if err != nil {
 				return fmt.Sprintf("error: approval failed: %v", err)
 			}
-			if !allowed {
+			if !appr.OK {
 				return "error: user denied this action; find another approach or explain why you cannot proceed"
+			}
+			if appr.Args != nil {
+				// e.g. the hunk reviewer filtered the patch down to accepted
+				// hunks; execute with the rewritten arguments.
+				call.Function.Arguments = appr.Args
 			}
 		}
 	}
@@ -922,6 +967,7 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		return "error: " + err.Error()
 	}
 	slog.Debug("tool executed", "tool", name)
+	armed = true // a successful call arms the dedup for an identical repeat
 	return result
 }
 

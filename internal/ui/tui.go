@@ -144,8 +144,12 @@ type turnDoneMsg struct {
 type approvalRequestMsg struct {
 	call    llm.ToolCall
 	risk    tools.RiskLevel
-	respond chan bool
+	respond chan agent.Approval
 }
+
+// reasoningCap bounds the per-turn thinking buffer so a verbose model can't
+// flood the terminal (the tail is kept, prefixed with an omission marker).
+const reasoningCap = 4 << 10
 
 // tuiApprover prompts for approval through the TUI and blocks for the answer.
 type tuiApprover struct {
@@ -153,18 +157,18 @@ type tuiApprover struct {
 	ctx      context.Context
 }
 
-func (a *tuiApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
-	respond := make(chan bool, 1)
+func (a *tuiApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
+	respond := make(chan agent.Approval, 1)
 	select {
 	case a.incoming <- approvalRequestMsg{call: call, risk: risk, respond: respond}:
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return agent.Approval{}, ctx.Err()
 	}
 	select {
-	case ok := <-respond:
-		return ok, nil
+	case appr := <-respond:
+		return appr, nil
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return agent.Approval{}, ctx.Err()
 	}
 }
 
@@ -192,19 +196,29 @@ type tuiModel struct {
 	branch string
 	th     Theme
 
-	transcript  []string
-	stream      strings.Builder
-	reasoning   strings.Builder
-	busy        bool
-	turnTokens  int
-	toolCalls   int
-	pending     chan bool
-	approveArg  string
-	confirmQuit bool
-	follow      bool // follow the bottom of the transcript
-	tabIndex    int
-	lastInput   string
-	err         error
+	transcript         []string
+	stream             strings.Builder
+	reasoning          string
+	reasoningTruncated bool
+	busy               bool
+	turnTokens         int
+	toolCalls          int
+	pending            chan agent.Approval
+	approveArg         string
+	confirmQuit        bool
+	follow             bool // follow the bottom of the transcript
+	tabIndex           int
+	lastInput          string
+	err                error
+
+	// fs_patch per-hunk review state (see handleHunkKey).
+	hunkHunks   []tools.PatchHunk
+	hunkIdx     int
+	hunkKeep    []bool
+	hunkRespond chan agent.Approval
+	hunkOpen    bool
+	hunkSummary string
+	hunkPatch   string
 
 	settingsOpen bool
 	settingsIdx  int
@@ -405,15 +419,18 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.settingsOpen {
 			return m.handleSettingsKey(msg)
 		}
+		if m.hunkOpen {
+			return m.handleHunkKey(msg)
+		}
 		if m.pending != nil {
 			switch msg.String() {
 			case "y", "Y":
-				m.pending <- true
+				m.pending <- agent.Approval{OK: true}
 				m.pending = nil
 				m.append("  " + iconOK + " approved " + m.approveArg)
 				return m, m.nextCmd()
 			case "n", "N":
-				m.pending <- false
+				m.pending <- agent.Approval{OK: false}
 				m.pending = nil
 				m.append("  " + iconBad + " rejected " + m.approveArg)
 				return m, m.nextCmd()
@@ -479,8 +496,16 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reasoningMsg:
 		// Thinking streams before the answer; buffered for display only and
-		// never enters history.
-		m.reasoning.WriteString(msg.delta)
+		// never enters history. Honors ui.show_reasoning and caps the buffer
+		// so a verbose model can't flood the terminal.
+		if m.cfg != nil && !m.cfg.UI.ShowReasoning {
+			return m, m.nextCmd()
+		}
+		m.reasoning += msg.delta
+		if len(m.reasoning) > reasoningCap {
+			m.reasoningTruncated = true
+			m.reasoning = "[… earlier reasoning omitted]\n" + m.reasoning[len(m.reasoning)-reasoningCap:]
+		}
 		return m, m.nextCmd()
 
 	case toolMsg:
@@ -496,6 +521,16 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case approvalRequestMsg:
 		m.flushStream()
+		if msg.call.Function.Name == "fs_patch" {
+			if patch := argsPatch(msg.call); patch != "" {
+				if hunks, err := tools.PatchHunks(patch); err == nil && len(hunks) > 1 {
+					// Multi-hunk patch: walk hunks one by one so the user can
+					// accept or skip each before the whole thing applies.
+					m.startHunkReview(msg.respond, hunks, fmt.Sprintf("%v", msg.risk), patch)
+					return m, m.nextCmd()
+				}
+			}
+		}
 		m.pending = msg.respond
 		m.approveArg = msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments)
 		m.append(fmt.Sprintf("  %s [%s] %s", iconWarn, msg.risk, m.approveArg))
@@ -582,7 +617,8 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.append("> " + text)
 	m.busy = true
 	m.stream.Reset()
-	m.reasoning.Reset()
+	m.reasoning = ""
+	m.reasoningTruncated = false
 	m.turnTokens = 0
 	m.toolCalls = 0
 	m.follow = true // new input snaps back to the bottom
@@ -633,6 +669,111 @@ func fsApprovalDiff(th Theme, ws string, call llm.ToolCall) string {
 	default:
 		return ""
 	}
+}
+
+// argsPatch extracts the "patch" argument of an fs_patch call.
+func argsPatch(call llm.ToolCall) string {
+	var a struct {
+		Patch string `json:"patch"`
+	}
+	if err := json.Unmarshal(call.Function.Arguments, &a); err != nil {
+		return ""
+	}
+	return a.Patch
+}
+
+// startHunkReview begins the interactive per-hunk walk for a multi-hunk
+// fs_patch: the current hunk is rendered and the user steps through with
+// y (accept) / n (skip) / q (finish). Only accepted hunks are applied.
+func (m *tuiModel) startHunkReview(respond chan agent.Approval, hunks []tools.PatchHunk, risk, patch string) {
+	m.hunkRespond = respond
+	m.hunkHunks = hunks
+	m.hunkIdx = 0
+	m.hunkKeep = make([]bool, len(hunks))
+	m.hunkOpen = true
+	m.hunkPatch = patch
+	m.append(fmt.Sprintf("  %s [%s] fs_patch — %d hunks (%s)", iconWarn, risk, len(hunks), hunks[0].File))
+	m.renderHunk(m.hunkIdx)
+}
+
+// renderHunk shows the current hunk and the accept/skip prompt.
+func (m *tuiModel) renderHunk(i int) {
+	h := m.hunkHunks[i]
+	m.append(fmt.Sprintf("  hunk %d/%d — %s (line %d):", i+1, len(m.hunkHunks), h.File, h.Start))
+	for _, ln := range h.Lines {
+		m.append("    " + ln)
+	}
+	m.append("  accept this hunk? (y/n) — q to finish with accepted hunks")
+}
+
+// handleHunkKey drives the per-hunk walk.
+func (m *tuiModel) handleHunkKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		m.hunkKeep[m.hunkIdx] = true
+		m.hunkIdx++
+	case "n", "N":
+		m.hunkIdx++
+	case "q", "Q", "esc":
+		m.finishHunkReview()
+		return m, m.nextCmd()
+	}
+	if m.hunkIdx >= len(m.hunkHunks) {
+		m.finishHunkReview()
+		return m, m.nextCmd()
+	}
+	m.renderHunk(m.hunkIdx)
+	return m, m.nextCmd()
+}
+
+// finishHunkReview resolves the walk: apply only accepted hunks (rewriting the
+// patch arguments), or deny entirely when none were accepted.
+func (m *tuiModel) finishHunkReview() {
+	accepted := 0
+	for _, k := range m.hunkKeep {
+		if k {
+			accepted++
+		}
+	}
+	respond := m.hunkRespond
+	if accepted == 0 {
+		respond <- agent.Approval{OK: false}
+		m.append("  " + iconBad + " denied — no hunks accepted")
+	} else {
+		filtered, err := tools.RebuildPatch(m.hunkPatch, m.hunkKeep)
+		if err != nil {
+			respond <- agent.Approval{OK: false}
+			m.append("  " + iconBad + " denied — could not rebuild patch: " + err.Error())
+		} else {
+			respond <- agent.Approval{OK: true, Args: mustJSON(map[string]string{"patch": filtered})}
+			m.append(fmt.Sprintf("  "+iconOK+" approved %d/%d hunks", accepted, len(m.hunkHunks)))
+		}
+	}
+	m.hunkOpen = false
+	m.hunkHunks = nil
+	m.hunkKeep = nil
+	m.hunkRespond = nil
+	m.hunkPatch = ""
+}
+
+// hunkView renders the review progress above the input while a hunk walk runs.
+func (m *tuiModel) hunkView() string {
+	if !m.hunkOpen || m.hunkIdx >= len(m.hunkHunks) {
+		return ""
+	}
+	accepted := 0
+	for _, k := range m.hunkKeep {
+		if k {
+			accepted++
+		}
+	}
+	return lipgloss.NewStyle().Foreground(m.th.Accent).Bold(true).
+		Render(fmt.Sprintf("  hunk %d/%d · %d accepted · y accept · n skip · q finish", m.hunkIdx+1, len(m.hunkHunks), accepted))
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // renderPatchPreview colorizes a unified-diff string for approval previews.
@@ -974,9 +1115,9 @@ func (m *tuiModel) sessionsView() string {
 // flushStream commits the current reasoning block and streamed answer into the
 // transcript.
 func (m *tuiModel) flushStream() {
-	if m.reasoning.Len() > 0 {
-		m.append(renderThinking(strings.TrimSpace(m.reasoning.String()), m.width))
-		m.reasoning.Reset()
+	if m.reasoning != "" {
+		m.append(renderThinking(strings.TrimSpace(m.reasoning), m.width))
+		m.reasoning = ""
 	}
 	if m.stream.Len() > 0 {
 		m.append(renderMarkdown(strings.TrimRight(m.stream.String(), "\n"), m.width))
@@ -1040,8 +1181,11 @@ func (m *tuiModel) View() string {
 	m.viewport.Height = m.layoutHeight()
 	out := m.headerView() + "\n"
 	out += m.viewport.View() + "\n"
-	if m.reasoning.Len() > 0 {
+	if m.reasoning != "" {
 		out += m.thinkingView() + "\n"
+	}
+	if m.hunkOpen {
+		out += m.hunkView() + "\n"
 	}
 	if m.stream.Len() > 0 {
 		// The live tail renders outside the viewport, so it must be wrapped
@@ -1175,7 +1319,7 @@ func (m *tuiModel) ctxGauge(used, limit int) string {
 func (m *tuiModel) thinkingView() string {
 	th := m.th
 	head := lipgloss.NewStyle().Foreground(th.Muted).Render(iconCtx + " thinking")
-	body := lipgloss.NewStyle().Foreground(th.Muted).Italic(true).Render(strings.TrimSpace(m.reasoning.String()))
+	body := lipgloss.NewStyle().Foreground(th.Muted).Italic(true).Render(strings.TrimSpace(m.reasoning))
 	return hardWrap(head+"\n"+body, m.width)
 }
 

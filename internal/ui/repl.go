@@ -46,8 +46,8 @@ type Options struct {
 // autoApprover grants every approval without prompting (--yolo).
 type autoApprover struct{}
 
-func (autoApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
-	return true, nil
+func (autoApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
+	return agent.Approval{OK: true}, nil
 }
 
 // toggleableApprover wraps a prompting approver and can be switched to yolo
@@ -62,12 +62,12 @@ func newToggleableApprover(inner agent.Approver) *toggleableApprover {
 	return &toggleableApprover{inner: inner}
 }
 
-func (t *toggleableApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
+func (t *toggleableApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
 	t.mu.RLock()
 	yolo := t.yolo
 	t.mu.RUnlock()
 	if yolo {
-		return true, nil
+		return agent.Approval{OK: true}, nil
 	}
 	return t.inner.Approve(ctx, call, risk)
 }
@@ -145,8 +145,12 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
-		// Thinking is shown dimmed/italic above the answer (display-only).
+		// Thinking is shown dimmed/italic above the answer (display-only),
+		// unless ui.show_reasoning is off.
 		func(delta string) {
+			if !cfg.UI.ShowReasoning {
+				return
+			}
 			_, _ = fmt.Fprintf(w, "\x1b[2m\x1b[3m%s\x1b[0m", delta)
 		},
 		func(call llm.ToolCall) {
@@ -409,7 +413,11 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 				return err.Error(), nil
 			}
 		}
-		return agent.RunSubagent(ctx, client, reg, task, workspace)
+		answer, tokens, err := agent.RunSubagent(ctx, client, reg, task, workspace)
+		if err != nil {
+			return "error: subagent failed: " + err.Error(), nil
+		}
+		return fmt.Sprintf("%s\n\n(subagent used ~%d tokens)", answer, tokens), nil
 	})
 	return agent.New(client, env.registry, approver, agent.Config{
 		OnToken:         onToken,
@@ -445,8 +453,8 @@ type skillsHandler struct {
 // (safety: a verification pass must never auto-approve side effects).
 type denyWriteApprover struct{}
 
-func (denyWriteApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
-	return risk == tools.RiskReadOnly, nil
+func (denyWriteApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
+	return agent.Approval{OK: risk == tools.RiskReadOnly}, nil
 }
 
 func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
@@ -792,6 +800,12 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 			return err
 		}
 		c.Sampling.RepetitionPenalty = f
+	case "ui.show_reasoning":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		c.UI.ShowReasoning = b
 	case "context_window":
 		n, err := strconv.Atoi(value)
 		if err != nil {
@@ -1017,16 +1031,16 @@ type replApprover struct {
 	writer io.Writer
 }
 
-func (a *replApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
+func (a *replApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return agent.Approval{}, err
 	}
 	fmt.Fprintf(a.writer, "\n[%s] %s\n  %s\nAllow? [y/N] ",
 		risk, call.Function.Name, previewArgs(call.Function.Arguments))
 	line, err := a.reader.ReadString('\n')
 	if err != nil {
-		return false, err
+		return agent.Approval{}, err
 	}
 	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes", nil
+	return agent.Approval{OK: answer == "y" || answer == "yes"}, nil
 }

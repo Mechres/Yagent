@@ -103,9 +103,9 @@ func TestFsApprovalDiff(t *testing.T) {
 
 type recordingApprover struct{ n int }
 
-func (r *recordingApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
+func (r *recordingApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
 	r.n++
-	return true, nil
+	return agent.Approval{OK: true}, nil
 }
 
 func TestToggleableApprover(t *testing.T) {
@@ -113,13 +113,13 @@ func TestToggleableApprover(t *testing.T) {
 	a := newToggleableApprover(inner)
 	call := llm.ToolCall{}
 	// yolo off -> delegates
-	if ok, _ := a.Approve(context.Background(), call, tools.RiskDestructive); !ok || inner.n != 1 {
-		t.Errorf("off mode: ok=%v n=%d, want delegate", ok, inner.n)
+	if appr, _ := a.Approve(context.Background(), call, tools.RiskDestructive); !appr.OK || inner.n != 1 {
+		t.Errorf("off mode: ok=%v n=%d, want delegate", appr.OK, inner.n)
 	}
 	// yolo on -> auto-approves without touching the inner approver
 	a.SetYOLO(true)
-	if ok, _ := a.Approve(context.Background(), call, tools.RiskDestructive); !ok || inner.n != 1 {
-		t.Errorf("yolo mode: ok=%v n=%d, want auto (no delegate)", ok, inner.n)
+	if appr, _ := a.Approve(context.Background(), call, tools.RiskDestructive); !appr.OK || inner.n != 1 {
+		t.Errorf("yolo mode: ok=%v n=%d, want auto (no delegate)", appr.OK, inner.n)
 	}
 	if !a.IsYOLO() {
 		t.Error("IsYOLO should be true")
@@ -438,6 +438,90 @@ func TestFsPatchApprovalPreview(t *testing.T) {
 	}
 }
 
+func TestHunkReviewFiltersPatch(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 24
+
+	patch := `--- a/a.go
++++ b/a.go
+@@ -1,1 +1,1 @@
+-func first() {}
++func first2() {}
+@@ -5,1 +5,1 @@
+-func second() {}
++func second2() {}
+`
+	args, _ := json.Marshal(map[string]string{"patch": patch})
+	call := llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_patch", Arguments: args}}
+	respond := make(chan agent.Approval, 1)
+
+	// deliver the approval request like the agent runner would
+	m.handleIncomingForTest(approvalRequestMsg{call: call, risk: tools.RiskWrite, respond: respond})
+	if !m.hunkOpen {
+		t.Fatal("hunk review did not start")
+	}
+	if len(m.hunkHunks) != 2 {
+		t.Fatalf("hunks = %d", len(m.hunkHunks))
+	}
+	// accept hunk 1, skip hunk 2 -> review finishes with a filtered patch
+	m.handleHunkKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if !m.hunkOpen || m.hunkIdx != 1 {
+		t.Fatal("review should advance to hunk 2")
+	}
+	m.handleHunkKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if m.hunkOpen {
+		t.Fatal("review should finish after last hunk")
+	}
+	select {
+	case appr := <-respond:
+		if !appr.OK {
+			t.Fatal("expected approval")
+		}
+		got := argsPatch(llm.ToolCall{Function: llm.ToolCallFunction{Arguments: appr.Args}})
+		if strings.Contains(got, "second2") {
+			t.Errorf("skipped hunk leaked: %q", got)
+		}
+		if !strings.Contains(got, "first2") {
+			t.Errorf("accepted hunk missing: %q", got)
+		}
+	default:
+		t.Fatal("no approval sent")
+	}
+}
+
+// handleIncomingForTest routes an approval request into the model's Update.
+func (m *tuiModel) handleIncomingForTest(msg tea.Msg) {
+	m.Update(msg)
+}
+
+func TestReasoningToggleAndCap(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m", UI: config.UIConfig{ShowReasoning: false}}
+	m.width, m.height = 80, 24
+
+	m.Update(reasoningMsg{delta: "secret thinking"})
+	if m.reasoning != "" {
+		t.Error("reasoning buffered even though ui.show_reasoning is off")
+	}
+
+	// with it on, the buffer is capped
+	m.cfg.UI.ShowReasoning = true
+	long := strings.Repeat("x", reasoningCap+100)
+	m.Update(reasoningMsg{delta: long})
+	if !m.reasoningTruncated {
+		t.Error("reasoning not marked truncated")
+	}
+	if len(m.reasoning) > reasoningCap+len("[…] earlier reasoning omitted\n") {
+		t.Errorf("reasoning buffer over cap: %d", len(m.reasoning))
+	}
+	if !strings.Contains(m.reasoning, "earlier reasoning omitted") {
+		t.Errorf("truncation marker missing: %q", m.reasoning[:60])
+	}
+}
+
 func TestReasoningDisplay(t *testing.T) {
 	m := testModel(t)
 	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
@@ -446,7 +530,7 @@ func TestReasoningDisplay(t *testing.T) {
 	m.branch = "main"
 
 	// reasoning streams first -> shown as a "thinking" block, not the answer
-	m.reasoning.WriteString("let me think about this carefully")
+	m.reasoning = "let me think about this carefully"
 	v := m.View()
 	if !strings.Contains(v, "thinking") || !strings.Contains(v, "carefully") {
 		t.Errorf("live thinking missing from view: %q", v)
@@ -462,7 +546,7 @@ func TestReasoningDisplay(t *testing.T) {
 	if !strings.Contains(joined, "thinking") || !strings.Contains(joined, "final answer here") {
 		t.Errorf("flush transcript = %q", joined)
 	}
-	if m.reasoning.Len() != 0 || m.stream.Len() != 0 {
+	if m.reasoning != "" || m.stream.Len() != 0 {
 		t.Error("buffers not reset after flush")
 	}
 }

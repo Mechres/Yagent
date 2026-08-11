@@ -1,0 +1,22 @@
+name: code-references
+description: post-v0.1.2 — code_references finds who calls a function
+index: true
+files:
+  pkg/a.go: |
+    package pkg
+
+    func caller() {
+        helper(1)
+    }
+  pkg/b.go: |
+    package pkg
+
+    func helper(x int) int { return x }
+input: who calls helper?
+steps:
+  - tool_call: {name: index_repo, args: '{}'}
+  - tool_call: {name: code_references, args: '{"symbol": "helper"}'}
+  - answer: helper is called from pkg/a.go.
+assert:
+  tool_results_contain: ["pkg/a.go", "call site"]
+  final_answer_contains: "pkg/a.go"

@@ -1,0 +1,12 @@
+name: fuzzy-args
+description: post-v0.1.2 — {"filename"} aliases to {"path"} instead of a validation retry
+files:
+  a.txt: |
+    payload
+input: read a.txt
+steps:
+  - tool_call: {name: fs_read, args: '{"filename": "a.txt"}'}
+  - answer: The file contains payload.
+assert:
+  tool_results_contain: ["payload"]
+  final_answer_contains: "payload"

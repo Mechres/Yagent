@@ -172,7 +172,11 @@ func Run(t *testing.T, task Task) {
 					return err.Error(), nil
 				}
 			}
-			return agent.RunSubagent(ctx, client, subReg, subtask, workspace)
+			answer, tokens, err := agent.RunSubagent(ctx, client, subReg, subtask, workspace)
+			if err != nil {
+				return "error: subagent failed: " + err.Error(), nil
+			}
+			return fmt.Sprintf("%s\n\n(subagent used ~%d tokens)", answer, tokens), nil
 		}
 		reg = tools.NewRegistry(ws, opts)
 	}
@@ -275,8 +279,8 @@ func Run(t *testing.T, task Task) {
 // user).
 type stubApprover struct{ allow bool }
 
-func (s *stubApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (bool, error) {
-	return s.allow || risk == tools.RiskReadOnly, nil
+func (s *stubApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
+	return agent.Approval{OK: s.allow || risk == tools.RiskReadOnly}, nil
 }
 
 // fixedSummaryLLM always returns a fixed message; used as the budget

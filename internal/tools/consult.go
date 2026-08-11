@@ -62,7 +62,9 @@ func (t *consultTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	}
 	resp, err := t.client.ChatStream(ctx, msgs, nil, func(string) {}, nil)
 	if err != nil {
-		return fmt.Sprintf("error: consult failed: %v", err), nil
+		// Soft-fail: the advisor is best-effort. Tell the model clearly to
+		// continue without it rather than treating the error as an answer.
+		return fmt.Sprintf("consult unavailable (%v) — continue without the advisor and answer from your own knowledge", err), nil
 	}
 	return capResult(resp.Message.Content, maxResultBytes), nil
 }

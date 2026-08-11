@@ -30,6 +30,10 @@ theme: tokyo
 #   top_k: 20
 #   repetition_penalty: 1.05
 
+# Display preferences.
+ui:
+  show_reasoning: true   # dimmed "thinking" block for reasoning models
+
 # Context window in tokens (also YAGENT_CONTEXT_WINDOW).
 context_window: 16384
 
