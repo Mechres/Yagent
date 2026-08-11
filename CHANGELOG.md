@@ -46,6 +46,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## v0.1.1 — 2026-08-11
 
 ### Added
+- **Reasoning display**: the model's thinking (`reasoning_content`, emitted by
+  Qwythos/Qwen3.5 templates) now streams into the UI as a dimmed/italic
+  "thinking" block above the answer — TUI and REPL. It stays display-only and
+  never enters history or context (`agent.OnReasoning` → SSE parser).
 - **M7 beyond v2 — subagent tool subsets**: `subagent` gained a `tools[]`
   array that scopes each child to a subset of the read-only tools (e.g.
   `["web_search","web_fetch"]` for research, `["grep","fs_read",

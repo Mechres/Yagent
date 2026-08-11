@@ -18,7 +18,7 @@ const minSessionMessages = 4
 
 // ChatLLM is the minimal model client the summarizer needs.
 type ChatLLM interface {
-	ChatStream(ctx context.Context, messages []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error)
+	ChatStream(ctx context.Context, messages []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error)
 }
 
 // SummarizeSession condenses a finished session and stores the summary as a
@@ -47,7 +47,7 @@ func SummarizeSession(ctx context.Context, model ChatLLM, st *Store, vs *VectorS
 		{Role: "system", Content: "You are a session summarizer. " + sessionSummaryPrompt},
 		{Role: "user", Content: b.String()},
 	}
-	resp, err := model.ChatStream(ctx, prompt, nil, func(string) {})
+	resp, err := model.ChatStream(ctx, prompt, nil, func(string) {}, nil)
 	if err != nil {
 		return fmt.Errorf("summarize session: %w", err)
 	}

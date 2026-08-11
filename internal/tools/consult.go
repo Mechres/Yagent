@@ -60,7 +60,7 @@ func (t *consultTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		{Role: "system", Content: "You are an experienced engineering advisor to another AI agent. Give concise, actionable guidance. Challenge bad ideas. Answer the question directly, in a few sentences."},
 		{Role: "user", Content: prompt},
 	}
-	resp, err := t.client.ChatStream(ctx, msgs, nil, func(string) {})
+	resp, err := t.client.ChatStream(ctx, msgs, nil, func(string) {}, nil)
 	if err != nil {
 		return fmt.Sprintf("error: consult failed: %v", err), nil
 	}

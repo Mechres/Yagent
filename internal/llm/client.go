@@ -100,8 +100,13 @@ type chatCompletionRequest struct {
 type chatChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content string `json:"content"`
+			// ReasoningContent is the model's thinking span, streamed by
+			// llama.cpp/Ollama for reasoning models (Qwen3.5/Qwythos). It is
+			// surfaced via onReasoning and kept OUT of the assembled content
+			// and history.
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -115,11 +120,11 @@ type chatChunk struct {
 }
 
 // ChatStream sends messages (plus optional tool schemas) to the model with
-// streaming enabled, calls onDelta for each content fragment as it arrives,
-// and returns the assembled response including any tool calls. It retries
-// transport errors up to 3 times with backoff; HTTP error statuses are
-// returned as errors immediately.
-func (c *Client) ChatStream(ctx context.Context, messages []Message, tools []ToolSchema, onDelta func(string)) (*Response, error) {
+// streaming enabled, calls onDelta for each content fragment and onReasoning
+// for each thinking fragment as they arrive, and returns the assembled
+// response including any tool calls. It retries transport errors up to 3 times
+// with backoff; HTTP error statuses are returned as errors immediately.
+func (c *Client) ChatStream(ctx context.Context, messages []Message, tools []ToolSchema, onDelta, onReasoning func(string)) (*Response, error) {
 	reqBody := chatCompletionRequest{Model: c.Model, Messages: messages, Stream: true, Tools: tools, Sampling: c.Sampling}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -135,7 +140,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []Message, tools []Too
 				return nil, ctx.Err()
 			}
 		}
-		resp, err := c.chatStreamOnce(ctx, body, onDelta)
+		resp, err := c.chatStreamOnce(ctx, body, onDelta, onReasoning)
 		if err == nil {
 			return resp, nil
 		}
@@ -168,7 +173,7 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("server returned %s: %s", http.StatusText(e.status), e.body)
 }
 
-func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta func(string)) (*Response, error) {
+func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta, onReasoning func(string)) (*Response, error) {
 	url := strings.TrimRight(c.ServerURL, "/") + "/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -203,6 +208,13 @@ func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta func(s
 			return nil
 		}
 		delta := chunk.Choices[0].Delta
+		if delta.ReasoningContent != "" {
+			// Thinking is display-only: surfaced via onReasoning, never added
+			// to the assembled content or to history.
+			if onReasoning != nil {
+				onReasoning(delta.ReasoningContent)
+			}
+		}
 		if delta.Content != "" {
 			respMessage.Message.Content += delta.Content
 			onDelta(delta.Content)

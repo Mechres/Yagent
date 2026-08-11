@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -218,7 +219,7 @@ func TestSettingsPageChooser(t *testing.T) {
 
 type stubChatLLM struct{}
 
-func (stubChatLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error) {
+func (stubChatLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
 	return &llm.Response{Message: llm.Message{Role: "assistant", Content: "ok"}}, nil
 }
 
@@ -411,6 +412,41 @@ func TestStreamTailWraps(t *testing.T) {
 	if w := lipgloss.Width(m.statusView()); w > 40 {
 		t.Errorf("status width %d > 40", w)
 	}
+}
+
+func TestReasoningDisplay(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 24
+	m.branch = "main"
+
+	// reasoning streams first -> shown as a "thinking" block, not the answer
+	m.reasoning.WriteString("let me think about this carefully")
+	v := m.View()
+	if !strings.Contains(v, "thinking") || !strings.Contains(v, "carefully") {
+		t.Errorf("live thinking missing from view: %q", v)
+	}
+	if strings.Contains(v, "let me think") && m.stream.Len() == 0 {
+		// fine: reasoning is in the view, not the answer stream
+	}
+	// flush commits it to the transcript, still tagged as thinking, and does
+	// NOT store it as answer content
+	m.stream.WriteString("final answer here")
+	m.flushStream()
+	joined := ansiStrip(strings.Join(m.transcript, "\n"))
+	if !strings.Contains(joined, "thinking") || !strings.Contains(joined, "final answer here") {
+		t.Errorf("flush transcript = %q", joined)
+	}
+	if m.reasoning.Len() != 0 || m.stream.Len() != 0 {
+		t.Error("buffers not reset after flush")
+	}
+}
+
+// ansiStrip removes ANSI escape sequences so transcript assertions can match
+// plain text (glamour output is styled).
+func ansiStrip(s string) string {
+	return regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(s, "")
 }
 
 func TestStatusPills(t *testing.T) {

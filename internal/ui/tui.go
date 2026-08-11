@@ -67,6 +67,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	}
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { send(tokenMsg{delta: delta}) },
+		func(delta string) { send(reasoningMsg{delta: delta}) },
 		func(call llm.ToolCall) { send(toolMsg{call: call}) })
 	env.registry.SetIndexProgress(func(line string) { send(progressMsg{text: line}) })
 	startBackgroundIndex(runnerCtx, env, func(line string) { send(progressMsg{text: line}) })
@@ -133,6 +134,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 // ---------- messages ----------
 
 type tokenMsg struct{ delta string }
+type reasoningMsg struct{ delta string }
 type toolMsg struct{ call llm.ToolCall }
 type progressMsg struct{ text string }
 type turnDoneMsg struct {
@@ -192,6 +194,7 @@ type tuiModel struct {
 
 	transcript  []string
 	stream      strings.Builder
+	reasoning   strings.Builder
 	busy        bool
 	turnTokens  int
 	toolCalls   int
@@ -474,6 +477,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnTokens += len(msg.delta) / 4
 		return m, m.nextCmd()
 
+	case reasoningMsg:
+		// Thinking streams before the answer; buffered for display only and
+		// never enters history.
+		m.reasoning.WriteString(msg.delta)
+		return m, m.nextCmd()
+
 	case toolMsg:
 		m.flushStream()
 		m.toolCalls++
@@ -573,6 +582,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.append("> " + text)
 	m.busy = true
 	m.stream.Reset()
+	m.reasoning.Reset()
 	m.turnTokens = 0
 	m.toolCalls = 0
 	m.follow = true // new input snaps back to the bottom
@@ -921,8 +931,13 @@ func (m *tuiModel) sessionsView() string {
 		Padding(0, 1).Render(title + "\n\n" + bodyStyle + "\n\n" + hint)
 }
 
-// flushStream commits the current streamed answer into the transcript.
+// flushStream commits the current reasoning block and streamed answer into the
+// transcript.
 func (m *tuiModel) flushStream() {
+	if m.reasoning.Len() > 0 {
+		m.append(renderThinking(strings.TrimSpace(m.reasoning.String()), m.width))
+		m.reasoning.Reset()
+	}
 	if m.stream.Len() > 0 {
 		m.append(renderMarkdown(strings.TrimRight(m.stream.String(), "\n"), m.width))
 		m.stream.Reset()
@@ -985,6 +1000,9 @@ func (m *tuiModel) View() string {
 	m.viewport.Height = m.layoutHeight()
 	out := m.headerView() + "\n"
 	out += m.viewport.View() + "\n"
+	if m.reasoning.Len() > 0 {
+		out += m.thinkingView() + "\n"
+	}
 	if m.stream.Len() > 0 {
 		// The live tail renders outside the viewport, so it must be wrapped
 		// here or long answers would run off the right edge of the screen.
@@ -1110,6 +1128,22 @@ func (m *tuiModel) ctxGauge(used, limit int) string {
 		return fmt.Sprintf("%d/%d %s %s", used, limit, lipgloss.NewStyle().Foreground(color).Render(bar), pctTxt)
 	}
 	return fmt.Sprintf("%d %s", used, pctTxt)
+}
+
+// thinkingView renders the live reasoning tail as a dimmed, italic block above
+// the streaming answer.
+func (m *tuiModel) thinkingView() string {
+	th := m.th
+	head := lipgloss.NewStyle().Foreground(th.Muted).Render(iconCtx + " thinking")
+	body := lipgloss.NewStyle().Foreground(th.Muted).Italic(true).Render(strings.TrimSpace(m.reasoning.String()))
+	return hardWrap(head+"\n"+body, m.width)
+}
+
+// renderThinking styles a committed reasoning block dimmed/italic and wraps it.
+func renderThinking(text string, width int) string {
+	head := lipgloss.NewStyle().Foreground(tokyoNight.Muted).Render(iconCtx + " thinking")
+	body := lipgloss.NewStyle().Foreground(tokyoNight.Muted).Italic(true).Render(text)
+	return hardWrap(head+"\n"+body, width)
 }
 
 // statusText is the state segment of the status bar: a spinner/kaomoji marker,

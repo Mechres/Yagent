@@ -95,7 +95,7 @@ type fixedSummaryLLM struct {
 	calls   int
 }
 
-func (f *fixedSummaryLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error) {
+func (f *fixedSummaryLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
 	f.calls++
 	return &llm.Response{Message: llm.Message{Role: "assistant", Content: f.summary}}, nil
 }

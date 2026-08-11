@@ -284,7 +284,7 @@ func (s *stubApprover) Approve(ctx context.Context, call llm.ToolCall, risk tool
 // steps.
 type fixedSummaryLLM struct{ summary string }
 
-func (f *fixedSummaryLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error) {
+func (f *fixedSummaryLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
 	return &llm.Response{Message: llm.Message{Role: "assistant", Content: f.summary}}, nil
 }
 

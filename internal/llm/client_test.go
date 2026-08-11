@@ -31,8 +31,9 @@ func sseServer(t *testing.T, events ...string) *httptest.Server {
 func chunkData(content string) string {
 	b, _ := json.Marshal(chatChunk{Choices: []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -43,8 +44,9 @@ func chunkData(content string) string {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	}{{Delta: struct {
-		Content   string `json:"content"`
-		ToolCalls []struct {
+		Content          string `json:"content"`
+		ReasoningContent string `json:"reasoning_content"`
+		ToolCalls        []struct {
 			Index    int    `json:"index"`
 			ID       string `json:"id"`
 			Type     string `json:"type"`
@@ -62,6 +64,48 @@ func toolCallChunk(index int, id, name, argsFrag string) string {
 	raw := fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":%d,"id":%q,"type":"function","function":{"name":%q,"arguments":%q}}]}}]}`,
 		index, id, name, argsFrag)
 	return raw
+}
+
+func TestChatStreamDeliversReasoning(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		raw := []string{
+			`{"choices":[{"delta":{"reasoning_content":"let me think "}}]}`,
+			`{"choices":[{"delta":{"reasoning_content":"about it"}}]}`,
+			`{"choices":[{"delta":{"content":"The answer is 42"}}]}`,
+		}
+		for _, e := range raw {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", e)
+			flusher.Flush()
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	var reasoning, content []string
+	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil,
+		func(d string) { content = append(content, d) },
+		func(r string) { reasoning = append(reasoning, r) })
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if got := strings.Join(reasoning, ""); got != "let me think about it" {
+		t.Errorf("reasoning = %q", got)
+	}
+	if got := strings.Join(content, ""); got != "The answer is 42" {
+		t.Errorf("content deltas = %q", got)
+	}
+	// reasoning must NOT leak into the assembled content or content deltas
+	if resp.Message.Content != "The answer is 42" {
+		t.Errorf("content = %q, reasoning leaked into the answer", resp.Message.Content)
+	}
+	if strings.Contains(resp.Message.Content, "think") {
+		t.Error("reasoning leaked into resp.Message.Content")
+	}
 }
 
 func TestChatStreamCollectsDeltas(t *testing.T) {
@@ -90,7 +134,7 @@ func TestChatStreamCollectsDeltas(t *testing.T) {
 	resp, err := client.ChatStream(context.Background(), []Message{
 		{Role: "system", Content: "be brief"},
 		{Role: "user", Content: "hi"},
-	}, nil, func(d string) { deltas = append(deltas, d) })
+	}, nil, func(d string) { deltas = append(deltas, d) }, nil)
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -139,7 +183,7 @@ func TestChatStreamBearerToken(t *testing.T) {
 
 	client := NewClient(ts.URL, "test-model")
 	client.BearerToken = "secret-key"
-	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}); err != nil {
+	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}, nil); err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
 	if got := gotAuth.Load().(string); got != "Bearer secret-key" {
@@ -171,7 +215,7 @@ func TestChatStreamSendsSampling(t *testing.T) {
 
 	client := NewClient(ts.URL, "test-model")
 	client.Sampling = Sampling{Temperature: 0.6, TopP: 0.95, TopK: 20, RepetitionPenalty: 1.05}
-	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}); err != nil {
+	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}, nil); err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
 	var req chatCompletionRequest
@@ -184,7 +228,7 @@ func TestChatStreamSendsSampling(t *testing.T) {
 
 	// zero values are omitted (cloud endpoints that reject top_k/rep_penalty)
 	client.Sampling = Sampling{Temperature: 0.6, TopP: 0.95}
-	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}); err != nil {
+	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}, nil); err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
 	body := gotReq.Load().(string)
@@ -214,7 +258,7 @@ func TestChatStreamSendsToolSchemas(t *testing.T) {
 			Parameters  map[string]any `json:"parameters"`
 		}{Name: "fs_read", Description: "read a file", Parameters: map[string]any{
 			"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}},
-		}}}}, func(string) {})
+		}}}}, func(string) {}, nil)
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -239,7 +283,7 @@ func TestChatStreamAccumulatesFragmentedToolCalls(t *testing.T) {
 	defer ts.Close()
 
 	client := NewClient(ts.URL, "test-model")
-	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {})
+	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {}, nil)
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -277,7 +321,7 @@ func TestChatStreamHTTPErrorNotRetried(t *testing.T) {
 	defer ts.Close()
 
 	client := NewClient(ts.URL, "test-model")
-	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {})
+	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {}, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -317,7 +361,7 @@ func TestChatStreamRetriesTransportErrors(t *testing.T) {
 	start := time.Now()
 	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(d string) {
 		deltas = append(deltas, d)
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -388,7 +432,7 @@ func TestChatStreamGivesUpAfterMaxRetries(t *testing.T) {
 	client := NewClient(ts.URL, "test-model")
 	client.HTTP = &http.Client{Transport: rt}
 
-	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {})
+	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {}, nil)
 	if err == nil {
 		t.Fatal("expected error after max retries")
 	}

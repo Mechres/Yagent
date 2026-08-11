@@ -144,6 +144,10 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
+		// Thinking is shown dimmed/italic above the answer (display-only).
+		func(delta string) {
+			_, _ = fmt.Fprintf(w, "\x1b[2m\x1b[3m%s\x1b[0m", delta)
+		},
 		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
 		})
@@ -256,6 +260,9 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 	}
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
+		func(delta string) {
+			_, _ = fmt.Fprintf(w, "\x1b[2m\x1b[3m%s\x1b[0m", delta)
+		},
 		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
 		})
@@ -374,7 +381,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 }
 
 // newAgent builds the agent loop over a chatEnv.
-func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken func(string), onTool func(llm.ToolCall)) *agent.Agent {
+func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken, onReasoning func(string), onTool func(llm.ToolCall)) *agent.Agent {
 	ws, _ := os.Getwd()
 	// M7 v1: subagents are read-only child agents that return a summary.
 	// M7 beyond v2: an optional tools slice scopes each child's registry.
@@ -398,6 +405,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 	})
 	return agent.New(client, env.registry, approver, agent.Config{
 		OnToken:         onToken,
+		OnReasoning:     onReasoning,
 		OnTool:          onTool,
 		Store:           env.st,
 		SessionID:       env.sessionID,

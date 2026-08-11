@@ -30,7 +30,7 @@ Observed behavior (M1–M3.5 acceptance, 2025-06):
 |---|---|---|
 | **Sampling recipe** | Qwen3.5 reasoning template degenerates into repetition loops at greedy/low temperature; the card recommends `temperature=0.6, top_p=0.95, top_k=20, repetition_penalty=1.05` | Yagent forwards `sampling.temperature`/`top_p` (default 0.6/0.95) and optional `top_k`/`repetition_penalty` on every chat request (see `config.example.yaml`) |
 | Context window | `n_ctx` = 125696 (VRAM-limited; not the advertised 1M) | fine for current milestones |
-| `reasoning_content` | Emits a reasoning block before the answer (Claude-style template); server exposes it as `reasoning_content`, which the SSE parser ignores | nothing to do; reasoning never enters history/context |
+| `reasoning_content` | Emits a reasoning block before the answer (Claude-style template); server exposes it as `reasoning_content` | surfaced dimmed/italic as a "thinking" block in the TUI/REPL (`agent.OnReasoning`); it never enters history or context |
 | Narrates tool calls | Sometimes says "I need to use fs_edit…" and ends the turn **without** emitting a `tool_calls`; the loop then treats the narration as the final answer | fixed by an explicit system-prompt rule: *"To use a tool, emit the tool call now. Never just describe a tool call you intend to make…"* |
 | Path guessing | Called `fs_read {"path":"README"}` (dropped `.md`) and gave up on the error | prompts with exact filenames work; model reads tool errors correctly and adapts |
 | Tool-call format | Uses the standard OpenAI `tools` API correctly when it does call | — |

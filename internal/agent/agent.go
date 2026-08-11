@@ -91,6 +91,10 @@ type Config struct {
 	// OnToken is called with each content delta as it streams from the model
 	// (used by the UI to print tokens live). Optional.
 	OnToken func(string)
+	// OnReasoning is called with each thinking delta (reasoning_content) as it
+	// streams. Display-only; reasoning never enters history or context.
+	// Optional.
+	OnReasoning func(string)
 	// OnTool is called before a tool executes (used by the UI to show
 	// activity). Optional.
 	OnTool func(llm.ToolCall)
@@ -133,7 +137,7 @@ type Approver interface {
 
 // ChatLLM is the model client the loop needs. *llm.Client satisfies it.
 type ChatLLM interface {
-	ChatStream(ctx context.Context, messages []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error)
+	ChatStream(ctx context.Context, messages []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error)
 }
 
 // Agent runs one conversation against a model, dispatching tools. The history
@@ -172,6 +176,9 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 	}
 	if cfg.OnToken == nil {
 		cfg.OnToken = func(string) {}
+	}
+	if cfg.OnReasoning == nil {
+		cfg.OnReasoning = func(string) {}
 	}
 	if cfg.Summarizer == nil {
 		cfg.Summarizer = llm
@@ -260,7 +267,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		if err := a.budget(ctx); err != nil {
 			return "", err
 		}
-		resp, err := a.llm.ChatStream(ctx, a.assembleContext(recall, code), a.activeToolSchemas(input, used), a.cfg.OnToken)
+		resp, err := a.llm.ChatStream(ctx, a.assembleContext(recall, code), a.activeToolSchemas(input, used), a.cfg.OnToken, a.cfg.OnReasoning)
 		if err != nil {
 			return "", err
 		}
@@ -337,7 +344,7 @@ func (a *Agent) offerSkillCreation(ctx context.Context) error {
 	}
 	prompt := llm.Message{Role: "user", Content: skillCreationPrompt}
 	msgs := append(a.assembleContext("", ""), prompt)
-	resp, err := a.llm.ChatStream(ctx, msgs, a.registry.SchemasFor(skillToolNames), func(string) {})
+	resp, err := a.llm.ChatStream(ctx, msgs, a.registry.SchemasFor(skillToolNames), func(string) {}, nil)
 	if err != nil {
 		return nil // best-effort: a dead server must not break the turn
 	}
@@ -463,7 +470,7 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 func (a *Agent) goalDone(ctx context.Context, goal string) (bool, error) {
 	prompt := llm.Message{Role: "user", Content: fmt.Sprintf(goalDonePrompt, goal)}
 	msgs := append(a.assembleContext("", ""), prompt)
-	resp, err := a.llm.ChatStream(ctx, msgs, nil, func(string) {})
+	resp, err := a.llm.ChatStream(ctx, msgs, nil, func(string) {}, nil)
 	if err != nil {
 		return false, err
 	}
@@ -814,7 +821,7 @@ func (a *Agent) budget(ctx context.Context) error {
 		{Role: "system", Content: "You are a conversation summarizer. " + summaryPrompt},
 		{Role: "user", Content: b.String()},
 	}
-	resp, err := a.summ.ChatStream(ctx, prompt, nil, func(string) {})
+	resp, err := a.summ.ChatStream(ctx, prompt, nil, func(string) {}, nil)
 	if err != nil {
 		return fmt.Errorf("summarize history: %w", err)
 	}
