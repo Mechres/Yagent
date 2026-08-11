@@ -65,7 +65,7 @@ with cosine and bm25 normalized within the candidate set and recency decaying by
 1. Explicit: model calls `memory_save` (optional `importance` 0–1, default 0.5) when it judges something worth keeping (the tool description must say *what* is worth keeping: preferences, decisions, gotchas — not code, not chit-chat).
 2. Implicit: at session end (or on `--continue` resume of an old session), a background job summarizes the session and stores the summary (importance 0.5).
 
-**Reads**: every turn, embed the user input, hybrid top-5, inject under the memory budget (1000 tok). Deduplicate against the current session's own messages.
+**Reads**: every turn, embed the user input, hybrid top-5, inject under the memory budget (1000 tok). Deduplicate against the current session's own messages. Recalled memories are framed as **user facts** (`- user fact: ...` with an explicit "attribute these to the USER" header) and `memory_save` instructs the model to phrase facts in the third person (`"the user's name is Yağız"`, never `"my name is ..."`) — otherwise a first-person fact gets attributed to the assistant and recall fails.
 
 **Schema**:
 

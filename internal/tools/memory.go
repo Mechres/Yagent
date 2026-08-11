@@ -22,15 +22,20 @@ type memorySaveArgs struct {
 	Importance float64 `json:"importance,omitempty"`
 }
 
-var memorySaveSchema = fnSchema("memory_save", "store a fact worth remembering across sessions: user preferences, project decisions, gotchas, reusable findings. NOT code, NOT chit-chat, NOT tool output.",
+var memorySaveSchema = fnSchema("memory_save", "store a fact worth remembering across sessions: user preferences, project decisions, gotchas, reusable findings. Phrase the fact descriptively, in third person about the user (e.g. \"the user's name is Yağız\", \"the user prefers tabs\") — never as a first-person quote (\"my name is ...\"). NOT code, NOT chit-chat, NOT tool output.",
 	map[string]any{
-		"text":       strProp("the fact or preference to remember, one concise sentence"),
+		"text":       strProp("the fact or preference to remember, one concise third-person sentence"),
 		"importance": numProp("how important this fact is for future recall, 0.0-1.0, default 0.5 (optional)"),
 	},
 	[]string{"text"})
 
 func (t *memorySaveTool) Schema() llm.ToolSchema { return memorySaveSchema }
 func (t *memorySaveTool) Risk() RiskLevel        { return RiskWrite }
+
+// SelfGated means memory_save applies automatically: saving a fact to the
+// agent's own memory store is low-stakes and reversible in spirit, so it must
+// not prompt the user (unlike workspace/destructive writes).
+func (t *memorySaveTool) SelfGated() bool { return true }
 
 func (t *memorySaveTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var a memorySaveArgs

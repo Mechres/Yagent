@@ -76,7 +76,7 @@ Authoring rules:
 - Steps must be concrete, with real paths and commands from this session. Never invent tools or commands the skill cannot actually run.
 - SKILL.md under 8 KiB; reference files under 16 KiB.
 
-Writes are gated: they are staged and applied only after review. Use only skills_list, skill_view or skill_manage in this turn.`
+Writes are checked by the safety scanner and apply immediately (they may be staged for review if the skills approval gate is enabled). Use only skills_list, skill_view or skill_manage in this turn.`
 
 // historyEntry pairs a persisted message with its store row id (0 when not
 // persisted), so the budget manager knows which messages a summary covers.
@@ -407,17 +407,18 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 		if m.SessionID != "" && m.SessionID == a.cfg.SessionID {
 			continue // dedupe against this session's own messages
 		}
-		fmt.Fprintf(&b, "- [%.2f] %s\n", m.Score, m.Text)
+		fmt.Fprintf(&b, "- user fact: %s\n", m.Text)
 	}
 	if b.Len() == 0 {
 		return ""
 	}
 	// Cap at the memory budget (heuristic tokens = chars/4).
 	maxChars := a.cfg.MemoryMaxTokens * 4
+	header := "Relevant memories from past sessions — attribute these to the USER, never to yourself:\n"
 	if b.Len() > maxChars {
-		return "Relevant memories:\n" + b.String()[:maxChars] + "\n…"
+		return header + b.String()[:maxChars] + "\n…"
 	}
-	return "Relevant memories:\n" + b.String()
+	return header + b.String()
 }
 
 // assembleContext prepends ONE system message — system prompt + L0 skills
@@ -706,6 +707,7 @@ func buildSystemPrompt(workspace string) string {
 Rules:
 - Be concise. Answer in the fewest words that fully address the request.
 - Inspect the workspace with tools instead of guessing: use fs_read / grep / glob to read code, index_search for semantic code search, git_status / git_diff / git_log for git state.
+- Identity: you are the assistant. The user is the human you are talking to. When asked about the user's own identity (their name, preferences), refer to them as "your name"/"the user's name" — never "my name". If you don't know the user's name, say so rather than guessing.
 - All tool arguments must be valid JSON matching the tool schema; paths are relative to the workspace root.
 - To use a tool, emit the tool call now. Never just describe a tool call you intend to make; if your turn ends without a tool call, that text is treated as your final answer.
 - If a tool returns an error, read it, fix your arguments, and retry — do not repeat the same failing call.

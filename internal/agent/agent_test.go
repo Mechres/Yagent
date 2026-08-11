@@ -865,3 +865,41 @@ func TestContextUsageConcurrent(t *testing.T) {
 	close(stop)
 	<-done
 }
+
+func TestMemorySaveSelfGated(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	vs, err := memoryOpenVector(t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "memory_save", `{"text":"the user's name is yagiz"}`),
+		finalContent("ok"),
+	})
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{Vectors: vs, SessionID: "s1", SkillsWriteApproval: true})
+	ap := &stubApprover{allow: true}
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, ap, Config{MaxIterations: 5, Vectors: vs, SessionID: "s1"}, ws)
+
+	if _, err := a.Run(context.Background(), "remember my name"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if ap.n != 0 {
+		t.Errorf("memory_save prompted for approval %d times, want 0 (self-gated)", ap.n)
+	}
+	mem, err := vs.Search(context.Background(), "name", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range mem {
+		if strings.Contains(m.Text, "yagiz") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("memory not saved: %+v", mem)
+	}
+}

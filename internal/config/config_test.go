@@ -151,7 +151,7 @@ func TestDefaultPath(t *testing.T) {
 	}
 }
 
-func TestSkillsWriteApprovalDefaultsTrue(t *testing.T) {
+func TestSkillsWriteApprovalDefaultsFalse(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(EnvVarServerURL, "")
 	t.Setenv(EnvVarModel, "")
@@ -162,8 +162,8 @@ func TestSkillsWriteApprovalDefaultsTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if !cfg.Skills.WriteApproval {
-		t.Error("skills.write_approval should default to true")
+	if cfg.Skills.WriteApproval {
+		t.Error("skills.write_approval should default to false (automatic skill creation)")
 	}
 }
 

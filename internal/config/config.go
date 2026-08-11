@@ -30,8 +30,9 @@ type Config struct {
 
 // SkillsConfig configures procedural memory (M3.5).
 type SkillsConfig struct {
-	// WriteApproval gates skill writes: when true (default) every skill_manage
-	// write is staged for review instead of applied.
+	// WriteApproval gates skill writes: when true every skill_manage write is
+	// staged for review; when false (default) skill writes apply immediately.
+	// The safety scanner still blocks dangerous content either way.
 	WriteApproval bool `yaml:"write_approval"`
 	// DataDir overrides where the global skills store lives (default: data_dir).
 	DataDir string `yaml:"data_dir"`
@@ -103,7 +104,7 @@ func LoadConfig(path string) (*Config, error) {
 		Model:          DefaultModel,
 		EmbeddingModel: DefaultEmbeddingModel,
 		ContextWindow:  DefaultContextWindow,
-		Skills:         SkillsConfig{WriteApproval: true},
+		Skills:         SkillsConfig{WriteApproval: false},
 	}
 	dataDir, err := DefaultDataDir()
 	if err != nil {

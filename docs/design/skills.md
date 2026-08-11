@@ -151,12 +151,17 @@ A skill is text loaded into context; a bad one (hallucinated, or written under a
 
 Heuristics live in one table in `internal/skills` (regex + token checks), testable in isolation. Not a security boundary — it's a guard against accidents and prompt-injection attempts, same trust model as Hermes's scanner. User-authored and bundled skills are exempt (the user wrote them).
 
-## Approval gate — default ON
+## Approval gate — default OFF (automatic skill creation)
 
-Hermes defaults `skills.write_approval: false` (write freely). **Yagent defaults to `true`** because our models are smaller and misjudge what they learned more often, and AGENTS.md constraint #2 (writes require approval) is stricter by design.
+Hermes defaults `skills.write_approval: false` (write freely). Yagent originally
+defaulted to `true` (small models misjudge what they learned), but daily-driver
+use showed the staging step is more friction than it's worth — **automatic
+creation is now the default**. The safety scanner still blocks dangerous
+content, dedup prevents duplicates, and the gate remains one flag away for
+those who want review:
 
-- `write_approval: false` → writes apply immediately
-- `write_approval: true` (default) → every `skill_manage` write is **staged** under `<data>/pending/skills/<id>/` (survives restarts; full unified diff) instead of applied
+- `write_approval: false` (default) → every `skill_manage` write applies immediately
+- `write_approval: true` → every `skill_manage` write is **staged** under `<data>/pending/skills/<id>/` (survives restarts; full unified diff) instead of applied
 
 `skill_manage` is **self-gated** (never a generic y/n prompt): the gate *is* the staging step. Gate on → the call returns "staged as `<id>`" and the user reviews via the slash commands below; gate off → applies immediately. The cap counter and staging live in the store, so a staged write is not visible to the agent until approved.
 
