@@ -61,6 +61,10 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   contain *consented-but-unsafe* work under `--yolo` on untrusted repos, not to
   replace the approval gate. Fails loudly when bubblewrap is missing (Linux
   only).
+- ✅ Multi-user (M6.18): per-project config (`.yagent/config.yaml`), project
+  memory (`scope: global|project`), `yagent init`, `yagent backup`,
+  `yagent skills import <url>`, repo hygiene (LICENSE/CONTRIBUTING/CHANGELOG/
+  example config/CI), expanded doctor, export redaction warnings.
 - 🟡 Subagent primitive (`SpawnSubagent`) — M7 proper. Gated: only start if the
   loop-mode evals show the single loop is the bottleneck.
 - 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and

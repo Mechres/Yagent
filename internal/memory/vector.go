@@ -71,15 +71,23 @@ type VectorStore struct {
 	client     *llm.Client
 }
 
-// OpenVectorStore opens (creating if needed) the SQLite-backed memory store
-// under dir, embedding through embedURL/embedModel. It shares sessions.db
-// with the L2 Store (two connections to one file; busy_timeout resolves
-// write contention).
+// OpenVectorStore opens (creating if needed) the personal SQLite-backed memory
+// store under dir, sharing sessions.db with the L2 Store.
 func OpenVectorStore(dir, embedURL, embedModel string) (*VectorStore, error) {
+	return openAt(filepath.Join(dir, "sessions.db"), dir, embedURL, embedModel)
+}
+
+// OpenProjectVectorStore opens a project-scoped memory store (committed to the
+// repo at <project>/.yagent/memory/memory.db) shared by a team.
+func OpenProjectVectorStore(dir, embedURL, embedModel string) (*VectorStore, error) {
+	return openAt(filepath.Join(dir, "memory.db"), dir, embedURL, embedModel)
+}
+
+func openAt(dbPath, dir, embedURL, embedModel string) (*VectorStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
 	}
-	dsn := "file:" + filepath.Join(dir, "sessions.db") + "?_pragma=busy_timeout(5000)"
+	dsn := "file:" + dbPath + "?_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open memory db: %w", err)

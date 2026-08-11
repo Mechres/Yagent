@@ -454,14 +454,19 @@ func (s *Store) ImportFile(path, scope string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
-	fm, _, err := parseFrontmatter(string(content))
+	return s.ImportContent(string(content), scope)
+}
+
+// ImportContent stores SKILL.md content in scope as a user-authored skill.
+func (s *Store) ImportContent(content, scope string) (string, error) {
+	fm, _, err := parseFrontmatter(content)
 	if err != nil {
 		return "", err
 	}
 	if fm.Name == "" {
-		return "", vf("SKILL.md %s has no name in its frontmatter", path)
+		return "", vf("SKILL.md has no name in its frontmatter")
 	}
-	op := Op{Action: ActionCreate, Name: fm.Name, Scope: scope, Source: SourceUser, Content: string(content)}
+	op := Op{Action: ActionCreate, Name: fm.Name, Scope: scope, Source: SourceUser, Content: content}
 	return s.Apply(op)
 }
 

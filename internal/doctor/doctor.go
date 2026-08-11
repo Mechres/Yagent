@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -93,6 +94,9 @@ func Run(cfg *config.Config) Report {
 	default:
 		rep.add("config", StatusPass, fmt.Sprintf("server_url %s, model %q, data dir %s, context window %d", cfg.ServerURL, cfg.Model, cfg.DataDir, cfg.ContextWindow))
 	}
+	if cfg.ProjectPath != "" {
+		rep.add("project config", StatusInfo, fmt.Sprintf("%s overlays the global config", cfg.ProjectPath))
+	}
 	if cfg.Model == "" {
 		rep.add("model", StatusFail, "model is empty (set YAGENT_MODEL / model)")
 	}
@@ -108,6 +112,37 @@ func Run(cfg *config.Config) Report {
 	if u == nil || (u.Scheme != "http" && u.Scheme != "https") {
 		// can't reach anything; stop here
 		return rep
+	}
+
+	// --- local tooling ---
+	if cfg.Shell.Sandbox == "bwrap" {
+		if _, err := exec.LookPath("bwrap"); err != nil {
+			rep.add("sandbox", StatusFail, "shell.sandbox is bwrap but bubblewrap is not installed")
+		} else {
+			rep.add("sandbox", StatusPass, "bubblewrap found for shell.sandbox")
+		}
+	} else {
+		rep.add("sandbox", StatusInfo, "shell sandbox disabled (set shell.sandbox: bwrap to enable)")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		rep.add("git", StatusWarn, "git not on PATH; the git tools will error")
+	} else {
+		rep.add("git", StatusPass, "git available")
+	}
+	if cfg.Consult.Model != "" {
+		backend := cfg.Consult.ServerURL
+		if backend == "" {
+			backend = cfg.ServerURL
+		}
+		note := ""
+		if cfg.Consult.APIKey != "" {
+			note = " (cloud endpoint, opt-in)"
+		}
+		rep.add("consult", StatusInfo, "advisor: "+cfg.Consult.Model+" @ "+backend+note)
+	} else if len(cfg.Consult.Cmd) > 0 {
+		rep.add("consult", StatusInfo, "advisor: terminal app "+cfg.Consult.Cmd[0])
+	} else {
+		rep.add("consult", StatusInfo, "advisor disabled (set consult.* or consult.cmd)")
 	}
 
 	client := &http.Client{Timeout: timeout}

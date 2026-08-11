@@ -60,3 +60,20 @@ go build ./cmd/yagent
 | [`docs/design/skills.md`](docs/design/skills.md) | Hermes-style skills: procedural memory, `SKILL.md` format, approval gate |
 | [`docs/design/tools.md`](docs/design/tools.md) | Tool specifications and safety model |
 | [`docs/models.md`](docs/models.md) | Model quirks from acceptance runs (tool-call reliability, embeddings) |
+| [`config.example.yaml`](config.example.yaml) | Annotated configuration reference |
+
+## Security & privacy
+
+- **Local-first**: LLM and embedding requests go only to the configured server.
+  The one opt-in cloud path is `consult` with an explicit `api_key`.
+- **Redaction**: before anything is written to SQLite (messages, summaries,
+  memories) or exported, likely secrets (`api_key`/`token`/`password`/`bearer`
+  values) and home paths are scrubbed to `[redacted]`/`[home]` markers. This is
+  a heuristic guard, not a security boundary. Session exports warn when they
+  contain these markers.
+- **Approvals + sandbox**: write/destructive tools require explicit approval
+  (unless `--yolo`/`/yolo`, which is pre-granted consent); `shell.sandbox:
+  bwrap` additionally wraps `shell_exec` in bubblewrap and fails loudly if
+  bubblewrap isn't installed.
+- **No telemetry**: nothing leaves your machine except explicit
+  `web_search`/`web_fetch` calls and, if configured, the consult advisor.

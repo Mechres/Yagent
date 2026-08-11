@@ -407,3 +407,46 @@ func TestLoadConfigShellSandbox(t *testing.T) {
 		t.Errorf("sandbox = %q", cfg.Shell.Sandbox)
 	}
 }
+
+func TestLoadConfigProjectOverlay(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, ".yagent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".yagent", "config.yaml"),
+		[]byte("model: project-model\nshell:\n  sandbox: bwrap\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := os.Getwd()
+	if err := os.Chdir(ws); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+
+	path := writeConfig(t, "server_url: http://global.test\nmodel: global-model\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "project-model" {
+		t.Errorf("model = %q, want project override", cfg.Model)
+	}
+	if cfg.ServerURL != "http://global.test" {
+		t.Errorf("server_url = %q, want global preserved", cfg.ServerURL)
+	}
+	if cfg.Shell.Sandbox != "bwrap" {
+		t.Errorf("sandbox = %q, want project bwrap", cfg.Shell.Sandbox)
+	}
+	if cfg.ProjectPath == "" {
+		t.Error("ProjectPath should be set")
+	}
+	// env still beats project
+	t.Setenv(EnvVarModel, "env-model")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "env-model" {
+		t.Errorf("model = %q, want env override", cfg.Model)
+	}
+}

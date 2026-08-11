@@ -40,6 +40,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	}
 	defer env.st.Close()
 	defer env.vs.Close()
+	defer env.projVS.Close()
 	defer env.idx.Close()
 
 	incoming := make(chan tea.Msg, 4096)

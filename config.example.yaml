@@ -1,0 +1,37 @@
+# Example Yagent configuration
+# Copy to ~/.config/yagent/config.yaml (Linux) or your OS config dir, or use
+# `yagent init` to generate one. All keys are optional; a per-repo
+# `.yagent/config.yaml` in a workspace overrides these for that repo.
+# Every key also has an env override (YAGENT_SERVER_URL, ...).
+
+# OpenAI-compatible inference server (Ollama or llama.cpp).
+server_url: http://localhost:11434
+model: qwen2.5-coder:14b
+
+# Embeddings: same server by default. Point at a dedicated model/server for
+# better recall (e.g. a second llama-server running bge-m3).
+embedding_model: nomic-embed-text
+# embedding_server_url: http://localhost:8080
+
+# Context window in tokens (also YAGENT_CONTEXT_WINDOW).
+context_window: 16384
+
+# data_dir: ~/.local/share/yagent   # sessions, memories, skills, logs
+
+web_search:
+  provider: duckduckgo        # duckduckgo | mojeek | searxng
+  # searxng_url: http://localhost:8080
+
+skills:
+  write_approval: false       # false = skills apply immediately; true = stage for review
+  # data_dir: ...
+  # project_dir: ...
+
+shell:
+  sandbox: ""                 # "bwrap" wraps shell_exec in bubblewrap (Linux)
+
+consult:                      # the `consult` tool (advisor). Disabled until set.
+  # server_url: http://localhost:11434
+  # model: qwen2.5-coder:14b
+  # api_key: ""               # for cloud OpenAI-compatible endpoints (opt-in)
+  # cmd: ["claude", "-p"]     # OR an installed terminal AI app

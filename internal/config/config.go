@@ -31,6 +31,9 @@ type Config struct {
 	// Path is the config file this was loaded from ("" when none existed);
 	// used to persist runtime toggles like skills.write_approval.
 	Path string `yaml:"-"`
+	// ProjectPath is a per-repo config (<workspace>/.yagent/config.yaml) that
+	// overlays the global config, when one exists.
+	ProjectPath string `yaml:"-"`
 }
 
 // SkillsConfig configures procedural memory (M3.5).
@@ -170,6 +173,18 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %s: %w", usePath, err)
 	}
 
+	// Per-repo config: <workspace>/.yagent/config.yaml overlays the global one
+	// (only keys present in it are overridden), so a team can pin the model,
+	// server, sandbox, etc. for a repo and commit it.
+	if proj := ProjectConfigPath(); proj != "" {
+		if data, err := os.ReadFile(proj); err == nil {
+			if err := yaml.Unmarshal(data, cfg); err != nil {
+				return nil, fmt.Errorf("parse project config %s: %w", proj, err)
+			}
+			cfg.ProjectPath = proj
+		}
+	}
+
 	// Env overrides beat the file (and defaults).
 	if v := os.Getenv(EnvVarServerURL); v != "" {
 		cfg.ServerURL = v
@@ -238,6 +253,19 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.DataDir = dataDir
 	}
 	return cfg, nil
+}
+
+// ProjectConfigPath returns <workspace>/.yagent/config.yaml when it exists.
+func ProjectConfigPath() string {
+	ws, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	proj := filepath.Join(ws, ".yagent", "config.yaml")
+	if _, err := os.Stat(proj); err == nil {
+		return proj
+	}
+	return ""
 }
 
 // SetWriteApproval persists skills.write_approval to the config file at path.

@@ -63,9 +63,11 @@ type Tool interface {
 
 // Options wires optional subsystems into the registry.
 type Options struct {
-	// Vectors + SessionID enable the semantic-memory tools (may be nil/empty).
-	Vectors   *memory.VectorStore
-	SessionID string
+	// Vectors + SessionID enable the semantic-memory tools (may be nil/empty);
+	// ProjectVectors is a repo-shared store the tools also search/write.
+	Vectors        *memory.VectorStore
+	ProjectVectors *memory.VectorStore
+	SessionID      string
 	// Skills enables the skills tools (may be nil).
 	Skills *skills.Store
 	// Index enables the codebase-index tools (may be nil).
@@ -111,8 +113,8 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"git_status":    &gitStatusTool{ws: r.workspace},
 		"git_diff":      &gitDiffTool{ws: r.workspace},
 		"git_log":       &gitLogTool{ws: r.workspace},
-		"memory_save":   &memorySaveTool{vectors: opts.Vectors, sessionID: opts.SessionID},
-		"memory_search": &memorySearchTool{vectors: opts.Vectors},
+		"memory_save":   &memorySaveTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors, sessionID: opts.SessionID},
+		"memory_search": &memorySearchTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors},
 	}
 	if opts.Skills != nil {
 		reg["skills_list"] = &skillsListTool{store: opts.Skills}

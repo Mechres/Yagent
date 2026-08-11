@@ -105,10 +105,12 @@ type Config struct {
 	// used. Tools are never offered to the summarizer.
 	Summarizer ChatLLM
 
-	// Store/SessionID enable L2 persistence; Vectors enables L3 recall.
-	Store     *memory.Store
-	SessionID string
-	Vectors   *memory.VectorStore
+	// Store/SessionID enable L2 persistence; Vectors enables L3 recall;
+	// ProjectVectors is a repo-shared memory store also consulted for recall.
+	Store          *memory.Store
+	SessionID      string
+	Vectors        *memory.VectorStore
+	ProjectVectors *memory.VectorStore
 
 	// Skills enables the L0 skills index and the autonomous skill-creation
 	// opportunity (M3.5). May be nil.
@@ -460,15 +462,22 @@ func (a *Agent) appendMessage(ctx context.Context, msg llm.Message) (int64, erro
 }
 
 // recall injects the top-k semantic memories for the user input (L3),
-// budgeted and deduplicated against the current session.
+// budgeted and deduplicated against the current session. Personal and project
+// stores are both consulted and merged.
 func (a *Agent) recall(ctx context.Context, input string) string {
-	if a.cfg.Vectors == nil {
+	if a.cfg.Vectors == nil && a.cfg.ProjectVectors == nil {
 		return ""
 	}
-	memories, err := a.cfg.Vectors.Search(ctx, input, DefaultRecallK)
-	if err != nil {
-		// Recall is best-effort; a broken memory store must not kill the turn.
-		return ""
+	var memories []memory.Memory
+	for _, vs := range []*memory.VectorStore{a.cfg.Vectors, a.cfg.ProjectVectors} {
+		if vs == nil {
+			continue
+		}
+		ms, err := vs.Search(ctx, input, DefaultRecallK)
+		if err != nil {
+			continue // recall is best-effort; a broken store must not kill the turn
+		}
+		memories = append(memories, ms...)
 	}
 	var b strings.Builder
 	for _, m := range memories {

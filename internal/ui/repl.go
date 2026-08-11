@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,6 +107,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		}
 		defer env.st.Close()
 		defer env.vs.Close()
+		defer env.projVS.Close()
 		defer env.idx.Close()
 		return runGoalMode(ctx, client, cfg, env, opts.Goal, opts.Rounds, opts.YOLO)
 	}
@@ -120,6 +122,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	}
 	defer env.st.Close()
 	defer env.vs.Close()
+	defer env.projVS.Close()
 	defer env.idx.Close()
 
 	w := os.Stdout
@@ -225,6 +228,7 @@ done:
 type chatEnv struct {
 	st             *memory.Store
 	vs             *memory.VectorStore
+	projVS         *memory.VectorStore
 	sk             *skills.Store
 	idx            *index.Store
 	web            *web.Client
@@ -305,6 +309,10 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		st.Close()
 		return nil, fmt.Errorf("open memory store: %w", err)
 	}
+	projVS, err := memory.OpenProjectVectorStore(filepath.Join(ws, ".yagent", "memory"), cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+	if err != nil {
+		return nil, fmt.Errorf("open project memory store: %w", err)
+	}
 	skillsRoot := cfg.Skills.DataDir
 	if skillsRoot == "" {
 		skillsRoot = cfg.DataDir
@@ -337,12 +345,13 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 	}
 
 	env := &chatEnv{
-		st: st, vs: vs, sk: sk, idx: idx, web: webClient,
+		st: st, vs: vs, projVS: projVS, sk: sk, idx: idx, web: webClient,
 		sessionID: sessionID, initialHistory: initialHistory, initialSummary: initialSummary,
 		forkSource: forkSource, undo: undo.New(),
 	}
 	env.registry = tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
+		ProjectVectors:      projVS,
 		SessionID:           sessionID,
 		Skills:              sk,
 		Index:               idx,
@@ -365,6 +374,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		Store:           env.st,
 		SessionID:       env.sessionID,
 		Vectors:         env.vs,
+		ProjectVectors:  env.projVS,
 		Skills:          env.sk,
 		Index:           env.idx,
 		IndexAutoInject: true,
@@ -560,6 +570,9 @@ func (h *skillsHandler) exportSession(rest string, ag *agent.Agent) (bool, error
 	if err != nil {
 		return true, fmt.Errorf("render session: %w", err)
 	}
+	if strings.Contains(md, "[redacted]") || strings.Contains(md, "[home]") {
+		fmt.Fprintln(h.w, "note: this export contains [redacted]/[home] markers — the session had secrets scrubbed from storage")
+	}
 	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
 		return true, fmt.Errorf("write %s: %w", path, err)
 	}
@@ -605,25 +618,32 @@ func (h *skillsHandler) showSettings() (bool, error) {
 		fmt.Fprintf(h.w, "%-24s %s\n", s.Key, h.cfg.Get(s.Key))
 	}
 	fmt.Fprintf(h.w, "config file: %s\n", h.cfg.Path)
+	if h.cfg.ProjectPath != "" {
+		fmt.Fprintf(h.w, "project config: %s (overrides global)\n", h.cfg.ProjectPath)
+	}
 	fmt.Fprintf(h.w, "edit with: /set <key> <value>  (most keys take effect on the next chat session)\n")
 	return true, nil
 }
 
-// setSetting persists a dotted config key and applies it to the running
-// config; only skills.write_approval affects the live session.
+// setSetting persists a dotted config key — to the project config when one
+// exists, otherwise the global one — and applies it to the running config.
 func (h *skillsHandler) setSetting(rest string) (bool, error) {
 	parts := strings.SplitN(rest, " ", 3)
 	if len(parts) < 3 {
 		return true, fmt.Errorf("usage: /set <key> <value>  (see /settings for keys)")
 	}
 	key, value := parts[1], parts[2]
-	if err := config.Set(h.cfg.Path, key, value); err != nil {
+	target := h.cfg.Path
+	if h.cfg.ProjectPath != "" {
+		target = h.cfg.ProjectPath
+	}
+	if err := config.Set(target, key, value); err != nil {
 		return true, err
 	}
 	if err := applySetting(h.cfg, h.reg, key, value); err != nil {
 		return true, err
 	}
-	fmt.Fprintf(h.w, "%s = %s (saved to %s)\n", key, value, h.cfg.Path)
+	fmt.Fprintf(h.w, "%s = %s (saved to %s)\n", key, value, target)
 	if key != "skills.write_approval" {
 		fmt.Fprintf(h.w, "note: takes effect on the next chat session\n")
 	}

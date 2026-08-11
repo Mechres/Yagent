@@ -4,8 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"yagent/internal/config"
 	"yagent/internal/doctor"
@@ -84,6 +88,21 @@ func main() {
 		if err := rep.Render(os.Stdout); err != nil {
 			os.Exit(1)
 		}
+	case "init":
+		if err := runInit(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	case "backup":
+		fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+		output := fs.String("output", ".", "directory to write the backup into")
+		if err := fs.Parse(args[1:]); err != nil {
+			os.Exit(2)
+		}
+		if err := runBackup(cfg, *output); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "completion":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: yagent completion bash|zsh")
@@ -154,7 +173,7 @@ esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 
@@ -202,9 +221,13 @@ func runSkills(cfg *config.Config, args []string, scope string) error {
 		return nil
 	case "import":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: yagent skills import <SKILL.md> [--scope global|project]")
+			return fmt.Errorf("usage: yagent skills import <SKILL.md | url> [--scope global|project]")
 		}
-		warning, err := sk.ImportFile(args[1], scope)
+		content, err := readSkillInput(args[1])
+		if err != nil {
+			return err
+		}
+		warning, err := sk.ImportContent(content, scope)
 		if err != nil {
 			return err
 		}
@@ -216,6 +239,102 @@ func runSkills(cfg *config.Config, args []string, scope string) error {
 	default:
 		return fmt.Errorf("unknown skills command %q (list | import)", args[0])
 	}
+}
+
+// readSkillInput reads SKILL.md content from a local file or an http(s) URL.
+func readSkillInput(src string) (string, error) {
+	if !strings.HasPrefix(src, "http://") && !strings.HasPrefix(src, "https://") {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch %s: %s", src, resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// runInit writes a starter config file if none exists.
+func runInit(cfg *config.Config) error {
+	if _, err := os.Stat(cfg.Path); err == nil {
+		fmt.Printf("config already exists at %s\n", cfg.Path)
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o755); err != nil {
+		return err
+	}
+	starter := `# Yagent configuration — see config.example.yaml for the full schema.
+# Edit with ` + "`yagent chat`" + ` -> /settings, or by hand.
+server_url: ` + config.DefaultServerURL + `
+model: ` + config.DefaultModel + `
+embedding_model: ` + config.DefaultEmbeddingModel + `
+context_window: ` + fmt.Sprint(config.DefaultContextWindow) + `
+skills:
+  write_approval: false
+web_search:
+  provider: duckduckgo
+`
+	if err := os.WriteFile(cfg.Path, []byte(starter), 0o600); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s\n", cfg.Path)
+	fmt.Println("next: run 'yagent doctor' to verify your server and model.")
+	return nil
+}
+
+// runBackup snapshots the whole data dir into a timestamped folder.
+func runBackup(cfg *config.Config, output string) error {
+	if _, err := os.Stat(cfg.DataDir); err != nil {
+		return fmt.Errorf("data dir %s does not exist yet", cfg.DataDir)
+	}
+	dir := filepath.Join(output, "yagent-backup-"+time.Now().Format("20060102-150405"))
+	if err := copyDir(cfg.DataDir, dir); err != nil {
+		return err
+	}
+	fmt.Printf("backed up %s -> %s\n", cfg.DataDir, dir)
+	return nil
+}
+
+// copyDir recursively copies src into dst.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 }
 
 // runSessionsCmd dispatches `yagent sessions [search <q> | export <id>]`.
@@ -292,11 +411,20 @@ func runSessionExport(cfg *config.Config, id, output string) error {
 	if output == "" {
 		output = "session-" + id + ".md"
 	}
+	noteRedacted(md)
 	if err := os.WriteFile(output, []byte(md), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("exported %s -> %s\n", id[:8], output)
 	return nil
+}
+
+// noteRedacted warns when an export still contains redaction markers, i.e. the
+// original session had secrets that were scrubbed from persistent storage.
+func noteRedacted(md string) {
+	if strings.Contains(md, "[redacted]") || strings.Contains(md, "[home]") {
+		fmt.Println("note: this export contains [redacted]/[home] markers — the original session had secrets scrubbed from storage")
+	}
 }
 
 // runSessions lists persisted sessions, newest first.
