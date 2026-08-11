@@ -46,9 +46,16 @@ func (j *Job) Logs(maxBytes int) string {
 	return s
 }
 
-// Alive reports whether the process has not exited yet.
+// Alive reports whether the process has not exited yet. The done channel is
+// closed by the reap goroutine after Wait returns, so this never touches
+// ProcessState (which Wait writes) — safe to call from any goroutine.
 func (j *Job) Alive() bool {
-	return j.proc.ProcessState == nil
+	select {
+	case <-j.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // Registry holds the session's background jobs.
@@ -132,10 +139,11 @@ func (r *Registry) StopAll() {
 	}
 }
 
-// killGroup SIGKILLs a job's process group (negative pid). Safe to call even
-// if the job already exited (the wait loop reaps it).
+// killGroup SIGKILLs a job's process group (negative pid). Killing an already
+// dead group returns ESRCH, which is ignored; Process is read-only after
+// Start returns, so this is safe to call concurrently with the reap goroutine.
 func killGroup(j *Job) {
-	if j.proc.Process != nil && j.proc.ProcessState == nil {
+	if j.proc.Process != nil {
 		_ = syscall.Kill(-j.proc.Process.Pid, syscall.SIGKILL)
 	}
 	j.cancel()
