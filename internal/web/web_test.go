@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -223,5 +224,58 @@ func TestNewMojeekConfig(t *testing.T) {
 	c, err := New(Config{Provider: "mojeek"})
 	if err != nil || c.ProviderName() != "mojeek" {
 		t.Fatalf("mojeek = %v / %v", c, err)
+	}
+}
+
+// fakeProvider is a scriptable provider for fallback tests.
+type fakeProvider struct {
+	name    string
+	err     error
+	results []Result
+}
+
+func (f *fakeProvider) Name() string { return f.name }
+func (f *fakeProvider) Search(ctx context.Context, q string, k int) ([]Result, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.results, nil
+}
+
+func TestSearchFallsBack(t *testing.T) {
+	bad := &fakeProvider{name: "bad", err: errors.New("rate limited")}
+	empty := &fakeProvider{name: "empty"}
+	good := &fakeProvider{name: "good", results: []Result{{Title: "ok", URL: "https://x"}}}
+
+	c := newClient([]Provider{bad, empty, good})
+	res, err := c.Search(context.Background(), "q", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(res) != 1 || res[0].Title != "ok" {
+		t.Errorf("results = %+v", res)
+	}
+	if c.ProviderName() != "bad" {
+		t.Errorf("ProviderName = %q, want the primary", c.ProviderName())
+	}
+
+	// all providers failing -> error
+	c2 := newClient([]Provider{bad, empty})
+	if _, err := c2.Search(context.Background(), "q", 5); err == nil {
+		t.Error("expected an error when every provider fails")
+	}
+
+	// searxng as primary must not fall back to third parties
+	sc, err := New(Config{Provider: "searxng", SearxngURL: "http://searx:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.providers) != 1 || sc.ProviderName() != "searxng" {
+		t.Errorf("searxng primary should not fall back, got %d providers", len(sc.providers))
+	}
+	// ddg primary includes mojeek + searxng fallbacks
+	dc, _ := New(Config{Provider: "duckduckgo", SearxngURL: "http://searx:8080"})
+	if len(dc.providers) != 3 {
+		t.Errorf("duckduckgo fallback chain = %d providers, want 3", len(dc.providers))
 	}
 }

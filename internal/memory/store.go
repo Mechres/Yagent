@@ -18,6 +18,7 @@ import (
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 
 	"yagent/internal/llm"
+	"yagent/internal/scrub"
 )
 
 // Message is the persisted form of a chat message.
@@ -113,7 +114,8 @@ func (s *Store) NewSession(ctx context.Context, repoPath string) (*Session, erro
 }
 
 // Append persists one message and returns its row id. The session title is
-// auto-set from the first user message when missing.
+// auto-set from the first user message when missing. Content is redacted
+// (scrubbed of likely secrets) before it is written to disk.
 func (s *Store) Append(ctx context.Context, sessionID string, msg Message) (int64, error) {
 	var toolCalls []byte
 	if len(msg.ToolCalls) > 0 {
@@ -126,7 +128,7 @@ func (s *Store) Append(ctx context.Context, sessionID string, msg Message) (int6
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, tokens_est, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, msg.Role, msg.Content, nullIfEmpty(msg.ToolCallID), nullIfEmpty(string(toolCalls)),
+		sessionID, msg.Role, scrub.Text(msg.Content), nullIfEmpty(msg.ToolCallID), nullIfEmpty(scrub.Text(string(toolCalls))),
 		len(msg.Content)/4, time.Now().Unix())
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)
@@ -136,7 +138,7 @@ func (s *Store) Append(ctx context.Context, sessionID string, msg Message) (int6
 	if msg.Role == "user" {
 		if _, err := s.db.ExecContext(ctx,
 			`UPDATE sessions SET title = COALESCE(NULLIF(title, ''), ?) WHERE id = ?`,
-			truncateTitle(msg.Content), sessionID); err != nil {
+			truncateTitle(scrub.Text(msg.Content)), sessionID); err != nil {
 			return 0, fmt.Errorf("set session title: %w", err)
 		}
 	}
@@ -222,12 +224,12 @@ func (s *Store) Summary(ctx context.Context, sessionID string) (string, int64, e
 }
 
 // SetSummary stores the running summary covering messages up to and
-// including msgID.
+// including msgID. The summary is redacted before being written.
 func (s *Store) SetSummary(ctx context.Context, sessionID, summary string, msgID int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO summaries (session_id, summary, covers_until) VALUES (?, ?, ?)
 		 ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, covers_until = excluded.covers_until`,
-		sessionID, summary, msgID)
+		sessionID, scrub.Text(summary), msgID)
 	if err != nil {
 		return fmt.Errorf("set summary: %w", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"yagent/internal/llm"
+	"yagent/internal/scrub"
 )
 
 // Hybrid retrieval weights (docs/design/memory.md L3): vector cosine and FTS5
@@ -109,7 +110,7 @@ func (v *VectorStore) embedOne(ctx context.Context, text string) ([]float32, err
 
 // Save stores one memory (fact, preference, decision, summary) with its
 // embedding and keyword index. importance (0..1) biases recall; 0 uses the
-// default 0.5.
+// default 0.5. The text is redacted before it is embedded and persisted.
 func (v *VectorStore) Save(ctx context.Context, text, source, sessionID string, importance float64) error {
 	if text == "" {
 		return fmt.Errorf("memory text is required")
@@ -120,6 +121,7 @@ func (v *VectorStore) Save(ctx context.Context, text, source, sessionID string, 
 	if importance > 1 {
 		importance = 1
 	}
+	text = scrub.Text(text)
 	vec, err := v.embedOne(ctx, text)
 	if err != nil {
 		return fmt.Errorf("embed memory: %w", err)

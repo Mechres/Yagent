@@ -1,32 +1,44 @@
-# Improvement ideas
+# Yagent improvement roadmap
 
-- Add missing project files — `LICENSE`, `CONTRIBUTING.md`, example `config.yaml` template.
-- Generate version tag — currently reports "v0.0.0"; consider a `go generate` or `git describe` based versioning.
-- Add build scripts / Makefile — to simplify development workflows (`make test`, `make vet`, `make docker`?).
-- Document API endpoints — add HTTP docs or OpenAPI spec for the inference client.
-- Add release notes / changelog — for tracking changes between releases.
-- Generate documentation site — README references `docs/design/` but there's no generated docs site.
-- Add unit test coverage — verify the test suite is comprehensive; add integration tests for the TUI.
-- Add shell completion — bash/zsh completions for `yagent` command.
-- Add man pages — for system integration.
-- Add Dockerfile — for containerized deployment.
-- Add systemd unit / service files — for auto-start on boot.
-- Add CI configuration — GitHub Actions / GitLab CI for automated testing.
-- Add pre-commit hooks — for linting, formatting (`gofmt`), and vet checks.
-- Add code comments — ensure all exported functions have documentation.
-- Add benchmarks — for performance testing and regression detection.
-- Add profiling support — for debugging slow operations.
-- Add metrics / telemetry — for monitoring usage patterns.
-- Add logging format — ensure consistent structured logging.
-- Add error types — define custom errors for domain-specific issues.
-- Add context handling — ensure all functions respect cancellation.
-- Add resource cleanup — ensure goroutines are properly terminated.
-- Add concurrency safety — review mutex usage and race conditions.
-- Add dependency analysis — ensure no circular imports.
-- Add code review checklist — for maintainers.
-- Add documentation linter — ensure docs match code.
-- Add markdown linter — for consistent formatting.
-- Add spell checker — for documentation quality.
-- Add formatting tools — `gofmt` and `goimports` usage.
-- Add linting — `go vet` usage.
-- Add security scanning — for identifying vulnerabilities.
+Consolidated, prioritized plan for post-M6 work. Status: **in progress** — the
+three P0 items are implemented; the rest are queued for the next pass.
+
+Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
+
+## P0 — done this pass
+
+- ✅ **Web search provider fallback chain** — `web_search` now tries
+  DDG → Mojeek → SearXNG (when configured) on error/empty results. SearXNG as
+  the *primary* never falls back to third parties (privacy). (`internal/web`)
+- ✅ **Sensitive-data redaction** — API keys, bearer tokens, `key=value`
+  secrets and home paths are scrubbed before anything is written to SQLite
+  (messages, summaries, semantic memories). (`internal/scrub`)
+- ✅ **Tool-call JSON repair heuristic** — `decodeArgs` runs a repair pass
+  (trailing commas, raw newlines inside strings) before failing, so minor
+  small-model JSON slips don't burn a retry turn. (`internal/tools`)
+
+## P1 — next pass
+
+- 🟡 Tree-sitter language expansion: Rust / C / C++ / Java grammars (YAML and
+  Markdown already get the line-window fallback).
+- 🟡 Session forking: `yagent chat --fork <id>` branches a session's history
+  so experiments don't mutate the original.
+- 🟡 Startup re-index: at session start, hash-check indexed files and re-run
+  `index_repo` in the background if anything changed (no file watcher).
+- 🟡 Dynamic tool-schema filtering: omit irrelevant tool definitions (e.g. web
+  tools outside research turns) to reclaim ~1.5k system-prompt tokens/turn.
+- 🟡 TUI diff overlay for `fs_edit`/`fs_write` approvals (colorized side-by-side
+  instead of raw patch lines).
+- 🟡 Shell completions (bash/zsh) for `chat|sessions|skills|doctor`.
+- 🟡 Real versioning (`git describe` based) instead of `v0.0.0`; a small
+  Makefile (`make test`, `make vet`).
+
+## P2 — deferred / gated
+
+- 🟡 Subagent primitive (`SpawnSubagent`) — M7. Gated: only start if eval
+  evidence shows the single agent loop is the bottleneck.
+- 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and
+  hybrid search.
+- ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site / CI —
+  not a fit for a local-first single binary; would add surface and, for
+  telemetry, conflict with the privacy stance.

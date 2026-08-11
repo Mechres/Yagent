@@ -292,3 +292,38 @@ func TestHybridRecencyRanking(t *testing.T) {
 		t.Fatalf("got %+v, want the recent memory first", got)
 	}
 }
+
+func TestStoreScrubsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	sess, _ := st.NewSession(ctx, "/tmp/repo")
+
+	secret := "my api_key=supersecretvalue123456 lives at /home/alice/projects"
+	if _, err := st.Append(ctx, sess.ID, Message{Role: "user", Content: secret}); err != nil {
+		t.Fatal(err)
+	}
+	hist, _ := st.History(ctx, sess.ID)
+	if len(hist) != 1 {
+		t.Fatalf("history = %d", len(hist))
+	}
+	if strings.Contains(hist[0].Content, "supersecretvalue123456") || strings.Contains(hist[0].Content, "/home/alice") {
+		t.Errorf("secret persisted unredacted: %q", hist[0].Content)
+	}
+	if !strings.Contains(hist[0].Content, "[redacted]") || !strings.Contains(hist[0].Content, "[home]") {
+		t.Errorf("not redacted: %q", hist[0].Content)
+	}
+
+	// summaries are scrubbed too
+	if err := st.SetSummary(ctx, sess.ID, "user mentioned token abcdefghijklmnopqrst", 1); err != nil {
+		t.Fatal(err)
+	}
+	sum, _, _ := st.Summary(ctx, sess.ID)
+	if strings.Contains(sum, "abcdefghijklmnopqrst") {
+		t.Errorf("summary leaked a secret: %q", sum)
+	}
+}

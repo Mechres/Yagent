@@ -209,7 +209,9 @@ func numProp(description string) map[string]any {
 }
 
 // decodeArgs strictly decodes the model's JSON arguments into v. Unknown
-// fields and malformed JSON produce ValidationErrors the model can fix.
+// fields and malformed JSON produce ValidationErrors the model can fix. Minor
+// JSON slips (trailing commas, raw newlines inside strings) get one repair
+// pass first so a small model doesn't burn a retry turn on them.
 func decodeArgs(args json.RawMessage, v any) error {
 	if len(bytes.TrimSpace(args)) == 0 {
 		return validationErrorf("no arguments provided; pass a JSON object with the required fields")
@@ -217,9 +219,67 @@ func decodeArgs(args json.RawMessage, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(args))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		if repaired := repairJSON(args); string(repaired) != string(args) {
+			dec2 := json.NewDecoder(bytes.NewReader(repaired))
+			dec2.DisallowUnknownFields()
+			if err2 := dec2.Decode(v); err2 == nil {
+				return nil
+			}
+		}
 		return validationErrorf("invalid arguments: %v; pass a JSON object matching the schema", err)
 	}
 	return nil
+}
+
+// repairJSON fixes the most common small-model JSON slips without changing
+// semantics: trailing commas before } / ] and raw newlines/tabs inside string
+// literals. It scans byte-by-byte, tracking string state.
+func repairJSON(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	inString := false
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if inString {
+			switch c {
+			case '\\':
+				out = append(out, c)
+				if i+1 < len(b) {
+					out = append(out, b[i+1])
+					i++
+				}
+			case '"':
+				out = append(out, c)
+				inString = false
+			case '\n':
+				out = append(out, '\\', 'n')
+			case '\r':
+				// drop bare carriage returns
+			case '\t':
+				out = append(out, '\\', 't')
+			default:
+				out = append(out, c)
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+			out = append(out, c)
+		case '}', ']':
+			// drop a trailing comma (with whitespace) before this bracket
+			n := len(out)
+			for n > 0 && (out[n-1] == ' ' || out[n-1] == '\t' || out[n-1] == '\n' || out[n-1] == '\r') {
+				n--
+			}
+			if n > 0 && out[n-1] == ',' {
+				out = out[:n-1]
+			}
+			out = append(out, c)
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // resolvePath maps a model-supplied path onto the workspace, rejecting any
