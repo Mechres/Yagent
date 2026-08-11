@@ -104,6 +104,17 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   markdown rendering for committed assistant messages via `glamour`.
 
 ### Changed
+- **Stable streaming layout**: the live answer/thinking tail now streams INSIDE
+  the transcript viewport instead of in a detached strip below it, so the
+  header/input/status rows never shift while a turn runs — text can no longer
+  appear to build upward from the bottom. The viewport wraps to the window
+  width.
+- **Expandable thinking**: committed thinking blocks collapse to a
+  `🧠 thought (N tok) — press t to expand` header by default; pressing `t`
+  (with an empty input) expands/collapses the full dimmed reasoning in place.
+  The live streaming block follows the same toggle, and the preference
+  persists across turns. Combined with the existing `ui.show_reasoning`
+  toggle and per-turn cap.
 - Main loop is cloud-capable: `api_key`/`YAGENT_API_KEY` sends
   `Authorization: Bearer` on chat + embedding requests (local stays the
   default); `consult` already had its own.

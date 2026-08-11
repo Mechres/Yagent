@@ -401,6 +401,7 @@ func TestStreamTailWraps(t *testing.T) {
 	m.yoloToggler.SetYOLO(true)
 	m.width, m.height = 40, 20
 	m.stream.WriteString(strings.Repeat("abc ", 50)) // 200 chars of live stream
+	m.syncViewport()                                 // stream lives inside the viewport
 	for _, line := range strings.Split(m.View(), "\n") {
 		if w := lipgloss.Width(line); w > 40 {
 			t.Errorf("viewport line width %d > 40: %q…", w, line[:20])
@@ -525,29 +526,47 @@ func TestReasoningToggleAndCap(t *testing.T) {
 func TestReasoningDisplay(t *testing.T) {
 	m := testModel(t)
 	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
-	m.cfg = &config.Config{Model: "m"}
+	m.cfg = &config.Config{Model: "m", UI: config.UIConfig{ShowReasoning: true}}
 	m.width, m.height = 80, 24
 	m.branch = "main"
 
-	// reasoning streams first -> shown as a "thinking" block, not the answer
-	m.reasoning = "let me think about this carefully"
-	v := m.View()
-	if !strings.Contains(v, "thinking") || !strings.Contains(v, "carefully") {
-		t.Errorf("live thinking missing from view: %q", v)
+	// reasoning streams first -> shown as a "thinking" block, not the answer.
+	// Collapsed by default: the header is visible, the content is not.
+	m.Update(reasoningMsg{delta: "let me think about this carefully"})
+	v := ansiStrip(m.View())
+	if !strings.Contains(v, "thinking") {
+		t.Errorf("thinking header missing from view: %q", v)
 	}
-	if strings.Contains(v, "let me think") && m.stream.Len() == 0 {
-		// fine: reasoning is in the view, not the answer stream
+	if strings.Contains(v, "carefully") {
+		t.Errorf("collapsed thinking should not show content: %q", v)
 	}
-	// flush commits it to the transcript, still tagged as thinking, and does
-	// NOT store it as answer content
+	// toggle the live block -> expanded content appears
+	m.toggleThinking()
+	if !strings.Contains(ansiStrip(m.View()), "carefully") {
+		t.Errorf("expanded thinking should show content")
+	}
+	// flush commits it to the transcript (expanded) and NOT as answer content
 	m.stream.WriteString("final answer here")
 	m.flushStream()
 	joined := ansiStrip(strings.Join(m.transcript, "\n"))
-	if !strings.Contains(joined, "thinking") || !strings.Contains(joined, "final answer here") {
+	if !strings.Contains(joined, "carefully") || !strings.Contains(joined, "final answer here") {
 		t.Errorf("flush transcript = %q", joined)
 	}
 	if m.reasoning != "" || m.stream.Len() != 0 {
 		t.Error("buffers not reset after flush")
+	}
+	// the committed block toggles in place: collapse -> header only
+	m.toggleThinking()
+	if strings.Contains(ansiStrip(strings.Join(m.transcript, "\n")), "carefully") {
+		t.Error("collapse did not remove the thinking text")
+	}
+	// re-expand
+	m.toggleThinking()
+	if !strings.Contains(ansiStrip(strings.Join(m.transcript, "\n")), "carefully") {
+		t.Error("expand did not inline the thinking text")
+	}
+	if !m.thinkingOpen || m.lastThinkIdx < 0 {
+		t.Error("committed thinking block should remain toggleable")
 	}
 }
 

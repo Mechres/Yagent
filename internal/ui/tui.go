@@ -220,6 +220,15 @@ type tuiModel struct {
 	hunkSummary string
 	hunkPatch   string
 
+	// Expandable thinking: the last committed thinking block can be toggled
+	// between a collapsed header and the full dimmed text with the 't' key.
+	thinkingOpen     bool   // a committed block exists and can be toggled
+	thinkingExpanded bool   // persists across turns (user preference)
+	thinkingText     string // styled full text of the last committed block
+	thinkingHeader   string // collapsed header line for that block
+	lastThinkIdx     int    // transcript index where the block starts
+	thinkingLines    int    // lines the block occupies in the transcript
+
 	settingsOpen bool
 	settingsIdx  int
 	editing      bool
@@ -263,14 +272,12 @@ func (m *tuiModel) Init() tea.Cmd {
 // bottom unless the user has scrolled up.
 func (m *tuiModel) append(line string) {
 	m.transcript = append(m.transcript, line)
-	m.refreshViewport()
+	m.syncViewport()
 }
 
+// refreshViewport pushes just the committed transcript into the viewport.
 func (m *tuiModel) refreshViewport() {
-	m.viewport.SetContent(strings.Join(m.transcript, "\n"))
-	if m.follow {
-		m.viewport.GotoBottom()
-	}
+	m.syncViewport()
 }
 
 // handleSettingsKey drives the settings page: up/down to choose a row, enter
@@ -444,6 +451,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.nextCmd()
 			}
 			return m, tea.Quit
+		case "t", "T":
+			// Toggle the last thinking block when the input is empty (so
+			// typing isn't hijacked) and a toggleable block exists.
+			if m.thinkingOpen && m.input.Value() == "" {
+				m.toggleThinking()
+				return m, m.nextCmd()
+			}
 		case "enter":
 			if m.confirmQuit {
 				return m, tea.Quit
@@ -492,6 +506,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenMsg:
 		m.stream.WriteString(msg.delta)
 		m.turnTokens += len(msg.delta) / 4
+		m.syncViewport()
 		return m, m.nextCmd()
 
 	case reasoningMsg:
@@ -506,6 +521,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoningTruncated = true
 			m.reasoning = "[… earlier reasoning omitted]\n" + m.reasoning[len(m.reasoning)-reasoningCap:]
 		}
+		m.syncViewport()
 		return m, m.nextCmd()
 
 	case toolMsg:
@@ -583,6 +599,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.input.Reset()
 		m.ag.Reset()
 		m.transcript = nil
+		m.resetThinking()
 		m.follow = true
 		m.refreshViewport()
 		m.append("history cleared")
@@ -1045,6 +1062,7 @@ func (m *tuiModel) settingsView() string {
 func (m *tuiModel) loadHistoryIntoTranscript(history []llm.Message, summary string) {
 	m.transcript = nil
 	m.stream.Reset()
+	m.resetThinking()
 	if summary != "" {
 		m.append("(resumed — the earlier part of this session is condensed into a running summary)")
 	}
@@ -1113,16 +1131,94 @@ func (m *tuiModel) sessionsView() string {
 }
 
 // flushStream commits the current reasoning block and streamed answer into the
-// transcript.
+// transcript. The thinking block is committed collapsed (a header line) unless
+// the user has expanded it; the full text is kept so 't' can toggle it.
 func (m *tuiModel) flushStream() {
 	if m.reasoning != "" {
-		m.append(renderThinking(strings.TrimSpace(m.reasoning), m.width))
-		m.reasoning = ""
+		m.commitThinking()
 	}
 	if m.stream.Len() > 0 {
 		m.append(renderMarkdown(strings.TrimRight(m.stream.String(), "\n"), m.width))
 		m.stream.Reset()
 	}
+	m.syncViewport()
+}
+
+// commitThinking appends the current reasoning buffer to the transcript as an
+// expandable block (collapsed header or full text, per thinkingExpanded).
+func (m *tuiModel) commitThinking() {
+	styled := renderThinking(strings.TrimSpace(m.reasoning), m.width)
+	header := "  " + iconCtx + " thought (" + fmt.Sprint(len(m.reasoning)/4) + " tok) — press t to expand"
+	m.reasoning = ""
+	m.thinkingOpen = true
+	m.thinkingText = styled
+	m.thinkingHeader = header
+	m.lastThinkIdx = len(m.transcript)
+	if m.thinkingExpanded {
+		lines := strings.Split(styled, "\n")
+		m.transcript = append(m.transcript, lines...)
+		m.thinkingLines = len(lines)
+	} else {
+		m.transcript = append(m.transcript, header)
+		m.thinkingLines = 1
+	}
+}
+
+// toggleThinking expands or collapses the thinking display. Applies live (the
+// streaming block respects thinkingExpanded) and, for a committed block,
+// splices the header/full text in place in the transcript.
+func (m *tuiModel) toggleThinking() {
+	if m.thinkingOpen && m.lastThinkIdx >= 0 && m.lastThinkIdx < len(m.transcript) {
+		if !m.thinkingExpanded {
+			// collapse -> expand: replace the header line with the full text
+			lines := strings.Split(m.thinkingText, "\n")
+			m.replaceTranscript(m.lastThinkIdx, m.thinkingLines, lines...)
+			m.thinkingLines = len(lines)
+			m.thinkingExpanded = true
+		} else {
+			// expand -> collapse
+			m.replaceTranscript(m.lastThinkIdx, m.thinkingLines, m.thinkingHeader)
+			m.thinkingLines = 1
+			m.thinkingExpanded = false
+		}
+	} else if m.reasoning != "" {
+		// live block: flip the preference; thinkingBlock() renders accordingly
+		m.thinkingExpanded = !m.thinkingExpanded
+	}
+	m.syncViewport()
+}
+
+// replaceTranscript swaps transcript[start:start+n] for the given lines.
+func (m *tuiModel) replaceTranscript(start, n int, lines ...string) {
+	out := make([]string, 0, len(m.transcript)-n+len(lines))
+	out = append(out, m.transcript[:start]...)
+	out = append(out, lines...)
+	out = append(out, m.transcript[start+n:]...)
+	m.transcript = out
+}
+
+// resetThinking forgets the toggleable thinking block (transcript reset).
+func (m *tuiModel) resetThinking() {
+	m.thinkingOpen = false
+	m.thinkingText = ""
+	m.thinkingHeader = ""
+	m.lastThinkIdx = -1
+	m.thinkingLines = 0
+	m.reasoning = ""
+	m.reasoningTruncated = false
+}
+
+// thinkingBlock renders the LIVE streaming reasoning: a header with a token
+// count, and the full dimmed text only while expanded.
+func (m *tuiModel) thinkingBlock() string {
+	th := m.th
+	header := lipgloss.NewStyle().Foreground(th.Muted).
+		Render("  " + iconCtx + " thinking (" + fmt.Sprint(len(m.reasoning)/4) + " tok) — press t to expand")
+	if !m.thinkingExpanded {
+		return header
+	}
+	body := lipgloss.NewStyle().Foreground(th.Muted).Italic(true).Render(strings.TrimSpace(m.reasoning))
+	return header + "\n" + hardWrap(body, m.width)
 }
 
 // slashCommands lists the commands offered by the "/" menu: the fixed set plus
@@ -1179,19 +1275,13 @@ func (m *tuiModel) View() string {
 		return m.err.Error() + "\n"
 	}
 	m.viewport.Height = m.layoutHeight()
+	if m.width > 0 {
+		m.viewport.Width = m.width // wrap the transcript at the window width
+	}
 	out := m.headerView() + "\n"
 	out += m.viewport.View() + "\n"
-	if m.reasoning != "" {
-		out += m.thinkingView() + "\n"
-	}
 	if m.hunkOpen {
 		out += m.hunkView() + "\n"
-	}
-	if m.stream.Len() > 0 {
-		// The live tail renders outside the viewport, so it must be wrapped
-		// here or long answers would run off the right edge of the screen.
-		tail := strings.TrimRight(m.stream.String(), "\n")
-		out += hardWrap(tail, m.width) + "\n"
 	}
 	if m.showPopover() {
 		out += m.popoverView() + "\n"
@@ -1210,8 +1300,32 @@ func (m *tuiModel) View() string {
 	return out
 }
 
+// syncViewport pushes the live streaming content (reasoning block + answer
+// tail) INTO the viewport so the layout never shifts while a turn streams —
+// only the viewport's scroll position changes. The viewport wraps long lines,
+// so a stable layout means text can never "grow upward" past the input line.
+func (m *tuiModel) syncViewport() {
+	if m.width > 0 {
+		m.viewport.Width = m.width
+	}
+	m.viewport.Height = m.layoutHeight()
+	content := strings.Join(m.transcript, "\n")
+	if m.reasoning != "" {
+		content += "\n" + m.thinkingBlock()
+	}
+	if m.stream.Len() > 0 {
+		content += "\n" + strings.TrimRight(m.stream.String(), "\n")
+	}
+	m.viewport.SetContent(content)
+	if m.follow {
+		m.viewport.GotoBottom()
+	}
+}
+
 // layoutHeight is the transcript viewport height given the current window
-// (header + status + input always take three lines; the "/" popover borrows two).
+// (header + status + input always take three lines; the "/" popover borrows
+// two). The streaming content lives inside the viewport, so its height is
+// fixed — the layout is stable for the whole turn.
 func (m *tuiModel) layoutHeight() int {
 	h := m.height - 4
 	if m.showPopover() {
@@ -1314,20 +1428,10 @@ func (m *tuiModel) ctxGauge(used, limit int) string {
 	return fmt.Sprintf("%d %s", used, pctTxt)
 }
 
-// thinkingView renders the live reasoning tail as a dimmed, italic block above
-// the streaming answer.
-func (m *tuiModel) thinkingView() string {
-	th := m.th
-	head := lipgloss.NewStyle().Foreground(th.Muted).Render(iconCtx + " thinking")
-	body := lipgloss.NewStyle().Foreground(th.Muted).Italic(true).Render(strings.TrimSpace(m.reasoning))
-	return hardWrap(head+"\n"+body, m.width)
-}
-
 // renderThinking styles a committed reasoning block dimmed/italic and wraps it.
 func renderThinking(text string, width int) string {
-	head := lipgloss.NewStyle().Foreground(tokyoNight.Muted).Render(iconCtx + " thinking")
 	body := lipgloss.NewStyle().Foreground(tokyoNight.Muted).Italic(true).Render(text)
-	return hardWrap(head+"\n"+body, width)
+	return hardWrap(body, width)
 }
 
 // statusText is the state segment of the status bar: a spinner/kaomoji marker,
