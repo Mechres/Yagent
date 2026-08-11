@@ -3,6 +3,22 @@
 Track model-specific behavior here as you find it (PLAN working agreements).
 Last updated: M3.5 acceptance, real hardware.
 
+## Compatibility matrix (contribute a row!)
+
+If you run Yagent against a model not listed here, add a row — it is the
+kind of data that makes a local-first agent trustworthy. Run the eval harness
+(`go test ./internal/eval`) plus a scripted chat (`yagent chat --goal "..."`)
+and record what you observe. `tool-call` is the reliability of the model
+actually emitting `tool_calls` instead of narrating them; `sysmsg` is whether
+it accepts one leading system message only.
+
+| Model | Server | tool-call | ctx behavior | notes |
+|---|---|---|---|---|
+| `Qwythos-9B-...Q4_K_M` | llama.cpp :8089 | moderate | single system msg; n_ctx VRAM-limited | dev model, see quirks below |
+| `qwen2.5-coder:14b` | Ollama | good | standard | reference model for tool-heavy work |
+| `qwen3:8b` | Ollama | good | larger ctx | comfortable VRAM headroom |
+| `gemma3:12b-it-qat` | Ollama | weaker | standard | good quality, weaker tool calling |
+
 ## Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf (llama.cpp, port 8089)
 
 The current dev model, served by `llama-server` (Vulkan backend) on

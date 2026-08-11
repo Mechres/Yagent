@@ -69,11 +69,14 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   `fs_patch` (multi-file unified diff, undo-aware), background jobs
   (`shell_bg`/`shell_logs`/`shell_kill`), `code_outline` (declaration
   signatures), compact code injection, TUI `/sessions` browser.
-- 🟡 M7 beyond v1: richer subagents (parallel spawning, tool subsets, results
-  feeding back into the parent). The v1 primitive ships; extend it based on
-  real use rather than on a prior gate.
+- ✅ M7 v2: parallel `subagent tasks[]` (each subtask in its own isolated
+  read-only child agent, results combined in order).
+- 🟡 M7 beyond v2: richer orchestration (tool subsets per subagent, results
+  feeding back into the parent). Only if eval evidence shows the single loop
+  is the bottleneck.
 - 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and
   hybrid search.
-- ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site / CI —
+- ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site —
   not a fit for a local-first single binary; would add surface and, for
-  telemetry, conflict with the privacy stance.
+  telemetry, conflict with the privacy stance. (CI shipped in M6.18 —
+  `.github/workflows/ci.yml` runs gofmt/vet/test/race on every push.)

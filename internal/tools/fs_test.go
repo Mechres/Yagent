@@ -179,6 +179,32 @@ func TestWorkspaceScoping(t *testing.T) {
 	if got := execTool(t, reg, "fs_read", map[string]any{"path": "../../etc/passwd"}); !strings.Contains(got, "escapes") {
 		t.Errorf("fs_read deep escape = %q", got)
 	}
+	// symlink escape: a link inside the workspace pointing outside it must be
+	// rejected for both reads and writes (regression: the lexical check alone
+	// passes because the link's path is inside the workspace).
+	secret := filepath.Join(filepath.Dir(ws), "outside-secret.txt")
+	if err := os.WriteFile(secret, []byte("hush"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(ws, "leak")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := execTool(t, reg, "fs_read", map[string]any{"path": "leak"}); !strings.Contains(got, "resolves outside") {
+		t.Errorf("fs_read symlink escape = %q", got)
+	}
+	if got := execTool(t, reg, "fs_write", map[string]any{"path": "leak", "content": "x"}); !strings.Contains(got, "resolves outside") {
+		t.Errorf("fs_write symlink escape = %q", got)
+	}
+	// a symlink to a file still inside the workspace is fine
+	inTarget := filepath.Join(ws, "real.txt")
+	writeFile(t, ws, "real.txt", "ok")
+	if err := os.Symlink(inTarget, filepath.Join(ws, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if got := execTool(t, reg, "fs_read", map[string]any{"path": "alias"}); !strings.Contains(got, "ok") {
+		t.Errorf("fs_read in-workspace symlink = %q", got)
+	}
 }
 
 func TestStrictArgValidation(t *testing.T) {

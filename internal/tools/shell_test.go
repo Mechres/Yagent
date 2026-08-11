@@ -55,15 +55,23 @@ func TestScrubEnv(t *testing.T) {
 		"MY_TOKEN=abc",
 		"AWS_SECRET_ACCESS_KEY=zzz",
 		"HOME=/home/user",
+		"GH_PAT=ghp_1234567890abcdef",
+		"DATABASE_URL=postgres://user:s3cret@db.example.com/app",
+		"SSH_KEY=-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----",
+		"EDITOR=vim",
+		"YAGENT_SERVER_URL=http://localhost:8089",
 	}
 	scrubbed := scrubEnv(env)
 	joined := strings.Join(scrubbed, "\n")
-	for _, keep := range []string{"PATH=/usr/bin", "HOME=/home/user"} {
+	for _, keep := range []string{"PATH=/usr/bin", "HOME=/home/user", "EDITOR=vim", "YAGENT_SERVER_URL=http://localhost:8089"} {
 		if !strings.Contains(joined, keep) {
 			t.Errorf("scrubEnv dropped %q: %v", keep, scrubbed)
 		}
 	}
-	for _, drop := range []string{"OPENAI_API_KEY", "MY_TOKEN", "AWS_SECRET_ACCESS_KEY"} {
+	for _, drop := range []string{
+		"OPENAI_API_KEY", "MY_TOKEN", "AWS_SECRET_ACCESS_KEY",
+		"GH_PAT", "DATABASE_URL", "SSH_KEY", "supersecretvalue123", "s3cret",
+	} {
 		if strings.Contains(joined, drop) {
 			t.Errorf("scrubEnv kept %q: %v", drop, scrubbed)
 		}
@@ -94,6 +102,43 @@ func TestBwrapArgs(t *testing.T) {
 	// the command must be the final argument
 	if args[len(args)-1] != "echo hi" || args[len(args)-2] != "-c" {
 		t.Errorf("command not at the end: %v", args[len(args)-3:])
+	}
+}
+
+func TestBwrapArgsMasksSensitiveHome(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config", "gh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".npmrc"), []byte("//npm.example.com/:_authToken=abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// a symlink to an unbound target must be left alone (bwrap would fail to
+	// mount over it, and it's unreachable in the sandbox anyway)
+	if err := os.Symlink("/run/user/1000/psd/x", filepath.Join(home, ".config", "google-chrome")); err != nil {
+		t.Fatal(err)
+	}
+
+	args, err := bwrapArgs(t.TempDir(), home, "true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--ro-bind", home, home,
+		"--tmpfs", filepath.Join(home, ".ssh"),
+		"--tmpfs", filepath.Join(home, ".config", "gh"),
+		"--ro-bind", "/dev/null", filepath.Join(home, ".npmrc"),
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("masking missing %q: %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "google-chrome") {
+		t.Errorf("symlink should be skipped, got masked: %s", joined)
 	}
 }
 

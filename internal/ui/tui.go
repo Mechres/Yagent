@@ -613,7 +613,7 @@ func fsApprovalDiff(th Theme, ws string, call llm.ToolCall) string {
 }
 
 // approvePath resolves a model path relative to the workspace, rejecting
-// escapes (mirrors tools.resolvePath).
+// escapes (mirrors tools.resolvePath, including symlink containment).
 func approvePath(ws, p string) (string, error) {
 	if p == "" || filepath.IsAbs(p) {
 		return "", fmt.Errorf("bad path %q", p)
@@ -623,7 +623,14 @@ func approvePath(ws, p string) (string, error) {
 	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q escapes workspace", p)
 	}
-	return abs, nil
+	resolved, err := tools.ResolveSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q resolves outside the workspace (symlink?)", p)
+	}
+	return resolved, nil
 }
 
 // renderApprovalDiff is a colorized line diff (additions in theme green,

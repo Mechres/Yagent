@@ -2,6 +2,30 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.2 — 2026-08-11
+
+### Security
+- **Symlink containment**: `resolvePath` now resolves symlinks (`EvalSymlinks`
+  on the deepest existing ancestor) and re-checks workspace containment, so a
+  symlink inside a cloned repo can no longer make `fs_read`/`fs_write`/
+  `fs_edit`/`fs_patch` read or write outside the workspace. The TUI approval
+  preview (`approvePath`) applies the same rule.
+- **Env scrubbing**: `shell_exec`'s env denylist is broadened (suffixes like
+  `_PASSWORD`/`_AUTH`/`_CREDENTIALS`, conventional names like `GH_PAT`,
+  `DATABASE_URL`) and gains value heuristics (SSH/PEM keys, bearer tokens,
+  credential-bearing URLs) via `internal/scrub.SecretEnv`.
+- **Sandbox home masking**: `shell.sandbox: bwrap` still binds `$HOME`
+  read-only, but now overlays empty tmpfs over sensitive entries (`~/.ssh`,
+  `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, keyrings, browser profiles…)
+  and rebinds credential files (`~/.git-credentials`, `~/.npmrc`, `~/.netrc`)
+  to `/dev/null`, so a sandboxed command cannot read them.
+
+### Changed
+- `docs/models.md` gained a community model compatibility matrix
+  (model, server, tool-call reliability, context behavior).
+- `improvement.md`: reconciled the stale "CI not a fit" note (CI shipped in
+  M6.18) and marked M7 v2 parallel subagents shipped.
+
 ## v0.1.1 — 2026-08-11
 
 ### Added

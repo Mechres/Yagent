@@ -327,7 +327,10 @@ func repairJSON(b []byte) []byte {
 }
 
 // resolvePath maps a model-supplied path onto the workspace, rejecting any
-// path that escapes the workspace root.
+// path that escapes the workspace root. It also resolves symlinks: a link
+// inside the workspace may point outside it (e.g. one checked into a cloned
+// repo), and the fs tools would happily follow it — so the deepest existing
+// ancestor is resolved and its containment re-checked before any fs op runs.
 func resolvePath(workspace, p string) (string, error) {
 	if p == "" {
 		return "", validationErrorf(`argument "path" is required`)
@@ -337,10 +340,58 @@ func resolvePath(workspace, p string) (string, error) {
 	}
 	abs := filepath.Clean(filepath.Join(workspace, p))
 	root := filepath.Clean(workspace)
-	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
-		return "", validationErrorf("path %q escapes the workspace root %q", p, root)
+	if err := ensureContained(root, abs); err != nil {
+		return "", err
 	}
-	return abs, nil
+	resolved, err := ResolveSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	if err := ensureContained(root, resolved); err != nil {
+		return "", validationErrorf("path %q resolves outside the workspace root %q (symlink?)", p, root)
+	}
+	// Return the resolved path so reads/writes hit the verified real location,
+	// not a link that could be swapped after the check.
+	return resolved, nil
+}
+
+// ensureContained reports an error when abs escapes root.
+func ensureContained(root, abs string) error {
+	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
+		return validationErrorf("path %q escapes the workspace root %q", abs, root)
+	}
+	return nil
+}
+
+// ResolveSymlinks resolves symlinks along the deepest existing ancestor of
+// abs, re-appending the remaining tail. This handles reads of existing files
+// as well as writes to not-yet-created paths (where only the parent, or an
+// ancestor of it, exists). Exported so the TUI's approval preview resolves
+// paths with the same rules as the tools.
+func ResolveSymlinks(abs string) (string, error) {
+	clean, err := filepath.Abs(abs)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return resolved, nil
+	}
+	var tail []string
+	cur := filepath.Clean(clean)
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return resolved, nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs, nil // nothing above resolves; fall back to the cleaned path
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // maxResultBytes is the default per-tool result cap.

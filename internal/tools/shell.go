@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/scrub"
 )
 
 // ---------- shell_exec ----------
@@ -154,6 +155,24 @@ func bwrapArgs(workspace, home, command string) ([]string, error) {
 		if fi, err := os.Stat(home); err == nil && fi.IsDir() {
 			args = append(args, "--ro-bind", home, home)
 		}
+		// Mask sensitive material even though the rest of $HOME stays readable
+		// (git/npm config still works): a sandboxed-but-untrusted command must
+		// not be able to read SSH keys, cloud credentials or browser profiles.
+		// Dirs are replaced with empty tmpfs; files are rebound to /dev/null.
+		for _, p := range sensitiveHomePaths(home) {
+			fi, err := os.Lstat(p)
+			if err != nil {
+				continue
+			}
+			if fi.Mode()&os.ModeSymlink != 0 {
+				continue // symlink to an unbound target (e.g. /run/user/...); unreachable in the sandbox
+			}
+			if fi.IsDir() {
+				args = append(args, "--tmpfs", p)
+			} else {
+				args = append(args, "--ro-bind", "/dev/null", p)
+			}
+		}
 		for _, cache := range []string{filepath.Join(home, ".cache"), filepath.Join(home, "go")} {
 			if fi, err := os.Stat(cache); err == nil && fi.IsDir() {
 				args = append(args, "--bind", cache, cache)
@@ -164,8 +183,28 @@ func bwrapArgs(workspace, home, command string) ([]string, error) {
 	return args, nil
 }
 
-// scrubEnv drops secret-looking variables (e.g. API_TOKEN, OPENAI_API_KEY,
-// AWS_SECRET_ACCESS_KEY) from the child environment.
+// sensitiveHomePaths lists $HOME entries that should be hidden from sandboxed
+// commands: credential dirs/files and browser profiles.
+func sensitiveHomePaths(home string) []string {
+	dirs := []string{
+		".ssh", ".aws", ".gnupg", ".kube", ".docker", ".password-store",
+		".config/gh", ".config/gcloud", ".config/hub",
+		".local/share/keyrings", ".local/share/gnupg",
+		".mozilla", ".config/google-chrome", ".config/chromium",
+		".config/BraveSoftware", ".config/Brave-Browser",
+	}
+	files := []string{".git-credentials", ".netrc", ".npmrc", ".pypirc", ".curlrc", ".env"}
+	var out []string
+	for _, rel := range append(dirs, files...) {
+		out = append(out, filepath.Join(home, rel))
+	}
+	return out
+}
+
+// scrubEnv drops secret-looking variables (API_TOKEN, GH_PAT, credential
+// URLs, SSH keys, ...) from the child environment. Name checks use the same
+// heuristics as internal/scrub, plus value checks for unconventionally named
+// secrets.
 func scrubEnv(env []string) []string {
 	kept := env[:0]
 	for _, kv := range env {
@@ -173,8 +212,7 @@ func scrubEnv(env []string) []string {
 		if eq <= 0 {
 			continue
 		}
-		key := strings.ToUpper(kv[:eq])
-		if strings.HasSuffix(key, "_TOKEN") || strings.HasSuffix(key, "_KEY") || strings.HasSuffix(key, "_SECRET") {
+		if scrub.SecretEnv(kv[:eq], kv[eq+1:]) {
 			continue
 		}
 		kept = append(kept, kv)
