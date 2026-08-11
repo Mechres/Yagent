@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"yagent/internal/index"
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // ---------- index_repo ----------

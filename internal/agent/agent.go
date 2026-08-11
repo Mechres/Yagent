@@ -13,11 +13,11 @@ import (
 	"strings"
 	"sync"
 
-	"yagent/internal/index"
-	"yagent/internal/llm"
-	"yagent/internal/memory"
-	"yagent/internal/skills"
-	"yagent/internal/tools"
+	"github.com/Mechres/Yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/skills"
+	"github.com/Mechres/Yagent/internal/tools"
 )
 
 // ErrMaxIterations is returned when the loop hits the iteration cap without a

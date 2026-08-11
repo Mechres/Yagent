@@ -14,13 +14,13 @@ import (
 	"sort"
 	"strings"
 
-	"yagent/internal/index"
-	"yagent/internal/jobs"
-	"yagent/internal/llm"
-	"yagent/internal/memory"
-	"yagent/internal/skills"
-	"yagent/internal/undo"
-	"yagent/internal/web"
+	"github.com/Mechres/Yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/jobs"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/skills"
+	"github.com/Mechres/Yagent/internal/undo"
+	"github.com/Mechres/Yagent/internal/web"
 )
 
 // RiskLevel classifies a tool's side effects; Write/Destructive tools go

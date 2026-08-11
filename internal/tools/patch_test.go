@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"yagent/internal/undo"
+	"github.com/Mechres/Yagent/internal/undo"
 )
 
 func TestFSPatchAppliesUnifiedDiff(t *testing.T) {

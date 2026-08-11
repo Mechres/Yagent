@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"yagent/internal/llm"
-	"yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/memory"
 )
 
 // ---------- memory_save ----------

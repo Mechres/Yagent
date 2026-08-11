@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // ---------- shell_exec ----------

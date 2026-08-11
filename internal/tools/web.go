@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"yagent/internal/llm"
-	"yagent/internal/web"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/web"
 )
 
 // ---------- web_search ----------

@@ -46,7 +46,7 @@ go vet ./...            # lint (must stay clean)
 go run ./cmd/yagent chat   # smoke-test against local server
 ```
 
-Module path is `yagent` (local-only; rename to a full VCS path if published). Go 1.22+.
+Module path is `github.com/Mechres/Yagent`. Go 1.22+.
 
 ## Module layout (create this in M1)
 

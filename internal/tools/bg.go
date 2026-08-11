@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"yagent/internal/jobs"
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/jobs"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // ---------- shell_bg ----------

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/index"
 )
 
 // indexEmbedServer is a neutral deterministic embedder (same vector for all).

@@ -13,16 +13,16 @@ import (
 	"strings"
 	"sync"
 
-	"yagent/internal/agent"
-	"yagent/internal/config"
-	"yagent/internal/index"
-	"yagent/internal/jobs"
-	"yagent/internal/llm"
-	"yagent/internal/memory"
-	"yagent/internal/skills"
-	"yagent/internal/tools"
-	"yagent/internal/undo"
-	"yagent/internal/web"
+	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/jobs"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/skills"
+	"github.com/Mechres/Yagent/internal/tools"
+	"github.com/Mechres/Yagent/internal/undo"
+	"github.com/Mechres/Yagent/internal/web"
 )
 
 // Options tunes the chat UI.

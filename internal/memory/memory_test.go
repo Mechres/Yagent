@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 func TestStoreRoundTrip(t *testing.T) {

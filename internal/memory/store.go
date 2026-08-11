@@ -18,8 +18,8 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 
-	"yagent/internal/llm"
-	"yagent/internal/scrub"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/scrub"
 )
 
 // Message is the persisted form of a chat message.

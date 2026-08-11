@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"yagent/internal/config"
-	"yagent/internal/doctor"
-	"yagent/internal/llm"
-	"yagent/internal/logx"
-	"yagent/internal/memory"
-	"yagent/internal/skills"
-	"yagent/internal/ui"
+	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/doctor"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/logx"
+	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/skills"
+	"github.com/Mechres/Yagent/internal/ui"
 )
 
 // version is overridden at build time via

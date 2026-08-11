@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"yagent/internal/llm"
-	"yagent/internal/undo"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/undo"
 )
 
 // fs_patch applies a unified git diff to the workspace. Small models emit

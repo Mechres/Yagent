@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"yagent/internal/agent"
-	"yagent/internal/config"
-	"yagent/internal/llm"
-	"yagent/internal/memory"
-	"yagent/internal/skills"
-	"yagent/internal/tools"
+	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/skills"
+	"github.com/Mechres/Yagent/internal/tools"
 )
 
 func testModel(t *testing.T) *tuiModel {

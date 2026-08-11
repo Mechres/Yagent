@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // sessionSummaryPrompt condenses a finished session for long-term recall

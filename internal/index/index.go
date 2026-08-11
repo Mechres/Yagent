@@ -18,7 +18,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // indexSchema stores per-file content hashes and per-chunk vectors.

@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"yagent/internal/index"
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // code_outline lists a file's or package's declarations as signatures (name +

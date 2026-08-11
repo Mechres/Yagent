@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"yagent/internal/skills"
+	"github.com/Mechres/Yagent/internal/skills"
 )
 
 func validSkill(name, description string) string {

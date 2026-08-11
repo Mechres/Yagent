@@ -1,59 +1,61 @@
 # Yagent
 
-A local-first AI agent for **code, audit, review, web search and research** — written in Go, running against locally-hosted open-weight models. No cloud LLM calls, ever.
+[![Go](https://img.shields.io/badge/Go-1.25-blue.svg)](https://go.dev/dl/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Principles
+A local-first AI agent for **code, audit, review, web search and research** — written in Go, running against OpenAI-compatible inference servers (Ollama, llama.cpp, or any cloud endpoint you opt into). It implements its own agent loop, memory, orchestration and tools — no LLM frameworks.
 
-- **Local-first** — all inference and embeddings run on your own hardware via an OpenAI-compatible server (Ollama or llama.cpp). Nothing leaves the machine except explicit web-search/fetch tool calls.
-- **Single binary** — one Go executable containing the agent loop, memory, orchestration, tools and UI. The only external process is the inference server.
-- **Owned, not rented** — memory, orchestration and tool plumbing are implemented in-house (stdlib-first, minimal dependencies). No LLM frameworks.
-- **Small-model-native** — designed around the strengths and limits of 7B–14B local models: few well-scoped tools, tight context budgets, explicit validation and retry.
+## Features
 
-## Target hardware
+- **Agent loop with tools** — streaming chat, tool calling with risk-gated approvals, validation + retry, `/yolo` mode.
+- **Memory** — SQLite sessions (`yagent sessions`, `chat --continue`, auto-titles, `/undo`), running-summary context budgeting, and hybrid semantic recall (vector + FTS5 + importance + recency).
+- **Skills** — procedural memory as `SKILL.md` files; the agent creates, discovers and applies its own skills.
+- **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, per-turn code retrieval.
+- **Web tools** — `web_search` (DuckDuckGo by default, Mojeek or SearXNG as alternatives) and `web_fetch` with HTML→text extraction.
+- **Orchestration** — goal mode, parallel subagents, an advisor (`consult`) model.
+- **Two UIs** — a bubbletea TUI and a plain REPL, sharing one runtime.
+- **Diagnostics** — `yagent doctor`, slog logging, a golden YAML eval harness.
 
-Developed and tuned for a single **AMD RX 6700 XT (12 GB, RDNA2 / gfx1031)**:
-
-- 12B–14B class models at Q4 quantization, ~16–32k context
-- Ollama via ROCm (requires `HSA_OVERRIDE_GFX_VERSION=10.3.0` on gfx1031) or llama.cpp server with the Vulkan backend
-
-## Recommended models
-
-| Role | Model | Notes |
-|---|---|---|
-| Chat / agent | `qwen2.5-coder:14b` (Q4) | Best tool-calling reliability at this size; tight on VRAM |
-| Chat / agent (alt.) | `qwen3:8b` | Comfortable VRAM headroom, larger context |
-| Chat / agent (alt.) | `gemma3:12b-it-qat` | Good quality, weaker tool calling than Qwen |
-| Embeddings | `nomic-embed-text` | Used for memory + repo index |
-
-## Status
-
-**M1–M6 + polish complete** — streaming chat CLI + bubbletea TUI (scrollable transcript, `/skills` in-TUI), tool loop (workspace-scoped tools with risk-gated approvals, `--yolo` auto-approve), memory (SQLite sessions, running-summary budget, **SQLite hybrid semantic recall** — vector + FTS5 + importance + recency), skills (procedural memory: `SKILL.md` store, approval gate, dangerous-pattern scanner, `/skills` CLI + `yagent skills list|import`), the **codebase index** (gitignore-aware walker, tree-sitter chunking, incremental re-embed, `index_repo`/`index_search`, per-turn code retrieval), **web tools** (`web_search` via DuckDuckGo HTML by default, Mojeek or SearXNG as alternatives; `web_fetch` with HTML→text extraction), and polish (`yagent doctor`, slog logging, golden YAML eval harness covering the M2–M5 flows). Acceptance verified on Qwythos-9B via llama.cpp :8089 (`--embeddings --pooling mean`): cross-session recall, the model-proposed skill flow, "where is tool validation implemented?" answered from the index, and a live ROCm-on-gfx1031 research task answered with cited sources. Note: M4 adds a **cgo** build requirement (tree-sitter). Next: **M7 (optional) — subagent orchestration** only if eval evidence shows the single loop is the bottleneck, per [`docs/PLAN.md`](docs/PLAN.md).
-
-- Start here: [`AGENTS.md`](AGENTS.md) (contributor/agent guide)
-- Execution plan: [`docs/PLAN.md`](docs/PLAN.md)
-- Designs: [`docs/design/`](docs/design/)
-
-## Quickstart (target state, post-M1)
+## Install
 
 ```bash
-# 1. Inference server (pick one)
-ollama serve                       # ROCm build; on RX 6700 XT:
-# HSA_OVERRIDE_GFX_VERSION=10.3.0 ollama serve
+go install github.com/Mechres/Yagent@latest
+```
 
+Requires Go 1.22+ (built and tested with 1.25). Note: tree-sitter chunking needs **cgo** (a C toolchain) to build.
+
+Then set up an inference server and pull a model:
+
+```bash
+ollama serve                 # or: llama.cpp llama-server --embeddings
 ollama pull qwen2.5-coder:14b
 ollama pull nomic-embed-text
-
-# 2. Build & run
-go build ./cmd/yagent
-./yagent chat                      # streaming REPL against localhost:11434
 ```
+
+## Quickstart
+
+```bash
+yagent doctor                 # diagnose config / server / model / embeddings
+yagent chat                   # streaming TUI (or REPL with --plain)
+yagent chat --goal "refactor the parser package"
+```
+
+By default Yagent talks to `http://localhost:11434` (Ollama). Point it elsewhere with `YAGENT_SERVER_URL` / `YAGENT_MODEL` / `config.yaml` — see [`config.example.yaml`](config.example.yaml).
+
+## Security & privacy
+
+- **Local-first by default** — LLM and embedding requests go only to the configured server. By default that's a local Ollama/llama.cpp — nothing leaves the machine.
+- **Opt-in cloud** — set `api_key` (or `YAGENT_API_KEY`) and point `server_url` at any OpenAI-compatible endpoint (OpenRouter, Groq, Together, Gemini) to run the whole loop in the cloud; `consult` has its own `api_key` for a separate advisor model. Both are deliberate opt-ins — the default config stays local.
+- **Redaction** — before anything is written to SQLite (messages, summaries, memories) or exported, likely secrets (`api_key`/`token`/`password`/`bearer` values) and home paths are scrubbed to `[redacted]`/`[home]` markers. This is a heuristic guard, not a security boundary. Session exports warn when they contain these markers.
+- **Approvals + sandbox** — write/destructive tools require explicit approval (unless `/yolo`, which is pre-granted consent); `shell.sandbox: bwrap` additionally wraps `shell_exec` in bubblewrap and fails loudly if bubblewrap isn't installed.
+- **No telemetry** — nothing leaves your machine except explicit `web_search`/`web_fetch` calls and, if configured, the consult advisor.
 
 ## Documentation
 
 | Doc | Contents |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | Build/test commands, conventions, constraints — read this first |
-| [`docs/PLAN.md`](docs/PLAN.md) | Milestones M1–M6 with tasks and acceptance criteria |
+| [`docs/PLAN.md`](docs/PLAN.md) | Milestones M1–M7 with tasks and acceptance criteria |
 | [`docs/design/architecture.md`](docs/design/architecture.md) | System design, module layout, decision log |
 | [`docs/design/agent-loop.md`](docs/design/agent-loop.md) | Agent loop, tool calling, context budgeting |
 | [`docs/design/memory.md`](docs/design/memory.md) | Memory layers, storage schema, retrieval |
@@ -61,23 +63,17 @@ go build ./cmd/yagent
 | [`docs/design/tools.md`](docs/design/tools.md) | Tool specifications and safety model |
 | [`docs/models.md`](docs/models.md) | Model quirks from acceptance runs (tool-call reliability, embeddings) |
 | [`config.example.yaml`](config.example.yaml) | Annotated configuration reference |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history |
 
-## Security & privacy
+## Development
 
-- **Local-first**: LLM and embedding requests go only to the configured server.
-  By default that's a local Ollama/llama.cpp — nothing leaves the machine.
-- **Opt-in cloud**: set `api_key` (or `YAGENT_API_KEY`) and point `server_url`
-  at any OpenAI-compatible endpoint (OpenRouter, Groq, Together, Gemini) to run
-  the whole loop in the cloud; `consult` has its own `api_key` for a separate
-  advisor model. Both are deliberate opt-ins — the default config stays local.
-- **Redaction**: before anything is written to SQLite (messages, summaries,
-  memories) or exported, likely secrets (`api_key`/`token`/`password`/`bearer`
-  values) and home paths are scrubbed to `[redacted]`/`[home]` markers. This is
-  a heuristic guard, not a security boundary. Session exports warn when they
-  contain these markers.
-- **Approvals + sandbox**: write/destructive tools require explicit approval
-  (unless `--yolo`/`/yolo`, which is pre-granted consent); `shell.sandbox:
-  bwrap` additionally wraps `shell_exec` in bubblewrap and fails loudly if
-  bubblewrap isn't installed.
-- **No telemetry**: nothing leaves your machine except explicit
-  `web_search`/`web_fetch` calls and, if configured, the consult advisor.
+```bash
+make build     # or: go build ./cmd/yagent
+make test      # go test ./...
+make vet       # go vet ./...
+make race      # go test -race ./...
+```
+
+## License
+
+[MIT](LICENSE) — see [CONTRIBUTING](CONTRIBUTING.md) if you'd like to help.

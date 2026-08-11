@@ -1,4 +1,4 @@
-module yagent
+module github.com/Mechres/Yagent
 
 go 1.25.0
 

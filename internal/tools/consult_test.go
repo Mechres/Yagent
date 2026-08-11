@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 func TestConsultTool(t *testing.T) {

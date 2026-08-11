@@ -13,8 +13,8 @@ import (
 	"time"
 	"unicode"
 
-	"yagent/internal/llm"
-	"yagent/internal/scrub"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/scrub"
 )
 
 // Hybrid retrieval weights (docs/design/memory.md L3): vector cosine and FTS5

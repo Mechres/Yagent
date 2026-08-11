@@ -17,13 +17,13 @@ import (
 	"sync"
 	"testing"
 
-	"yagent/internal/agent"
-	"yagent/internal/index"
-	"yagent/internal/llm"
-	"yagent/internal/memory"
-	"yagent/internal/skills"
-	"yagent/internal/tools"
-	"yagent/internal/web"
+	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/skills"
+	"github.com/Mechres/Yagent/internal/tools"
+	"github.com/Mechres/Yagent/internal/web"
 )
 
 // Task is one golden eval.

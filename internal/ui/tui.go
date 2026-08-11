@@ -15,11 +15,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"yagent/internal/agent"
-	"yagent/internal/config"
-	"yagent/internal/llm"
-	"yagent/internal/memory"
-	"yagent/internal/tools"
+	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/tools"
 )
 
 // isTerminal reports whether f is a character device (a real terminal).

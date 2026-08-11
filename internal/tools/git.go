@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // git executes a read-only git command in the workspace and returns its

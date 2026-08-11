@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/config"
 )
 
 // Status of one check.

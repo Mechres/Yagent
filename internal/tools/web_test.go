@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"yagent/internal/web"
+	"github.com/Mechres/Yagent/internal/web"
 )
 
 // fakeWebServer serves SearXNG JSON search results and a target article.

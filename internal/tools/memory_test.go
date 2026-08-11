@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/memory"
 )
 
 // embedServer is a deterministic /v1/embeddings fake: "tab" → (0,1), else (1,0).

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // subagentTool delegates a self-contained subtask to an isolated read-only

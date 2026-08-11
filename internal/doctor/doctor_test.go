@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/config"
 )
 
 // fakeServer answers /v1/models, /v1/embeddings and /v1/chat/completions.

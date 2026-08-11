@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"time"
 
-	"yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/llm"
 )
 
 // consultTool asks a configured "advisor" for guidance: either a second

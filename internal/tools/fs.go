@@ -11,8 +11,8 @@ import (
 	"regexp"
 	"strings"
 
-	"yagent/internal/llm"
-	"yagent/internal/undo"
+	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/undo"
 )
 
 var (
