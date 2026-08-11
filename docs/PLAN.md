@@ -151,6 +151,8 @@ Acceptance:
 - `web_search` Mojeek backend (`web_search.provider: mojeek`; independent index; may serve a JS challenge from datacenter IPs — Brave's free API has closed)
 - `yagent skills list|import <file> [--scope global|project]` CLI (imports are `source: user`, dangerous-pattern-scanner-exempt, source preserved across edits)
 - `yagent chat --yolo`: auto-approves every write/destructive tool and applies skill writes immediately
+- TUI `/` menu with Tab completion (fixed commands + skill names); Ctrl-C during a running turn asks to confirm; both UIs print the session id on quit for `chat --continue <id>`
+- eval harness: budget-regression eval (`all_requests_have_user` assertion + multi-input turns + deterministic summarizer); `go test -race` clean
 
 ## M7 — Orchestration (optional; only if M1–M6 show a real need)
 

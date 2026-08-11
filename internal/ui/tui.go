@@ -95,6 +95,8 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	}
 	runnerCancel()
 	<-runnerDone
+	// Leave the alt-screen, then print the session so the user can resume.
+	fmt.Fprintf(os.Stdout, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
 	return m.err
 }
 
@@ -149,14 +151,17 @@ type tuiModel struct {
 	input    textinput.Model
 	viewport viewport.Model
 
-	transcript []string
-	stream     strings.Builder
-	busy       bool
-	turnTokens int
-	toolCalls  int
-	pending    chan bool
-	approveArg string
-	err        error
+	transcript  []string
+	stream      strings.Builder
+	busy        bool
+	turnTokens  int
+	toolCalls   int
+	pending     chan bool
+	approveArg  string
+	confirmQuit bool
+	tabIndex    int
+	lastInput   string
+	err         error
 }
 
 func newInput() textinput.Model {
@@ -217,15 +222,47 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "ctrl+c":
+			if m.busy && !m.confirmQuit {
+				m.confirmQuit = true
+				m.append("  turn still running — quit anyway? (y/n)")
+				return m, waitIncoming(m.incoming)
+			}
 			return m, tea.Quit
 		case "enter":
+			if m.confirmQuit {
+				return m, tea.Quit
+			}
 			return m.submitLine()
+		case "tab":
+			if strings.HasPrefix(m.input.Value(), "/") {
+				matches := m.slashMatches()
+				if len(matches) > 0 {
+					m.tabIndex = (m.tabIndex + 1) % len(matches)
+					m.input.SetValue(matches[m.tabIndex])
+					m.input.CursorEnd()
+				}
+			}
+			return m, nil
 		case "pgup", "pgdown", "ctrl+u", "ctrl+d":
 			m.viewport, _ = m.viewport.Update(msg)
 			return m, nil
+		case "y", "Y":
+			if m.confirmQuit {
+				return m, tea.Quit
+			}
+		case "n", "N":
+			if m.confirmQuit {
+				m.confirmQuit = false
+				m.append("  continuing")
+				return m, waitIncoming(m.incoming)
+			}
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
+		if m.input.Value() != m.lastInput {
+			m.tabIndex = -1 // typing resets the completion cycle
+		}
+		m.lastInput = m.input.Value()
 		return m, cmd
 
 	case tokenMsg:
@@ -324,6 +361,34 @@ func (m *tuiModel) flushStream() {
 	}
 }
 
+// slashCommands lists the commands offered by the "/" menu: the fixed set plus
+// the names of all saved skills (so "/<skill>" completes too).
+func (m *tuiModel) slashCommands() []string {
+	cmds := []string{
+		"/exit", "/clear", "/help",
+		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
+		"/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
+	}
+	if m.env != nil && m.env.sk != nil {
+		for _, s := range m.env.sk.List() {
+			cmds = append(cmds, "/"+s.Name)
+		}
+	}
+	return cmds
+}
+
+// slashMatches filters the "/" menu by the current input prefix.
+func (m *tuiModel) slashMatches() []string {
+	prefix := m.input.Value()
+	var out []string
+	for _, c := range m.slashCommands() {
+		if strings.HasPrefix(c, prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func (m *tuiModel) View() string {
 	if m.err != nil {
 		return m.err.Error() + "\n"
@@ -342,7 +407,21 @@ func (m *tuiModel) View() string {
 		Bold(true).
 		Foreground(lipgloss.Color("212")).
 		Render(fmt.Sprintf(" %-28s │ %s ", m.cfg.Model, m.statusText()))
-	return m.viewport.View() + "\n" + m.input.View() + "\n" + status
+	out := m.viewport.View() + "\n"
+	// "/" menu: show the matching slash commands while typing a command
+	if strings.HasPrefix(m.input.Value(), "/") {
+		if matches := m.slashMatches(); len(matches) > 0 {
+			shown := matches
+			if len(shown) > 6 {
+				shown = shown[:6]
+			}
+			hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+				Render("  " + strings.Join(shown, "   ") + "   (tab to cycle)")
+			out += hint + "\n"
+		}
+	}
+	out += m.input.View() + "\n" + status
+	return out
 }
 
 func (m *tuiModel) statusText() string {

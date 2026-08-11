@@ -28,11 +28,13 @@ import (
 
 // Task is one golden eval.
 type Task struct {
-	Name        string            `yaml:"name"`
-	Description string            `yaml:"description"`
-	Input       string            `yaml:"input"`
-	Files       map[string]string `yaml:"files"`
-	Steps       []Step            `yaml:"steps"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Input       string `yaml:"input"`
+	// Inputs runs the agent for each line in sequence (multi-turn flows).
+	Inputs []string          `yaml:"inputs"`
+	Files  map[string]string `yaml:"files"`
+	Steps  []Step            `yaml:"steps"`
 	// Subsystem toggles.
 	Memory bool `yaml:"memory"`
 	Skills bool `yaml:"skills"`
@@ -40,6 +42,9 @@ type Task struct {
 	Web    bool `yaml:"web"`
 	// Window shrinks the context budget when set.
 	Window int `yaml:"window"`
+	// Summary makes budget summarization deterministic (the value is returned
+	// as the running summary) instead of consuming a scripted step.
+	Summary string `yaml:"summary"`
 
 	Assert Assertions `yaml:"assert"`
 }
@@ -70,6 +75,10 @@ type Assertions struct {
 	StagedSkills int `yaml:"staged_skills"`
 	// NoToolResults requires zero tool executions.
 	NoToolResults bool `yaml:"no_tool_results"`
+	// AllRequestsHaveUser requires every request sent to the model to contain
+	// a plain user message (regression: the budget must never summarize the
+	// current user turn away — Qwythos rejects tool-only message lists).
+	AllRequestsHaveUser bool `yaml:"all_requests_have_user"`
 }
 
 // Run executes one task end-to-end and reports failures via t.
@@ -79,8 +88,9 @@ func Run(t *testing.T, task Task) {
 		task.Window = 16384
 	}
 
-	// Fake LLM server serving the scripted steps.
-	llmServer := scriptedServer(t, task.Steps)
+	// Fake LLM server serving the scripted steps; also records every request
+	// body so the harness can assert on what was actually sent.
+	llmServer, reqLog := scriptedServer(t, task.Steps)
 
 	// Fake embed server (neutral vectors) for memory/index.
 	var embedTS *httptest.Server
@@ -143,6 +153,10 @@ func Run(t *testing.T, task Task) {
 
 	reg := tools.NewRegistry(ws, opts)
 	client := llm.NewClient(llmServer.URL, "test-model")
+	var summ agent.ChatLLM
+	if task.Summary != "" {
+		summ = &fixedSummaryLLM{summary: task.Summary}
+	}
 	a := agent.New(client, reg, &stubApprover{allow: true}, agent.Config{
 		MaxIterations:   20,
 		Window:          task.Window,
@@ -151,11 +165,20 @@ func Run(t *testing.T, task Task) {
 		Skills:          sk,
 		Index:           idx,
 		IndexAutoInject: false,
+		Summarizer:      summ,
 	}, ws)
 
-	answer, err := a.Run(context.Background(), task.Input)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	inputs := task.Inputs
+	if len(inputs) == 0 {
+		inputs = []string{task.Input}
+	}
+	var answer string
+	var err error
+	for _, in := range inputs {
+		answer, err = a.Run(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Run(%q): %v", in, err)
+		}
 	}
 	history := a.History()
 	var toolResults []string
@@ -193,6 +216,29 @@ func Run(t *testing.T, task Task) {
 			t.Errorf("staged skills = %d (%v), want %d", len(pending), err, task.Assert.StagedSkills)
 		}
 	}
+	if task.Assert.AllRequestsHaveUser {
+		for _, body := range reqLog.bodies() {
+			var c struct {
+				Messages []struct {
+					Role string `json:"role"`
+				} `json:"messages"`
+			}
+			if json.Unmarshal(body, &c) != nil {
+				t.Errorf("could not decode a captured request")
+				continue
+			}
+			hasUser := false
+			for _, m := range c.Messages {
+				if m.Role == "user" {
+					hasUser = true
+					break
+				}
+			}
+			if !hasUser {
+				t.Error("a request was sent with no user message (budget swallowed the current turn?)")
+			}
+		}
+	}
 }
 
 // stubApprover auto-approves every write (evals script the model, not the
@@ -203,14 +249,42 @@ func (s *stubApprover) Approve(ctx context.Context, call llm.ToolCall, risk tool
 	return s.allow || risk == tools.RiskReadOnly, nil
 }
 
-// scriptedServer serves one scripted SSE response per request.
-func scriptedServer(t *testing.T, steps []Step) *httptest.Server {
+// fixedSummaryLLM always returns a fixed message; used as the budget
+// summarizer so budget math is deterministic and doesn't consume scripted
+// steps.
+type fixedSummaryLLM struct{ summary string }
+
+func (f *fixedSummaryLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error) {
+	return &llm.Response{Message: llm.Message{Role: "assistant", Content: f.summary}}, nil
+}
+
+// reqLog records every request body the fake server received.
+type reqLog struct {
+	mu   sync.Mutex
+	body [][]byte
+}
+
+func (l *reqLog) bodies() [][]byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([][]byte, len(l.body))
+	copy(out, l.body)
+	return out
+}
+
+// scriptedServer serves one scripted SSE response per request and records the
+// request bodies for assertions.
+func scriptedServer(t *testing.T, steps []Step) (*httptest.Server, *reqLog) {
 	t.Helper()
 	var mu sync.Mutex
+	log := &reqLog{}
 	remaining := make([]Step, len(steps))
 	copy(remaining, steps)
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.ReadAll(r.Body)
+		body, _ := io.ReadAll(r.Body)
+		log.mu.Lock()
+		log.body = append(log.body, body)
+		log.mu.Unlock()
 		mu.Lock()
 		var step Step
 		if len(remaining) > 0 {
@@ -237,7 +311,7 @@ func scriptedServer(t *testing.T, steps []Step) *httptest.Server {
 		}
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		flusher.Flush()
-	}))
+	})), log
 }
 
 // embedServer returns neutral 4-dim vectors for everything.

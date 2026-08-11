@@ -146,6 +146,7 @@ done:
 	if err := memory.SummarizeSession(ctx, client, env.st, env.vs, env.sessionID); err != nil {
 		fmt.Fprintf(w, "\nwarning: session summary: %v\n", err)
 	}
+	fmt.Fprintf(w, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
 	return nil
 }
 
