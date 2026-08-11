@@ -523,6 +523,36 @@ func TestReasoningToggleAndCap(t *testing.T) {
 	}
 }
 
+func TestThinkingClickToggles(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m", UI: config.UIConfig{ShowReasoning: true}}
+	m.width, m.height = 80, 24
+
+	m.Update(reasoningMsg{delta: "hidden reasoning text"})
+	// collapsed: header at content line 0, screen row 1 (below the header bar)
+	if m.thinkingExpanded {
+		t.Fatal("should start collapsed")
+	}
+	m.handleMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 10, Y: 1})
+	if !m.thinkingExpanded {
+		t.Fatal("click on the header should expand")
+	}
+	if !strings.Contains(ansiStrip(m.View()), "hidden reasoning text") {
+		t.Error("expanded content not visible after click")
+	}
+	// click again collapses
+	m.handleMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 10, Y: 1})
+	if m.thinkingExpanded {
+		t.Fatal("second click should collapse")
+	}
+	// clicking the answer area (below the thinking block) must NOT toggle
+	m.handleMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 10, Y: 5})
+	if m.thinkingExpanded {
+		t.Error("click outside the thinking block toggled it")
+	}
+}
+
 func TestReasoningDisplay(t *testing.T) {
 	m := testModel(t)
 	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())

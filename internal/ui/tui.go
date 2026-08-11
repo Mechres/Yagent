@@ -112,10 +112,11 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	m.viewport = viewport.New(80, 20)
 	m.viewport.KeyMap.Up.SetEnabled(false) // avoid clashing with the text input
 	m.viewport.KeyMap.Down.SetEnabled(false)
-	// No mouse capture: wheel scroll is replaced by keyboard scroll (PgUp/PgDn,
-	// arrows when the input is empty, Ctrl-U/D), and leaving the mouse to the
-	// terminal keeps text selection/copy working normally.
-	p := tea.NewProgram(&m, tea.WithAltScreen())
+	// Mouse is captured so the thinking block can be clicked to expand/collapse
+	// and the wheel scrolls the transcript. Keyboard scroll (PgUp/PgDn, arrows
+	// when the input is empty, Ctrl-U/D) still works; the cost is that
+	// drag-selecting transcript text is no longer handed to the terminal.
+	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
@@ -391,6 +392,75 @@ func indexOf(list []string, value string) int {
 	return -1
 }
 
+// handleMouse reacts to mouse events: left-click on the thinking block toggles
+// it, the wheel scrolls the transcript. Mouse capture is enabled so clicks
+// reach the app (drag-selecting transcript text is handed to the terminal no
+// longer; wheel scrolling is the trade).
+func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonLeft:
+		if msg.Action == tea.MouseActionPress {
+			li := m.clickContentLine(msg.Y)
+			if li >= 0 && m.thinkingHit(li) {
+				m.toggleThinking()
+			}
+		}
+	case tea.MouseButtonWheelUp:
+		m.scroll(true)
+	case tea.MouseButtonWheelDown:
+		m.scroll(false)
+	}
+	return m, m.nextCmd()
+}
+
+// clickContentLine maps a terminal row (msg.Y) to a content-line index in the
+// transcript, accounting for the viewport's scroll offset and line wrapping.
+func (m *tuiModel) clickContentLine(y int) int {
+	if m.width <= 0 || m.viewport.Height <= 0 {
+		return -1
+	}
+	topRow := 1 // the header bar occupies row 0
+	if y < topRow || y > topRow+m.viewport.Height-1 {
+		return -1
+	}
+	target := m.viewport.YOffset + (y - topRow)
+	rendered := 0
+	for li, line := range strings.Split(m.contentString(), "\n") {
+		rows := m.renderedRows(line)
+		if target >= rendered && target < rendered+rows {
+			return li
+		}
+		rendered += rows
+	}
+	return -1
+}
+
+// renderedRows estimates how many terminal rows a content line occupies at the
+// current viewport width (lipgloss wrapping, matching the viewport's renderer).
+func (m *tuiModel) renderedRows(line string) int {
+	if m.viewport.Width <= 0 {
+		return 1
+	}
+	wrapped := lipgloss.NewStyle().Width(m.viewport.Width).Render(line)
+	return strings.Count(wrapped, "\n") + 1
+}
+
+// thinkingHit reports whether a content-line index lands on the thinking block
+// (committed or live) — the click target for expand/collapse.
+func (m *tuiModel) thinkingHit(li int) bool {
+	if m.thinkingOpen && m.lastThinkIdx >= 0 && li >= m.lastThinkIdx && li < m.lastThinkIdx+m.thinkingLines {
+		return true
+	}
+	if m.reasoning != "" {
+		start := len(m.transcript)
+		rows := strings.Count(m.thinkingBlock(), "\n") + 1
+		if li >= start && li < start+rows {
+			return true
+		}
+	}
+	return false
+}
+
 // scroll moves the viewport and drops follow mode when scrolling up.
 func (m *tuiModel) scroll(up bool) {
 	if up {
@@ -418,6 +488,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, tea.Batch(cmd, waitIncoming(m.incoming))
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
 		if m.sessionsOpen {
@@ -1148,7 +1221,7 @@ func (m *tuiModel) flushStream() {
 // expandable block (collapsed header or full text, per thinkingExpanded).
 func (m *tuiModel) commitThinking() {
 	styled := renderThinking(strings.TrimSpace(m.reasoning), m.width)
-	header := "  " + iconCtx + " thought (" + fmt.Sprint(len(m.reasoning)/4) + " tok) — press t to expand"
+	header := "  " + iconCtx + " thought (" + fmt.Sprint(len(m.reasoning)/4) + " tok) — click or press t to expand"
 	m.reasoning = ""
 	m.thinkingOpen = true
 	m.thinkingText = styled
@@ -1213,7 +1286,7 @@ func (m *tuiModel) resetThinking() {
 func (m *tuiModel) thinkingBlock() string {
 	th := m.th
 	header := lipgloss.NewStyle().Foreground(th.Muted).
-		Render("  " + iconCtx + " thinking (" + fmt.Sprint(len(m.reasoning)/4) + " tok) — press t to expand")
+		Render("  " + iconCtx + " thinking (" + fmt.Sprint(len(m.reasoning)/4) + " tok) — click or press t to expand")
 	if !m.thinkingExpanded {
 		return header
 	}
@@ -1309,6 +1382,15 @@ func (m *tuiModel) syncViewport() {
 		m.viewport.Width = m.width
 	}
 	m.viewport.Height = m.layoutHeight()
+	m.viewport.SetContent(m.contentString())
+	if m.follow {
+		m.viewport.GotoBottom()
+	}
+}
+
+// contentString is the full transcript viewport content: committed lines plus
+// the live reasoning block and answer tail.
+func (m *tuiModel) contentString() string {
 	content := strings.Join(m.transcript, "\n")
 	if m.reasoning != "" {
 		content += "\n" + m.thinkingBlock()
@@ -1316,10 +1398,7 @@ func (m *tuiModel) syncViewport() {
 	if m.stream.Len() > 0 {
 		content += "\n" + strings.TrimRight(m.stream.String(), "\n")
 	}
-	m.viewport.SetContent(content)
-	if m.follow {
-		m.viewport.GotoBottom()
-	}
+	return content
 }
 
 // layoutHeight is the transcript viewport height given the current window
