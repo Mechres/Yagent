@@ -27,6 +27,11 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 - System prompt hardened against the Qwythos persona quirk: explicit
   "never self-identify as a model/creator" rule, plus "do not narrate your
   plan before a tool call".
+- **TUI wrapping**: the live streaming tail is hard-wrapped to the window
+  width; glamour markdown renders with a word-wrap and over-wide lines (long
+  URLs/code) are hard-wrapped after; header/status pill bars drop pills that
+  don't fit narrow windows; the input view is capped to the window width so
+  nothing runs off the right edge anymore.
 - `docs/models.md` gained a community model compatibility matrix
   (model, server, tool-call reliability, context behavior).
 - `improvement.md`: reconciled the stale "CI not a fit" note (CI shipped in

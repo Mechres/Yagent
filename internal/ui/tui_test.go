@@ -265,7 +265,7 @@ func TestViewLayout(t *testing.T) {
 }
 
 func TestRenderMarkdown(t *testing.T) {
-	out := renderMarkdown("hello **bold** world")
+	out := renderMarkdown("hello **bold** world", 80)
 	if !strings.Contains(out, "hello") || !strings.Contains(out, "bold") {
 		t.Errorf("markdown lost content: %q", out)
 	}
@@ -274,7 +274,7 @@ func TestRenderMarkdown(t *testing.T) {
 	}
 	// malformed markdown (unclosed fence) must not panic; glamour degrades
 	// to a blank line rather than echoing raw marker text
-	if out := renderMarkdown("```"); len(out) == 0 {
+	if out := renderMarkdown("```", 80); len(out) == 0 {
 		t.Errorf("unclosed fence returned empty output")
 	}
 }
@@ -370,6 +370,46 @@ func TestThemeSwitchAppliesLive(t *testing.T) {
 	}
 	if m.th.Primary != catppuccinMocha.Primary {
 		t.Error("m.th should now be catppuccin")
+	}
+}
+
+func TestRenderMarkdownWrapsLongTokens(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.ANSI256) })
+	long := strings.Repeat("x", 200)
+	out := renderMarkdown("prefix "+long, 40)
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > 40 {
+			t.Errorf("line width %d > 40: %q…", w, line[:20])
+		}
+	}
+}
+
+func TestStreamTailWraps(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.ANSI256) })
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.workspace = "/home/u/projects/workspace"
+	m.env = &chatEnv{}
+	m.env.sessionID = "0123456789abcdef"
+	m.branch = "main"
+	m.yoloToggler = newToggleableApprover(&recordingApprover{})
+	m.yoloToggler.SetYOLO(true)
+	m.width, m.height = 40, 20
+	m.stream.WriteString(strings.Repeat("abc ", 50)) // 200 chars of live stream
+	for _, line := range strings.Split(m.View(), "\n") {
+		if w := lipgloss.Width(line); w > 40 {
+			t.Errorf("viewport line width %d > 40: %q…", w, line[:20])
+		}
+	}
+	// the pill bars themselves must drop pills on a narrow window
+	if w := lipgloss.Width(m.headerView()); w > 40 {
+		t.Errorf("header width %d > 40", w)
+	}
+	if w := lipgloss.Width(m.statusView()); w > 40 {
+		t.Errorf("status width %d > 40", w)
 	}
 }
 

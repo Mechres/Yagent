@@ -866,7 +866,7 @@ func (m *tuiModel) loadHistoryIntoTranscript(history []llm.Message, summary stri
 			if body == "" {
 				body = "(tool calls)"
 			}
-			m.append(renderMarkdown(body))
+			m.append(renderMarkdown(body, m.width))
 		case "tool":
 			snippet := h.Content
 			if len(snippet) > 200 {
@@ -924,7 +924,7 @@ func (m *tuiModel) sessionsView() string {
 // flushStream commits the current streamed answer into the transcript.
 func (m *tuiModel) flushStream() {
 	if m.stream.Len() > 0 {
-		m.append(renderMarkdown(strings.TrimRight(m.stream.String(), "\n")))
+		m.append(renderMarkdown(strings.TrimRight(m.stream.String(), "\n"), m.width))
 		m.stream.Reset()
 	}
 }
@@ -986,10 +986,16 @@ func (m *tuiModel) View() string {
 	out := m.headerView() + "\n"
 	out += m.viewport.View() + "\n"
 	if m.stream.Len() > 0 {
-		out += strings.TrimRight(m.stream.String(), "\n") + "\n"
+		// The live tail renders outside the viewport, so it must be wrapped
+		// here or long answers would run off the right edge of the screen.
+		tail := strings.TrimRight(m.stream.String(), "\n")
+		out += hardWrap(tail, m.width) + "\n"
 	}
 	if m.showPopover() {
 		out += m.popoverView() + "\n"
+	}
+	if m.width > 0 {
+		m.input.Width = m.width // cap the visible input so long text/placeholder scrolls, never overflows
 	}
 	out += m.input.View() + "\n"
 	out += m.statusView()
@@ -1028,31 +1034,55 @@ func (m *tuiModel) headerView() string {
 	if m.workspace != "" {
 		parts = append(parts, th.pill(th.Surface, th.Foreground, false).Render(shorten(m.workspace, 40)))
 	}
-	model := th.pill(th.Surface, th.Foreground, false).Render(iconAgent + " " + shorten(m.cfg.Model, 28))
-	parts = append(parts, model)
+	parts = append(parts, th.pill(th.Surface, th.Foreground, false).Render(iconAgent+" "+shorten(m.cfg.Model, 28)))
 	if m.env != nil && m.env.sessionID != "" {
 		parts = append(parts, th.pill(th.Surface, th.Accent, false).Render(iconSession+" "+shorten(m.env.sessionID, 8)))
 	}
 	if m.branch != "" {
 		parts = append(parts, th.pill(th.Surface, th.Secondary, false).Render(iconBranch+" "+shorten(m.branch, 20)))
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	return fitPills(m.width, parts)
 }
 
 // statusView is the bottom pill bar: state, context gauge, tokens, tools, yolo.
 func (m *tuiModel) statusView() string {
 	th := m.th
 	state, color := m.statusText()
-	statePill := th.pill(th.Surface, color, true).Render(state)
 	var parts []string
-	parts = append(parts, statePill)
+	parts = append(parts, th.pill(th.Surface, color, true).Render(state))
 	used, limit := m.ag.ContextUsage()
 	parts = append(parts, th.pill(th.Surface, color, false).Render(iconCtx+" "+m.ctxGauge(used, limit)))
 	parts = append(parts, th.pill(th.Surface, th.Muted, false).Render(iconTool+" "+fmt.Sprint(m.toolCalls)))
 	if m.yoloToggler != nil && m.yoloToggler.IsYOLO() {
 		parts = append(parts, th.pill(th.Error, "#ffffff", true).Render(iconYOLO+" YOLO"))
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Center, parts...)
+	return fitPills(m.width, parts)
+}
+
+// fitPills joins styled pill strings, greedily dropping trailing pills that
+// would exceed the available width (the joined result stays single-line).
+func fitPills(width int, pills []string) string {
+	if width <= 0 {
+		return lipgloss.JoinHorizontal(lipgloss.Center, pills...)
+	}
+	avail := width - 1 // keep a trailing column as breathing room
+	var out []string
+	total := 0
+	for _, p := range pills {
+		w := lipgloss.Width(p)
+		if len(out) > 0 && total+w+1 > avail {
+			break
+		}
+		if len(out) > 0 {
+			total++ // separator column
+		}
+		total += w
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Center, out...)
 }
 
 // ctxGauge renders the context gauge: "used/limit ██████░░░░ 38%".
