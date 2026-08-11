@@ -2,6 +2,39 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.3 — 2026-08-11
+
+### Added
+- **fs_patch per-hunk approval**: multi-hunk patches open an interactive hunk
+  walker in the TUI (y accept / n skip / q finish); only accepted hunks are
+  applied — the `Approver` interface returns an optional rewritten-args
+  override for this.
+- **Tool-call dedup**: a repeated identical (tool+args) call is skipped
+  instead of re-executed (small-model habit); repeated *failing* calls still
+  count toward the validation block.
+- **Subagent token accounting**: subagent results now report a heuristic token
+  tally per child.
+- **Reasoning controls**: `ui.show_reasoning` toggles the thinking block
+  (default on), and the per-turn reasoning buffer is capped (tail kept with an
+  omission marker) so a verbose model can't flood the terminal.
+- **Consult soft-fail**: an unavailable advisor returns "consult unavailable —
+  continue without the advisor" so the turn degrades instead of derailing.
+- New golden evals: fuzzy-args aliasing and code-references.
+
+### Changed
+- **Stable streaming layout**: the live answer/thinking tail now streams INSIDE
+  the transcript viewport instead of in a detached strip below it, so the
+  header/input/status rows never shift while a turn runs — text can no longer
+  appear to build upward from the bottom. The viewport wraps to the window
+  width.
+- **Expandable thinking**: committed thinking blocks collapse to a
+  `🧠 thought (N tok)` header by default; **clicking the header** (or pressing
+  `t` with an empty input) expands/collapses the full dimmed reasoning in
+  place, and the preference persists across turns. Mouse capture is **off by
+  default** so drag-selecting transcript text stays with the terminal —
+  `Ctrl+M` or `/mouse` toggles it on (click thinking, wheel-scroll, status
+  shows `· mouse`) and auto-releases on quit.
+
 ## v0.1.2 — 2026-08-11
 
 ### Security
@@ -46,20 +79,6 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## v0.1.1 — 2026-08-11
 
 ### Added
-- **fs_patch per-hunk approval**: multi-hunk patches now open an interactive
-  hunk walker in the TUI (y accept / n skip / q finish); only accepted hunks
-  are applied — the `Approver` interface returns an optional rewritten-args
-  override for this.
-- **Tool-call dedup**: a repeated identical (tool+args) call is skipped
-  instead of re-executed (small-model habit); repeated *failing* calls still
-  count toward the validation block.
-- **Subagent token accounting**: subagent results now report a heuristic token
-  tally per child.
-- **Reasoning controls**: `ui.show_reasoning` toggles the thinking block
-  (default on), and the per-turn reasoning buffer is capped (tail kept with an
-  omission marker) so a verbose model can't flood the terminal.
-- **Consult soft-fail**: an unavailable advisor returns "consult unavailable —
-  continue without the advisor" so the turn degrades instead of derailing.
 - **Fuzzy tool arguments**: `decodeArgs` now maps unknown keys onto the closest
   schema field (synonyms like `filename`→`path`, plus Levenshtein) so small
   models stop burning retry turns on `{"filename":"x"}` instead of
@@ -104,20 +123,6 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   markdown rendering for committed assistant messages via `glamour`.
 
 ### Changed
-- **Stable streaming layout**: the live answer/thinking tail now streams INSIDE
-  the transcript viewport instead of in a detached strip below it, so the
-  header/input/status rows never shift while a turn runs — text can no longer
-  appear to build upward from the bottom. The viewport wraps to the window
-  width.
-- **Expandable thinking**: committed thinking blocks collapse to a
-  `🧠 thought (N tok)` header by default; **clicking the header** (or pressing
-  `t` with an empty input) expands/collapses the full dimmed reasoning in
-  place. The live streaming block follows the same toggle, and the preference
-  persists across turns. Mouse capture is **off by default** so drag-selecting
-  transcript text stays with the terminal — `Ctrl+M` or `/mouse` toggles it on
-  (click thinking, wheel-scroll, status shows `· mouse`), and the toggle
-  releases capture on quit. Combined with the existing `ui.show_reasoning`
-  toggle and per-turn cap.
 - Main loop is cloud-capable: `api_key`/`YAGENT_API_KEY` sends
   `Authorization: Bearer` on chat + embedding requests (local stays the
   default); `consult` already had its own.
