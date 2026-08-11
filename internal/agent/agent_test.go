@@ -829,3 +829,39 @@ func TestParseVerdict(t *testing.T) {
 		}
 	}
 }
+
+func TestContextUsageConcurrent(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
+		toolCall("c2", "fs_read", `{"path": "a.txt"}`),
+		finalContent("done"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "data")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 10}, ws)
+
+	ctx := context.Background()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				used, limit := a.ContextUsage()
+				if used < 0 || limit <= 0 {
+					t.Errorf("ContextUsage = %d/%d", used, limit)
+					return
+				}
+			}
+		}
+	}()
+	if _, err := a.Run(ctx, "read a.txt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	close(stop)
+	<-done
+}

@@ -134,8 +134,12 @@ type ChatLLM interface {
 	ChatStream(ctx context.Context, messages []llm.Message, tools []llm.ToolSchema, onDelta func(string)) (*llm.Response, error)
 }
 
-// Agent runs one conversation against a model, dispatching tools.
+// Agent runs one conversation against a model, dispatching tools. The history
+// is protected by mu because the TUI reads it (status line, /clear, /skill-name)
+// while a turn runs in a separate goroutine.
 type Agent struct {
+	mu sync.RWMutex
+
 	cfg      Config
 	llm      ChatLLM
 	summ     ChatLLM
@@ -188,18 +192,30 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 
 // Reset clears conversation history and the running summary (/clear).
 func (a *Agent) Reset() {
+	a.mu.Lock()
 	a.history = nil
 	a.runningSummary = ""
 	a.injected = nil
+	a.mu.Unlock()
 }
 
 // History exposes the conversation for inspection/tests.
 func (a *Agent) History() []llm.Message {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	out := make([]llm.Message, 0, len(a.history))
 	for _, h := range a.history {
 		out = append(out, h.msg)
 	}
 	return out
+}
+
+// ContextUsage reports the current heuristic token estimate and the configured
+// window (limit). Used by the UI status line; safe to call while a turn runs.
+func (a *Agent) ContextUsage() (used, limit int) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.estTokensLocked(), a.cfg.Window
 }
 
 // Run processes one user input through the loop and returns the final answer
@@ -268,7 +284,9 @@ func (a *Agent) InjectSystem(content string) {
 	if content == "" {
 		return
 	}
+	a.mu.Lock()
 	a.injected = append(a.injected, content)
+	a.mu.Unlock()
 }
 
 // maybeOfferSkillCreation gates the end-of-turn opportunity on trigger size
@@ -359,15 +377,17 @@ func ParseVerdict(answer string) string {
 // appendMessage records a message in memory and persists it when a store is
 // configured, returning its store row id (0 when not persisted).
 func (a *Agent) appendMessage(ctx context.Context, msg llm.Message) (int64, error) {
-	a.history = append(a.history, historyEntry{msg: msg})
-	if a.cfg.Store == nil || a.cfg.SessionID == "" {
-		return 0, nil
+	var id int64
+	if a.cfg.Store != nil && a.cfg.SessionID != "" {
+		var err error
+		id, err = a.cfg.Store.Append(ctx, a.cfg.SessionID, msg)
+		if err != nil {
+			return 0, fmt.Errorf("persist message: %w", err)
+		}
 	}
-	id, err := a.cfg.Store.Append(ctx, a.cfg.SessionID, msg)
-	if err != nil {
-		return 0, fmt.Errorf("persist message: %w", err)
-	}
-	a.history[len(a.history)-1].id = id
+	a.mu.Lock()
+	a.history = append(a.history, historyEntry{id: id, msg: msg})
+	a.mu.Unlock()
 	return id, nil
 }
 
@@ -416,19 +436,25 @@ func (a *Agent) assembleContext(recall, code string) []llm.Message {
 	if code != "" {
 		sys.WriteString("\n\n" + code)
 	}
-	if a.runningSummary != "" {
-		sys.WriteString("\n\nSummary of the earlier part of this conversation:\n" + a.runningSummary)
+	a.mu.RLock()
+	runningSummary := a.runningSummary
+	injected := append([]string(nil), a.injected...)
+	hist := make([]llm.Message, 0, len(a.history))
+	for _, h := range a.history {
+		hist = append(hist, h.msg)
+	}
+	a.mu.RUnlock()
+	if runningSummary != "" {
+		sys.WriteString("\n\nSummary of the earlier part of this conversation:\n" + runningSummary)
 	}
 	if recall != "" {
 		sys.WriteString("\n\n" + recall)
 	}
-	for _, chunk := range a.injected {
+	for _, chunk := range injected {
 		sys.WriteString("\n\n" + chunk)
 	}
 	msgs := []llm.Message{{Role: "system", Content: sys.String()}}
-	for _, h := range a.history {
-		msgs = append(msgs, h.msg)
-	}
+	msgs = append(msgs, hist...)
 	return msgs
 }
 
@@ -493,6 +519,13 @@ func (a *Agent) skillIndex() string {
 
 // estTokens is the heuristic len/4 token estimate for the whole context.
 func (a *Agent) estTokens() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.estTokensLocked()
+}
+
+// estTokensLocked is estTokens with the history lock already held.
+func (a *Agent) estTokensLocked() int {
 	total := len(a.systemPrompt)/4 + len(a.runningSummary)/4
 	if a.cfg.Skills != nil {
 		total += maxL0Tokens // L0 skills index is always in context
@@ -517,7 +550,10 @@ func (a *Agent) budget(ctx context.Context) error {
 	if limit < a.cfg.Window/2 {
 		limit = a.cfg.Window / 2 // keep the limit sane for tiny windows
 	}
-	if a.estTokens() <= limit {
+	a.mu.RLock()
+	over := a.estTokensLocked() > limit
+	a.mu.RUnlock()
+	if !over {
 		return nil
 	}
 	// Never summarize the current user turn (or anything after it): the
@@ -525,6 +561,7 @@ func (a *Agent) budget(ctx context.Context) error {
 	// user query, so the running summary must only cover messages that precede
 	// the last user message. Otherwise a long tool-loop turn would leave a
 	// history that starts mid-exchange and the server 400s.
+	a.mu.Lock()
 	cutoff := len(a.history)
 	for i := len(a.history) - 1; i >= 0; i-- {
 		if a.history[i].msg.Role == "user" {
@@ -533,19 +570,24 @@ func (a *Agent) budget(ctx context.Context) error {
 		}
 	}
 	if cutoff == 0 {
+		a.mu.Unlock()
 		return nil
 	}
 	// summarize the oldest half of the messages before the current user turn
 	seg := a.history[:cutoff/2]
 	if len(seg) == 0 {
+		a.mu.Unlock()
 		return nil
 	}
+	segCopy := append([]historyEntry(nil), seg...)
+	previousSummary := a.runningSummary
+	a.mu.Unlock()
 
 	var b strings.Builder
-	if a.runningSummary != "" {
-		fmt.Fprintf(&b, "Previous summary:\n%s\n\n", a.runningSummary)
+	if previousSummary != "" {
+		fmt.Fprintf(&b, "Previous summary:\n%s\n\n", previousSummary)
 	}
-	for _, h := range seg {
+	for _, h := range segCopy {
 		fmt.Fprintf(&b, "%s: %s\n", h.msg.Role, h.msg.Content)
 	}
 	prompt := []llm.Message{
@@ -556,13 +598,19 @@ func (a *Agent) budget(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("summarize history: %w", err)
 	}
-	a.runningSummary = strings.TrimSpace(resp.Message.Content)
-	a.history = append([]historyEntry{}, a.history[len(seg):]...)
-	slog.Info("summarized history", "covered_messages", len(seg), "summary_len", len(a.runningSummary))
+	summary := strings.TrimSpace(resp.Message.Content)
 
-	if a.cfg.Store != nil && a.cfg.SessionID != "" && len(seg) > 0 {
-		until := seg[len(seg)-1].id
-		if err := a.cfg.Store.SetSummary(ctx, a.cfg.SessionID, a.runningSummary, until); err != nil {
+	a.mu.Lock()
+	a.runningSummary = summary
+	if len(a.history) >= len(segCopy) {
+		a.history = append([]historyEntry{}, a.history[len(segCopy):]...)
+	}
+	a.mu.Unlock()
+	slog.Info("summarized history", "covered_messages", len(segCopy), "summary_len", len(summary))
+
+	if a.cfg.Store != nil && a.cfg.SessionID != "" && len(segCopy) > 0 {
+		until := segCopy[len(segCopy)-1].id
+		if err := a.cfg.Store.SetSummary(ctx, a.cfg.SessionID, summary, until); err != nil {
 			return fmt.Errorf("persist summary: %w", err)
 		}
 	}

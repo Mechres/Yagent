@@ -91,7 +91,7 @@ func Run(cfg *config.Config) Report {
 	case err != nil || (u.Scheme != "http" && u.Scheme != "https"):
 		rep.add("config", StatusFail, fmt.Sprintf("server_url %q is not a valid http(s) URL", cfg.ServerURL))
 	default:
-		rep.add("config", StatusPass, fmt.Sprintf("server_url %s, model %q, data dir %s", cfg.ServerURL, cfg.Model, cfg.DataDir))
+		rep.add("config", StatusPass, fmt.Sprintf("server_url %s, model %q, data dir %s, context window %d", cfg.ServerURL, cfg.Model, cfg.DataDir, cfg.ContextWindow))
 	}
 	if cfg.Model == "" {
 		rep.add("model", StatusFail, "model is empty (set YAGENT_MODEL / model)")

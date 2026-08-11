@@ -407,10 +407,15 @@ func (m *tuiModel) View() string {
 		m.viewport.SetContent(content)
 		m.viewport.GotoBottom()
 	}
+	used, limit := m.ag.ContextUsage()
+	ctxColor := lipgloss.Color("212")
+	if used >= limit {
+		ctxColor = lipgloss.Color("196") // over budget
+	}
 	status := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("212")).
-		Render(fmt.Sprintf(" %-28s │ %s ", m.cfg.Model, m.statusText()))
+		Foreground(ctxColor).
+		Render(fmt.Sprintf(" %-24s │ ctx %d/%d │ %s ", m.cfg.Model, used, limit, m.statusText()))
 	out := m.viewport.View() + "\n"
 	// "/" menu: show the matching slash commands while typing a command
 	if strings.HasPrefix(m.input.Value(), "/") {
