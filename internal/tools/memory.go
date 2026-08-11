@@ -22,7 +22,7 @@ type memorySaveArgs struct {
 	Importance float64 `json:"importance,omitempty"`
 }
 
-var memorySaveSchema = fnSchema("memory_save", "store a fact worth remembering across sessions: user preferences, project decisions, gotchas, reusable findings. Phrase the fact descriptively, in third person about the user (e.g. \"the user's name is Yağız\", \"the user prefers tabs\") — never as a first-person quote (\"my name is ...\"). NOT code, NOT chit-chat, NOT tool output.",
+var memorySaveSchema = fnSchema("memory_save", "store a fact worth remembering across sessions: user preferences, project decisions, gotchas, reusable findings. Phrase the fact descriptively, in third person about the user (e.g. \"the user's name is Ada\", \"the user prefers tabs\") — never as a first-person quote (\"my name is ...\"). NOT code, NOT chit-chat, NOT tool output.",
 	map[string]any{
 		"text":       strProp("the fact or preference to remember, one concise third-person sentence"),
 		"importance": numProp("how important this fact is for future recall, 0.0-1.0, default 0.5 (optional)"),
