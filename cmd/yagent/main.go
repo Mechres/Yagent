@@ -16,13 +16,17 @@ import (
 	"yagent/internal/ui"
 )
 
+// version is overridden at build time via
+// -ldflags "-X main.version=<git describe output>" (see Makefile).
+var version = "v0.0.0"
+
 func main() {
-	version := flag.Bool("version", false, "print version")
+	versionFlag := flag.Bool("version", false, "print version")
 	cfgPath := flag.String("config", "", "config file")
 	debug := flag.Bool("debug", false, "debug logging to stderr + log file")
 	flag.Parse()
-	if *version {
-		fmt.Println("yagent v0.0.0")
+	if *versionFlag {
+		fmt.Println(version)
 		return
 	}
 	args := flag.Args()
@@ -44,13 +48,14 @@ func main() {
 	case "chat":
 		fs := flag.NewFlagSet("chat", flag.ContinueOnError)
 		continueID := fs.String("continue", "", "resume session by id")
+		forkID := fs.String("fork", "", "branch a new session from an existing session id")
 		plain := fs.Bool("plain", false, "force the plain REPL instead of the TUI")
 		yolo := fs.Bool("yolo", false, "auto-approve every write/destructive tool and apply skills immediately")
 		if err := fs.Parse(args[1:]); err != nil {
 			os.Exit(2)
 		}
 		client := llm.NewClient(cfg.ServerURL, cfg.Model)
-		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{Plain: *plain, YOLO: *yolo}); err != nil {
+		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{Plain: *plain, YOLO: *yolo, Fork: *forkID}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -81,7 +86,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--plain] [--yolo] | yagent sessions | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--plain] [--yolo] | yagent sessions | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 

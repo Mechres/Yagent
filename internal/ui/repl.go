@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -26,6 +27,9 @@ type Options struct {
 	// YOLO auto-approves every write/destructive tool and applies skill
 	// writes immediately instead of staging them. Use at your own risk.
 	YOLO bool
+	// Fork branches a new session from an existing session id (the original
+	// history is copied, the original session is untouched).
+	Fork string
 }
 
 // autoApprover grants every approval without prompting (--yolo).
@@ -56,9 +60,9 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	// TUI by default on a real terminal; --plain (or piped stdin) falls back
 	// to the streaming REPL.
 	if !opts.Plain && isTerminal(os.Stdin) {
-		return RunTUI(ctx, client, cfg, continueID, opts.YOLO)
+		return RunTUI(ctx, client, cfg, continueID, opts.YOLO, opts.Fork)
 	}
-	env, err := newChatEnv(ctx, cfg, continueID)
+	env, err := newChatEnv(ctx, cfg, continueID, opts.Fork)
 	if err != nil {
 		return err
 	}
@@ -68,6 +72,9 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 
 	w := os.Stdout
 	env.registry.SetIndexProgress(func(line string) {
+		fmt.Fprintf(w, "  [index] %s\n", line)
+	})
+	startBackgroundIndex(ctx, env, func(line string) {
 		fmt.Fprintf(w, "  [index] %s\n", line)
 	})
 	reader := bufio.NewReader(os.Stdin)
@@ -95,6 +102,9 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	}
 
 	fmt.Printf("yagent chat — session %s (/exit, /clear, /help)\n", env.sessionID)
+	if env.forkSource != "" {
+		fmt.Printf("(forked from %s — the original session is untouched)\n", env.forkSource)
+	}
 	if env.initialSummary != "" {
 		fmt.Println("(resumed with running summary of the earlier conversation)")
 	}
@@ -167,11 +177,28 @@ type chatEnv struct {
 	sessionID      string
 	initialHistory []llm.Message
 	initialSummary string
+	forkSource     string
+}
+
+// startBackgroundIndex refreshes the code index at session start when it is
+// already built (Count > 0): Index() hash-checks every file and only re-embeds
+// the changed ones, so an unchanged repo is near-free. The first build is left
+// to the explicit index_repo tool. Runs in a goroutine; never blocks the UI.
+func startBackgroundIndex(ctx context.Context, env *chatEnv, sink func(string)) {
+	if env == nil || env.idx == nil || env.idx.Count() == 0 {
+		return
+	}
+	env.idx.SetOnProgress(sink)
+	go func() {
+		if _, err := env.idx.Index(ctx); err != nil {
+			slog.Warn("background re-index", "error", err)
+		}
+	}()
 }
 
 // newChatEnv opens all stores and builds the agent runtime shared by the
 // plain REPL and the TUI.
-func newChatEnv(ctx context.Context, cfg *config.Config, continueID string) (*chatEnv, error) {
+func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID string) (*chatEnv, error) {
 	ws, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)
@@ -202,7 +229,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID string) (*ch
 		return nil, fmt.Errorf("web search config: %w", err)
 	}
 
-	sessionID, initialHistory, initialSummary, err := resolveSession(ctx, st, ws, continueID)
+	sessionID, initialHistory, initialSummary, forkSource, err := resolveSession(ctx, st, ws, continueID, forkID)
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +237,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID string) (*ch
 	env := &chatEnv{
 		st: st, vs: vs, sk: sk, idx: idx, web: webClient,
 		sessionID: sessionID, initialHistory: initialHistory, initialSummary: initialSummary,
+		forkSource: forkSource,
 	}
 	env.registry = tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
@@ -501,37 +529,68 @@ func projectSuffix(root string) string {
 }
 
 // resolveSession returns the session id plus seeded history/summary: a new
-// session for a fresh chat, or the resumed state for --continue.
-func resolveSession(ctx context.Context, st *memory.Store, ws, continueID string) (string, []llm.Message, string, error) {
+// session for a fresh chat, the resumed state for --continue, or a full
+// independent copy for --fork.
+func resolveSession(ctx context.Context, st *memory.Store, ws, continueID, forkID string) (string, []llm.Message, string, string, error) {
+	if forkID != "" {
+		return forkSession(ctx, st, ws, forkID)
+	}
 	if continueID == "" {
 		sess, err := st.NewSession(ctx, ws)
 		if err != nil {
-			return "", nil, "", fmt.Errorf("create session: %w", err)
+			return "", nil, "", "", fmt.Errorf("create session: %w", err)
 		}
-		return sess.ID, nil, "", nil
+		return sess.ID, nil, "", "", nil
 	}
 	summary, until, err := st.Summary(ctx, continueID)
 	if err != nil {
-		return "", nil, "", fmt.Errorf("load summary: %w", err)
+		return "", nil, "", "", fmt.Errorf("load summary: %w", err)
 	}
 	history, err := st.HistoryAfter(ctx, continueID, until)
 	if err != nil {
-		return "", nil, "", fmt.Errorf("load history: %w", err)
+		return "", nil, "", "", fmt.Errorf("load history: %w", err)
 	}
 	if len(history) == 0 && summary == "" {
-		found := false
-		if sessions, err := st.ListSessions(ctx); err == nil {
-			for _, s := range sessions {
-				if s.ID == continueID {
-					found = true
-				}
-			}
-		}
-		if !found {
-			return "", nil, "", fmt.Errorf("unknown session %q; run 'yagent sessions' to list them", continueID)
+		if !sessionExists(ctx, st, continueID) {
+			return "", nil, "", "", fmt.Errorf("unknown session %q; run 'yagent sessions' to list them", continueID)
 		}
 	}
-	return continueID, history, summary, nil
+	return continueID, history, summary, "", nil
+}
+
+// forkSession copies the source session's full history into a brand-new
+// session and returns it as the running context. The original is untouched.
+func forkSession(ctx context.Context, st *memory.Store, ws, forkID string) (string, []llm.Message, string, string, error) {
+	if !sessionExists(ctx, st, forkID) {
+		return "", nil, "", "", fmt.Errorf("unknown session %q; run 'yagent sessions' to list them", forkID)
+	}
+	history, err := st.History(ctx, forkID)
+	if err != nil {
+		return "", nil, "", "", fmt.Errorf("load fork source: %w", err)
+	}
+	sess, err := st.NewSession(ctx, ws)
+	if err != nil {
+		return "", nil, "", "", fmt.Errorf("create fork: %w", err)
+	}
+	for _, m := range history {
+		if _, err := st.Append(ctx, sess.ID, m); err != nil {
+			return "", nil, "", "", fmt.Errorf("copy fork history: %w", err)
+		}
+	}
+	return sess.ID, history, "", forkID, nil
+}
+
+func sessionExists(ctx context.Context, st *memory.Store, id string) bool {
+	sessions, err := st.ListSessions(ctx)
+	if err != nil {
+		return false
+	}
+	for _, s := range sessions {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // previewArgs renders tool arguments for the approval prompt, compactly.

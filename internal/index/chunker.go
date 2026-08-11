@@ -5,9 +5,13 @@ import (
 	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
+	tsc "github.com/tree-sitter/tree-sitter-c/bindings/go"
+	tscpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
 	tsgo "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tsjava "github.com/tree-sitter/tree-sitter-java/bindings/go"
 	tsjs "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
 	tspy "github.com/tree-sitter/tree-sitter-python/bindings/go"
+	tsrust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
 	tstypescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
@@ -85,6 +89,44 @@ var languages = []language{
 		decl: map[string]bool{
 			"function_declaration": true, "class_declaration": true, "interface_declaration": true,
 			"type_alias_declaration": true, "arrow_function": true, "generator_function_declaration": true,
+		},
+	},
+	{
+		name: "rust",
+		ext:  []string{".rs"},
+		lang: sitter.NewLanguage(tsrust.Language()),
+		decl: map[string]bool{
+			"function_item": true, "struct_item": true, "enum_item": true, "impl_item": true,
+			"trait_item": true, "type_item": true, "const_item": true, "static_item": true,
+			"mod_item": true, "macro_definition": true,
+		},
+	},
+	{
+		name: "c",
+		ext:  []string{".c", ".h"},
+		lang: sitter.NewLanguage(tsc.Language()),
+		decl: map[string]bool{
+			"function_definition": true, "struct_specifier": true, "enum_specifier": true,
+			"union_specifier": true, "type_definition": true, "declaration": true,
+		},
+	},
+	{
+		name: "cpp",
+		ext:  []string{".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"},
+		lang: sitter.NewLanguage(tscpp.Language()),
+		decl: map[string]bool{
+			"function_definition": true, "class_specifier": true, "struct_specifier": true,
+			"enum_specifier": true, "union_specifier": true, "namespace_definition": true,
+			"using_declaration": true, "template_declaration": true, "alias_declaration": true,
+		},
+	},
+	{
+		name: "java",
+		ext:  []string{".java"},
+		lang: sitter.NewLanguage(tsjava.Language()),
+		decl: map[string]bool{
+			"method_declaration": true, "class_declaration": true, "interface_declaration": true,
+			"enum_declaration": true, "record_declaration": true, "constructor_declaration": true,
 		},
 	},
 }

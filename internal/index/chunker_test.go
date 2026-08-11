@@ -90,3 +90,98 @@ func TestChunkerSplitsOversizedDeclaration(t *testing.T) {
 		}
 	}
 }
+
+func TestChunkerRustAndJava(t *testing.T) {
+	rust := `fn main() {
+    let greeting = "hello from the entry point";
+    println!("{}", greeting);
+    println!("this body is long enough to be its own chunk");
+}
+
+struct Point {
+    x: f64,
+    y: f64,
+    label: String,
+}
+
+impl Point {
+    fn new(x: f64, y: f64) -> Self {
+        Point { x, y, label: String::from("origin") }
+    }
+}
+`
+	chunks := chunkSource("main.rs", rust)
+	if len(chunks) < 3 {
+		t.Fatalf("rust chunks = %d, want >= 3 (fn, struct, impl)", len(chunks))
+	}
+	found := false
+	for _, c := range chunks {
+		if strings.Contains(c.Content, "fn main()") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("rust fn main not chunked structurally")
+	}
+
+	java := `package demo;
+
+public class App {
+    public static void main(String[] args) {
+        System.out.println("hi");
+    }
+
+    private int add(int a, int b) {
+        return a + b;
+    }
+}
+`
+	jchunks := chunkSource("App.java", java)
+	// Java methods nest inside the class, so a single class is one structural
+	// chunk; assert the parser ran and kept the whole class.
+	if len(jchunks) != 1 || !strings.Contains(jchunks[0].Content, "public static void main") ||
+		!strings.Contains(jchunks[0].Content, "private int add") {
+		t.Fatalf("java chunks = %+v", jchunks)
+	}
+}
+
+func TestChunkerCandCpp(t *testing.T) {
+	c := `#include <stdio.h>
+
+int main(void) {
+    printf("hello from main, this function body is long enough\n");
+    printf("a second line to make the chunk exceed the tiny-file threshold\n");
+    return 0;
+}
+
+typedef struct Point {
+    double x;
+    double y;
+} Point;
+`
+	if chunks := chunkSource("main.c", c); len(chunks) < 2 {
+		t.Fatalf("c chunks = %d, want >= 2", len(chunks))
+	}
+	cpp := `#include <vector>
+#include <string>
+
+namespace demo {
+class Widget {
+public:
+    Widget(const std::string& name);
+    int value() const;
+private:
+    std::string name_;
+    int value_ = 0;
+};
+}
+
+int free_helper() {
+    return 42;
+}
+`
+	if chunks := chunkSource("widget.cpp", cpp); len(chunks) < 2 {
+		t.Fatalf("cpp chunks = %d, want >= 2", len(chunks))
+	}
+}

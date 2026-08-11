@@ -19,19 +19,20 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
 ## P1 — next pass
 
-- 🟡 Tree-sitter language expansion: Rust / C / C++ / Java grammars (YAML and
+- ✅ Tree-sitter language expansion: Rust / C / C++ / Java grammars (YAML and
   Markdown already get the line-window fallback).
-- 🟡 Session forking: `yagent chat --fork <id>` branches a session's history
-  so experiments don't mutate the original.
-- 🟡 Startup re-index: at session start, hash-check indexed files and re-run
-  `index_repo` in the background if anything changed (no file watcher).
+- ✅ Session forking: `yagent chat --fork <id>` branches a session's history so
+  experiments don't mutate the original.
+- ✅ Startup re-index: at session start, if an index exists, `Index()` runs in
+  the background and hash-checks files, re-embedding only the changed ones
+  (the first build stays an explicit `index_repo`).
+- ✅ Real versioning (`git describe` via `make build`) instead of `v0.0.0`;
+  added a `Makefile` (`make build|test|vet|race|version`).
 - 🟡 Dynamic tool-schema filtering: omit irrelevant tool definitions (e.g. web
   tools outside research turns) to reclaim ~1.5k system-prompt tokens/turn.
 - 🟡 TUI diff overlay for `fs_edit`/`fs_write` approvals (colorized side-by-side
   instead of raw patch lines).
 - 🟡 Shell completions (bash/zsh) for `chat|sessions|skills|doctor`.
-- 🟡 Real versioning (`git describe` based) instead of `v0.0.0`; a small
-  Makefile (`make test`, `make vet`).
 
 ## P2 — deferred / gated
 

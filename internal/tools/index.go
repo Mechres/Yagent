@@ -28,7 +28,7 @@ func (t *indexRepoTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		return "error: code index is not configured for this session", nil
 	}
 	store := t.store
-	store.OnProgress = t.onProgress
+	store.SetOnProgress(t.onProgress)
 	sum, err := store.Index(ctx)
 	if err != nil {
 		return fmt.Sprintf("error: index failed: %v", err), nil

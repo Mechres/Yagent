@@ -31,8 +31,8 @@ func isTerminal(f *os.File) bool {
 
 // RunTUI drives the bubbletea interface: streaming answers, a scrollable
 // transcript, tool lines, approval prompts and a status line.
-func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, yolo bool) error {
-	env, err := newChatEnv(ctx, cfg, continueID)
+func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, yolo bool, forkID string) error {
+	env, err := newChatEnv(ctx, cfg, continueID, forkID)
 	if err != nil {
 		return err
 	}
@@ -54,6 +54,9 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		func(delta string) { incoming <- tokenMsg{delta: delta} },
 		func(call llm.ToolCall) { incoming <- toolMsg{call: call} })
 	env.registry.SetIndexProgress(func(line string) {
+		incoming <- progressMsg{text: line}
+	})
+	startBackgroundIndex(runnerCtx, env, func(line string) {
 		incoming <- progressMsg{text: line}
 	})
 
@@ -98,7 +101,12 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	runnerCancel()
 	<-runnerDone
 	// Leave the alt-screen, then print the session so the user can resume.
-	fmt.Fprintf(os.Stdout, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
+	if env.forkSource != "" {
+		fmt.Fprintf(os.Stdout, "\nsession: %s (forked from %s; resume with: yagent chat --continue %s)\n",
+			env.sessionID, env.forkSource, env.sessionID)
+	} else {
+		fmt.Fprintf(os.Stdout, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
+	}
 	return m.err
 }
 

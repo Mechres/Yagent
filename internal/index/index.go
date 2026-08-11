@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
@@ -51,6 +52,7 @@ type Summary struct {
 
 // Store is the codebase index for one workspace.
 type Store struct {
+	mu         sync.Mutex // serializes Index() and OnProgress access
 	db         *sql.DB
 	workspace  string
 	embedModel string
@@ -105,8 +107,11 @@ func (s *Store) Count() int {
 
 // Index rebuilds the index incrementally: only files whose content hash
 // changed since the last pass are re-chunked and re-embedded; unchanged files
-// are skipped; files that disappeared are pruned.
+// are skipped; files that disappeared are pruned. Serialized so a background
+// startup re-index and an explicit index_repo call never interleave.
 func (s *Store) Index(ctx context.Context) (Summary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	start := time.Now()
 	var sum Summary
 
@@ -196,6 +201,13 @@ func (s *Store) progressf(format string, args ...any) {
 	if s.OnProgress != nil {
 		s.OnProgress(fmt.Sprintf(format, args...))
 	}
+}
+
+// SetOnProgress wires the progress sink (thread-safe).
+func (s *Store) SetOnProgress(fn func(string)) {
+	s.mu.Lock()
+	s.OnProgress = fn
+	s.mu.Unlock()
 }
 
 func (s *Store) fileHash(rel string) (string, bool) {
