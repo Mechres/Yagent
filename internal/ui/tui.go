@@ -634,8 +634,11 @@ func splitKeepEmpty(s string) []string {
 }
 
 // handleSessionsKey drives the session browser: up/down pick a session,
-// enter shows resume/export commands, d deletes (twice to confirm), esc closes.
+// enter shows actions, r resume, f fork, e export, d delete (twice), esc closes.
 func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.sessionsIdx < 0 || (len(m.sessions) > 0 && m.sessionsIdx >= len(m.sessions)) {
+		m.sessionsIdx = 0
+	}
 	switch msg.String() {
 	case "esc", "q":
 		m.sessionsOpen = false
@@ -682,6 +685,7 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ag.LoadSession(history, summary)
 		m.ag.SetSessionID(id)
 		m.env.sessionID = id
+		m.loadHistoryIntoTranscript(history, summary)
 		m.sessionsOpen = false
 		m.append(fmt.Sprintf("  resumed session %s — continuing it now", id))
 		return m, waitIncoming(m.incoming)
@@ -698,6 +702,7 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ag.LoadSession(history, summary)
 		m.ag.SetSessionID(sid)
 		m.env.sessionID = sid
+		m.loadHistoryIntoTranscript(history, summary)
 		m.sessionsOpen = false
 		m.append(fmt.Sprintf("  forked %s -> %s; continuing the fork now", id[:8], sid))
 		return m, waitIncoming(m.incoming)
@@ -788,6 +793,37 @@ func (m *tuiModel) settingsView() string {
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("240")).
 		Padding(0, 1).Render(page)
+}
+
+// loadHistoryIntoTranscript renders a loaded session's past messages into the
+// visible transcript so resuming shows the prior conversation (and it is
+// scrollable). The running summary, if any, is noted at the top.
+func (m *tuiModel) loadHistoryIntoTranscript(history []llm.Message, summary string) {
+	m.transcript = nil
+	m.stream.Reset()
+	if summary != "" {
+		m.append("(resumed — the earlier part of this session is condensed into a running summary)")
+	}
+	for _, h := range history {
+		switch h.Role {
+		case "user":
+			m.append("> " + h.Content)
+		case "assistant":
+			body := h.Content
+			if body == "" {
+				body = "(tool calls)"
+			}
+			m.append(body)
+		case "tool":
+			snippet := h.Content
+			if len(snippet) > 200 {
+				snippet = snippet[:200] + "…"
+			}
+			m.append("  [tool] " + snippet)
+		}
+	}
+	m.follow = true
+	m.refreshViewport()
 }
 
 // sessionsView renders the session browser.

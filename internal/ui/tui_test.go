@@ -245,6 +245,17 @@ func TestSessionsBrowser(t *testing.T) {
 	if len(m.sessions) != 0 {
 		t.Errorf("session not deleted: %d remain", len(m.sessions))
 	}
+	// create a fresh session, re-open the browser and resume it
+	sess2, _ := m.env.st.NewSession(context.Background(), "/tmp/ws")
+	if _, err := m.env.st.Append(context.Background(), sess2.ID, llm.Message{Role: "user", Content: "resume me please"}); err != nil {
+		t.Fatal(err)
+	}
+	m.sessions, _ = m.env.st.ListSessions(context.Background())
+	m.sessionsOpen = true
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if len(m.transcript) == 0 || !strings.Contains(strings.Join(m.transcript, "\n"), "resume me please") {
+		t.Errorf("resume did not load history into the transcript: %q", m.transcript)
+	}
 	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.sessionsOpen {
 		t.Error("esc should close the browser")
