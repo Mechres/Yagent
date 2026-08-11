@@ -1,0 +1,14 @@
+name: code-outline
+description: M6.19 — list a package's declarations as signatures
+files:
+  pkg/one.go: |
+    package pkg
+
+    func Add(a, b int) int { return a + b }
+input: outline the pkg directory
+steps:
+  - tool_call: {name: code_outline, args: '{"path":"pkg"}'}
+  - answer: The package has Add.
+assert:
+  tool_results_contain: ["[function] Add"]
+  final_answer_contains: "Add"

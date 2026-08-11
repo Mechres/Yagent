@@ -1,0 +1,16 @@
+name: fs-patch-apply
+description: M6.19 — apply a multi-file unified diff in one call
+files:
+  a.go: |
+    package pkg
+
+    func old() int {
+        return 1
+    }
+input: apply the diff to a.go
+steps:
+  - tool_call: {name: fs_patch, args: '{"patch":"--- a/a.go\n+++ b/a.go\n@@ -4,1 +4,1 @@\n-    return 1\n+    return 2\n"}'}
+  - answer: Applied the diff.
+assert:
+  tool_results_contain: ["patched 1 file"]
+  final_answer_contains: "Applied"

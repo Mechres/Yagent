@@ -1,11 +1,14 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"yagent/internal/index"
 )
@@ -144,5 +147,38 @@ func (s *Store) Get(i int) string { return s.data[i] }
 	}
 	if got := execTool(t, reg, "code_outline", map[string]any{"path": ""}); !strings.Contains(got, "validation-error") {
 		t.Errorf("empty path = %q", got)
+	}
+}
+
+func TestSubagentParallel(t *testing.T) {
+	var mu sync.Mutex
+	active := 0
+	max := 0
+	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string) (string, error) {
+		mu.Lock()
+		active++
+		if active > max {
+			max = active
+		}
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return "SUMMARY " + task, nil
+	}}
+	res, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"tasks": []string{"a", "b", "c", "d"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "SUMMARY a") || !strings.Contains(res, "SUMMARY d") {
+		t.Errorf("parallel result = %q", res)
+	}
+	if max < 2 {
+		t.Errorf("subagents did not run in parallel (max concurrent = %d)", max)
+	}
+	// validation
+	if _, err := tool.Execute(ctx(), argsJSON(t, map[string]any{})); err == nil {
+		t.Error("empty args should fail")
 	}
 }

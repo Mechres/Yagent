@@ -74,36 +74,7 @@ func symbolsFor(path, content string) []Symbol {
 	if lang == nil {
 		return nil
 	}
-	parser := sitter.NewParser()
-	defer parser.Close()
-	if err := parser.SetLanguage(lang.lang); err != nil {
-		return nil
-	}
-	tree := parser.Parse([]byte(content), nil)
-	if tree == nil {
-		return nil
-	}
-	defer tree.Close()
-	root := tree.RootNode()
-
-	var out []Symbol
-	for i := uint(0); i < root.NamedChildCount(); i++ {
-		node := root.NamedChild(i)
-		if !lang.decl[node.Kind()] {
-			continue
-		}
-		name := declName(node, content)
-		if name == "" {
-			continue
-		}
-		out = append(out, Symbol{
-			Path: path,
-			Name: name,
-			Kind: friendlyKind(node.Kind()),
-			Line: int(node.StartPosition().Row) + 1,
-		})
-	}
-	return out
+	return symbolsFromDecls(path, parseDecls(path, content, lang))
 }
 
 // declName extracts the identifier a declaration node names, via the grammar's
@@ -303,6 +274,16 @@ func chunkSource(path, content string) []Chunk {
 // structuralChunks splits on top-level declarations. Returns nil when the
 // file is empty or yields no declarations (caller falls back to line windows).
 func structuralChunks(path, content string, lang *language) []Chunk {
+	decls := parseDecls(path, content, lang)
+	if len(decls) == 0 {
+		return nil
+	}
+	return chunksFromDecls(path, content, decls)
+}
+
+// parseDecls parses a supported file once and returns its top-level
+// declarations (text, line, name, kind), with adjacent doc comments attached.
+func parseDecls(path, content string, lang *language) []declInfo {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(lang.lang); err != nil {
@@ -315,15 +296,11 @@ func structuralChunks(path, content string, lang *language) []Chunk {
 	defer tree.Close()
 	root := tree.RootNode()
 
-	// Collect top-level children so we can attach adjacent doc-comment runs
-	// to the declarations that follow them.
 	var kids []*sitter.Node
 	for i := uint(0); i < root.NamedChildCount(); i++ {
 		kids = append(kids, root.NamedChild(i))
 	}
-
-	var decls []string
-	var declLines []int
+	var out []declInfo
 	for i, k := range kids {
 		if !lang.decl[k.Kind()] {
 			continue
@@ -331,8 +308,8 @@ func structuralChunks(path, content string, lang *language) []Chunk {
 		startByte := int(k.StartByte())
 		sp := k.StartPosition()
 		startLine := int(sp.Row) + 1
-		// Walk back over consecutive comment siblings immediately above the
-		// declaration and pull them into the chunk.
+		declLine := startLine
+		// Attach adjacent doc-comment runs above the declaration.
 		for j := i - 1; j >= 0 && kids[j].Kind() == "comment"; j-- {
 			if int(sp.Row)-int(kids[j].EndPosition().Row) > 1 {
 				break
@@ -340,20 +317,36 @@ func structuralChunks(path, content string, lang *language) []Chunk {
 			startByte = int(kids[j].StartByte())
 			startLine = int(kids[j].StartPosition().Row) + 1
 		}
-		decls = append(decls, content[startByte:k.EndByte()])
-		declLines = append(declLines, startLine)
+		out = append(out, declInfo{
+			startLine: startLine,
+			declLine:  declLine,
+			text:      content[startByte:k.EndByte()],
+			name:      declName(k, content),
+			kind:      friendlyKind(k.Kind()),
+		})
 	}
-	if len(decls) == 0 {
-		return nil
-	}
+	return out
+}
 
+// declInfo is one parsed top-level declaration. startLine includes any
+// attached doc comments; declLine is the declaration's own first line.
+type declInfo struct {
+	startLine int
+	declLine  int
+	text      string
+	name      string
+	kind      string
+}
+
+// chunksFromDecls builds chunks from parsed declarations, merging small ones
+// and splitting oversized ones.
+func chunksFromDecls(path, content string, decls []declInfo) []Chunk {
 	// Tiny files become one chunk.
 	if len(content) < minDeclChars*2 {
-		sp, ep := kids[0].StartPosition(), kids[len(kids)-1].EndPosition()
 		return []Chunk{{
 			Path:      path,
-			StartLine: int(sp.Row) + 1,
-			EndLine:   int(ep.Row) + 1,
+			StartLine: decls[0].startLine,
+			EndLine:   decls[len(decls)-1].startLine + strings.Count(decls[len(decls)-1].text, "\n"),
 			Content:   content,
 		}}
 	}
@@ -380,9 +373,9 @@ func structuralChunks(path, content string, lang *language) []Chunk {
 		pending = nil
 	}
 
-	for i, raw := range decls {
-		text := string(raw)
-		startLine := declLines[i]
+	for _, d := range decls {
+		text := d.text
+		startLine := d.startLine
 		endLine := startLine + strings.Count(text, "\n")
 		if len(text) < minDeclChars {
 			pending = append(pending, Chunk{Path: path, StartLine: startLine, EndLine: endLine, Content: text})
@@ -397,6 +390,33 @@ func structuralChunks(path, content string, lang *language) []Chunk {
 	}
 	flush()
 	return chunks
+}
+
+// symbolsFromDecls builds the symbol list from parsed declarations.
+func symbolsFromDecls(path string, decls []declInfo) []Symbol {
+	var out []Symbol
+	for _, d := range decls {
+		if d.name == "" {
+			continue
+		}
+		out = append(out, Symbol{Path: path, Name: d.name, Kind: d.kind, Line: d.declLine})
+	}
+	return out
+}
+
+// chunkAndSymbols parses a file once and returns both its chunks and symbols
+// (falling back to line windows for unsupported files). Used by Index() to
+// avoid a double parse.
+func chunkAndSymbols(path, content string) ([]Chunk, []Symbol) {
+	lang := languageFor(path)
+	if lang == nil {
+		return lineWindowChunks(path, content, fallbackWindow), nil
+	}
+	decls := parseDecls(path, content, lang)
+	if len(decls) == 0 {
+		return lineWindowChunks(path, content, fallbackWindow), nil
+	}
+	return chunksFromDecls(path, content, decls), symbolsFromDecls(path, decls)
 }
 
 // splitChunk splits an oversized chunk into windows bounded by both

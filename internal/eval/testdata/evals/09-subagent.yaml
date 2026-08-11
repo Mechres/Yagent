@@ -1,0 +1,14 @@
+name: subagent-delegation
+description: M7 v1 — delegate a subtask to an isolated read-only subagent
+subagent: true
+files:
+  a.txt: |
+    data
+input: check if a.txt exists
+steps:
+  - tool_call: {name: subagent, args: '{"task":"check a.txt"}'}
+  - answer: "CHILD SUMMARY: a.txt exists in the workspace."
+  - answer: The subagent confirmed a.txt exists.
+assert:
+  tool_results_contain: ["CHILD SUMMARY"]
+  final_answer_contains: "confirmed"

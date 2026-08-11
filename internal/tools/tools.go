@@ -145,7 +145,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		reg["subagent"] = &subagentTool{ws: r.workspace, run: opts.Subagent}
 	}
 	if opts.Jobs != nil {
-		reg["shell_bg"] = &shellBgTool{jobs: opts.Jobs}
+		reg["shell_bg"] = &shellBgTool{jobs: opts.Jobs, sandbox: opts.ShellSandbox, ws: r.workspace}
 		reg["shell_logs"] = &shellLogsTool{jobs: opts.Jobs}
 		reg["shell_kill"] = &shellKillTool{jobs: opts.Jobs}
 	}

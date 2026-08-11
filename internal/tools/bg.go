@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
 	"yagent/internal/jobs"
 	"yagent/internal/llm"
 )
@@ -11,7 +15,10 @@ import (
 // ---------- shell_bg ----------
 
 type shellBgTool struct {
-	jobs *jobs.Registry
+	jobs     *jobs.Registry
+	sandbox  string
+	ws       string
+	hasBwrap func() bool // injectable; nil = exec.LookPath
 }
 
 type shellBgArgs struct {
@@ -36,11 +43,40 @@ func (t *shellBgTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if t.jobs == nil {
 		return "error: background jobs are not configured for this session", nil
 	}
-	job, err := t.jobs.Start(a.Command)
+	command := a.Command
+	if t.sandbox == "bwrap" {
+		if !t.bwrapAvailable() {
+			return "error: shell.sandbox is bwrap but bubblewrap is not installed (install it, or set shell.sandbox to empty)", nil
+		}
+		home, _ := os.UserHomeDir()
+		args, err := bwrapArgs(t.ws, home, a.Command)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		command = "bwrap " + shellQuote(args)
+	}
+	job, err := t.jobs.Start(command)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	return fmt.Sprintf("started job %s: %s", job.ID, a.Command), nil
+}
+
+func (t *shellBgTool) bwrapAvailable() bool {
+	if t.hasBwrap != nil {
+		return t.hasBwrap()
+	}
+	_, err := exec.LookPath("bwrap")
+	return err == nil
+}
+
+// shellQuote single-quotes a list of args for embedding in a sh -c command.
+func shellQuote(args []string) string {
+	parts := make([]string, len(args))
+	for i, a := range args {
+		parts[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(parts, " ")
 }
 
 // ---------- shell_logs ----------

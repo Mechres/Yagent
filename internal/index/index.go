@@ -152,12 +152,12 @@ func (s *Store) Index(ctx context.Context) (Summary, error) {
 		if err := s.removeSymbols(ctx, rel); err != nil {
 			return sum, err
 		}
-		chunks := chunkSource(rel, string(content))
+		chunks, syms := chunkAndSymbols(rel, string(content))
 		if len(chunks) == 0 {
 			continue
 		}
 		newChunks = append(newChunks, chunks...)
-		if err := s.indexSymbols(ctx, rel, string(content)); err != nil {
+		if err := s.insertSymbols(ctx, syms); err != nil {
 			return sum, err
 		}
 		sum.Files++
@@ -296,9 +296,9 @@ func (s *Store) removeChunks(ctx context.Context, rel string) error {
 	return nil
 }
 
-// indexSymbols stores the top-level declaration symbols of a file.
-func (s *Store) indexSymbols(ctx context.Context, rel, content string) error {
-	for _, sym := range symbolsFor(rel, content) {
+// insertSymbols stores declaration symbols (already parsed by chunkAndSymbols).
+func (s *Store) insertSymbols(ctx context.Context, syms []Symbol) error {
+	for _, sym := range syms {
 		if _, err := s.db.ExecContext(ctx,
 			`INSERT INTO index_symbols (path, name, kind, line) VALUES (?, ?, ?, ?)`,
 			sym.Path, sym.Name, sym.Kind, sym.Line); err != nil {

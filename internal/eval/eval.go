@@ -49,6 +49,8 @@ type Task struct {
 	// Rounds caps it. Takes precedence over Input/Inputs.
 	Goal   string `yaml:"goal"`
 	Rounds int    `yaml:"rounds"`
+	// Subagent wires the subagent tool to a child agent (M7).
+	Subagent bool `yaml:"subagent"`
 
 	Assert Assertions `yaml:"assert"`
 }
@@ -157,6 +159,15 @@ func Run(t *testing.T, task Task) {
 
 	reg := tools.NewRegistry(ws, opts)
 	client := llm.NewClient(llmServer.URL, "test-model")
+	if task.Subagent {
+		// The subagent tool delegates to an isolated read-only child agent
+		// that consumes the next scripted response.
+		opts.Subagent = func(ctx context.Context, subtask, workspace string) (string, error) {
+			subReg := tools.NewRegistry(workspace, tools.Options{ReadOnly: true, Web: wc, Index: idx, Skills: sk})
+			return agent.RunSubagent(ctx, client, subReg, subtask, workspace)
+		}
+		reg = tools.NewRegistry(ws, opts)
+	}
 	var summ agent.ChatLLM
 	if task.Summary != "" {
 		summ = &fixedSummaryLLM{summary: task.Summary}

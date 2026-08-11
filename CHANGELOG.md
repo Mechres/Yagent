@@ -2,7 +2,7 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
-## Unreleased
+## v0.1.0 — 2026-08-11
 
 ### Added
 - M7 v1: `subagent` tool (isolated read-only child agent); `fs_patch`
