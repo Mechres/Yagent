@@ -13,7 +13,7 @@ A local-first AI agent for **code, audit, review, web search and research** — 
 - **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, per-turn code retrieval.
 - **Web tools** — `web_search` (DuckDuckGo by default, Mojeek or SearXNG as alternatives) and `web_fetch` with HTML→text extraction.
 - **Orchestration** — goal mode, parallel subagents, an advisor (`consult`) model.
-- **Two UIs** — a bubbletea TUI and a plain REPL, sharing one runtime.
+- **Two UIs** — a bubbletea TUI and a plain REPL, sharing one runtime. The TUI has a 24-bit theme system (Tokyo Night default; Catppuccin Mocha and Nord selectable in `/settings`), a pill-style header/status bar with a live context gauge, and markdown rendering for assistant messages.
 - **Diagnostics** — `yagent doctor`, slog logging, a golden YAML eval harness.
 
 ## Install
