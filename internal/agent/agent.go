@@ -201,6 +201,26 @@ func (a *Agent) Reset() {
 	a.mu.Unlock()
 }
 
+// LoadSession replaces the conversation context with another session's history
+// and running summary (used by the TUI session browser to resume/fork in-place).
+func (a *Agent) LoadSession(history []llm.Message, summary string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.history = nil
+	for _, m := range history {
+		a.history = append(a.history, historyEntry{msg: m})
+	}
+	a.runningSummary = summary
+	a.totalToolCalls = 0
+}
+
+// SetSessionID switches the session that new messages persist to.
+func (a *Agent) SetSessionID(id string) {
+	a.mu.Lock()
+	a.cfg.SessionID = id
+	a.mu.Unlock()
+}
+
 // History exposes the conversation for inspection/tests.
 func (a *Agent) History() []llm.Message {
 	a.mu.RLock()

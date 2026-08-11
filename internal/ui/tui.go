@@ -670,7 +670,53 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		id := m.sessions[m.sessionsIdx].ID
-		m.sessionsAction = fmt.Sprintf("resume: yagent chat --continue %s   ·   fork: yagent chat --fork %s   ·   export: yagent sessions export %s", id, id, id)
+		m.sessionsAction = fmt.Sprintf("r resume   ·   f fork   ·   e export   (resume: yagent chat --continue %s)", id)
+		return m, nil
+	case "r":
+		if len(m.sessions) == 0 {
+			return m, nil
+		}
+		id := m.sessions[m.sessionsIdx].ID
+		summary, until, _ := m.env.st.Summary(context.Background(), id)
+		history, _ := m.env.st.HistoryAfter(context.Background(), id, until)
+		m.ag.LoadSession(history, summary)
+		m.ag.SetSessionID(id)
+		m.env.sessionID = id
+		m.sessionsOpen = false
+		m.append(fmt.Sprintf("  resumed session %s — continuing it now", id))
+		return m, waitIncoming(m.incoming)
+	case "f":
+		if len(m.sessions) == 0 {
+			return m, nil
+		}
+		id := m.sessions[m.sessionsIdx].ID
+		sid, history, summary, _, err := forkSession(context.Background(), m.env.st, m.workspace, id)
+		if err != nil {
+			m.sessionsAction = "error: " + err.Error()
+			return m, nil
+		}
+		m.ag.LoadSession(history, summary)
+		m.ag.SetSessionID(sid)
+		m.env.sessionID = sid
+		m.sessionsOpen = false
+		m.append(fmt.Sprintf("  forked %s -> %s; continuing the fork now", id[:8], sid))
+		return m, waitIncoming(m.incoming)
+	case "e":
+		if len(m.sessions) == 0 {
+			return m, nil
+		}
+		id := m.sessions[m.sessionsIdx].ID
+		md, err := m.env.st.RenderMarkdown(context.Background(), id)
+		if err != nil {
+			m.sessionsAction = "error: " + err.Error()
+			return m, nil
+		}
+		path := "session-" + id + ".md"
+		if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+			m.sessionsAction = "error: " + err.Error()
+			return m, nil
+		}
+		m.sessionsAction = "exported to " + path
 		return m, nil
 	}
 	if msg.String() != "d" && msg.String() != "x" {
@@ -771,7 +817,7 @@ func (m *tuiModel) sessionsView() string {
 		rows = append(rows, "  "+dim.Render("no sessions yet"))
 	}
 	body := strings.Join(rows, "\n")
-	hint := dim.Render("↑/↓ pick · enter show commands · d delete (twice) · esc close")
+	hint := dim.Render("↑/↓ pick · enter commands · r resume · f fork · e export · d delete (twice) · esc close")
 	if m.sessionsConfirm {
 		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("  delete this session? press d again to confirm, any key to cancel")
 	}

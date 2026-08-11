@@ -1046,3 +1046,18 @@ func TestCompactChunk(t *testing.T) {
 		t.Errorf("python body not collapsed: %q", c)
 	}
 }
+
+func TestLoadSessionSwapsContext(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{finalContent("ok")})
+	a, _, _, _ := setup(t, s, true, 5)
+	a.Run(context.Background(), "first turn")
+	// swap to a fresh session context
+	a.LoadSession([]llm.Message{{Role: "user", Content: "resumed turn"}}, "resumed summary")
+	a.SetSessionID("new-session-id")
+	if got := a.History(); len(got) != 1 || got[0].Content != "resumed turn" {
+		t.Errorf("history after load = %+v", got)
+	}
+	if a.runningSummary != "resumed summary" {
+		t.Errorf("summary = %q", a.runningSummary)
+	}
+}
