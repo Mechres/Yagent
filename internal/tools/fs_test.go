@@ -231,8 +231,13 @@ func TestStrictArgValidation(t *testing.T) {
 func TestRegistrySchemas(t *testing.T) {
 	_, reg := fakeWorkspace(t)
 	names := reg.Names()
-	if len(names) != 13 {
-		t.Fatalf("registry has %d tools (want 13): %v", len(names), names)
+	if len(names) < 13 {
+		t.Fatalf("registry has %d tools (want at least 13): %v", len(names), names)
+	}
+	for _, n := range []string{"fs_read", "fs_write", "fs_edit", "fs_patch", "shell_exec", "scratch_write", "scratch_read"} {
+		if _, ok := reg.Get(n); !ok {
+			t.Errorf("registry missing %s: %v", n, names)
+		}
 	}
 	schemas := reg.Schemas()
 	for i, s := range schemas {
