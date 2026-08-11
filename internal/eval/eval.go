@@ -161,9 +161,17 @@ func Run(t *testing.T, task Task) {
 	client := llm.NewClient(llmServer.URL, "test-model")
 	if task.Subagent {
 		// The subagent tool delegates to an isolated read-only child agent
-		// that consumes the next scripted response.
-		opts.Subagent = func(ctx context.Context, subtask, workspace string) (string, error) {
+		// that consumes the next scripted response. An optional tools slice
+		// scopes the child registry (M7 beyond v2).
+		opts.Subagent = func(ctx context.Context, subtask, workspace string, toolset []string) (string, error) {
 			subReg := tools.NewRegistry(workspace, tools.Options{ReadOnly: true, Web: wc, Index: idx, Skills: sk})
+			if len(toolset) > 0 {
+				var err error
+				subReg, err = subReg.Restrict(toolset)
+				if err != nil {
+					return err.Error(), nil
+				}
+			}
 			return agent.RunSubagent(ctx, client, subReg, subtask, workspace)
 		}
 		reg = tools.NewRegistry(ws, opts)

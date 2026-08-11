@@ -386,8 +386,10 @@ func VerifySkill(ctx context.Context, client ChatLLM, reg *tools.Registry, appro
 	return a.Run(ctx, verifySkillPrompt)
 }
 
-// subagentSystemPrompt scopes a child agent to read-only investigation.
-const subagentSystemPrompt = `You are a subagent of Yagent working on a delegated subtask in a workspace. You have read-only tools (fs_read, grep, glob, git, web, index, memory, skills). Investigate, gather evidence (paths, lines, URLs), and finish with a concise summary or conclusion. Never modify files.`
+// subagentSystemPrompt scopes a child agent to read-only investigation; %s is
+// replaced with the tools actually available to it (possibly a subagent tool
+// subset, M7 beyond v2).
+const subagentSystemPrompt = `You are a subagent of Yagent working on a delegated subtask in a workspace. You have read-only tools (%s). Investigate, gather evidence (paths, lines, URLs), and finish with a concise summary or conclusion. Never modify files.`
 
 // RunSubagent executes a self-contained subtask in an isolated read-only agent
 // and returns its final message. The caller supplies a read-only registry; the
@@ -395,7 +397,7 @@ const subagentSystemPrompt = `You are a subagent of Yagent working on a delegate
 // the parent conversation (M7 v1).
 func RunSubagent(ctx context.Context, client ChatLLM, reg *tools.Registry, task, workspace string) (string, error) {
 	a := New(client, reg, nil, Config{MaxIterations: 15, Window: 8000, Reserve: 1000}, workspace)
-	a.InjectSystem(subagentSystemPrompt)
+	a.InjectSystem(fmt.Sprintf(subagentSystemPrompt, strings.Join(reg.Names(), ", ")))
 	return a.Run(ctx, task)
 }
 

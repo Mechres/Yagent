@@ -523,14 +523,16 @@ func validateKey(parts []string, value string) error {
 	return nil
 }
 
-// typedScalar renders a leaf value as the right scalar tag.
+// typedScalar renders a leaf value as the right scalar tag. Set() passes the
+// last dotted segment (e.g. "top_k" for "sampling.top_k"), matching the
+// existing write_approval/context_window convention.
 func typedScalar(key, value string) *yaml.Node {
 	switch key {
 	case "write_approval":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
-	case "context_window", "sampling.top_k":
+	case "context_window", "top_k":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
-	case "sampling.temperature", "sampling.top_p", "sampling.repetition_penalty":
+	case "temperature", "top_p", "repetition_penalty":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: value}
 	}
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}

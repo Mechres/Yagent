@@ -71,9 +71,13 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   signatures), compact code injection, TUI `/sessions` browser.
 - ✅ M7 v2: parallel `subagent tasks[]` (each subtask in its own isolated
   read-only child agent, results combined in order).
-- 🟡 M7 beyond v2: richer orchestration (tool subsets per subagent, results
-  feeding back into the parent). Only if eval evidence shows the single loop
-  is the bottleneck.
+- ✅ M7 beyond v2: `subagent` gained a `tools[]` subset — each child registry
+  is scoped to the requested read-only tools (invalid/destructive requests are
+  rejected and fed back), and the child's summary already feeds back into the
+  parent as the tool result.
+- 🟡 M7 beyond v2 (remaining): richer orchestration — results feeding back
+  into the parent beyond a summary string (shared scratchpad). Only if real
+  use shows the summary is the bottleneck.
 - 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and
   hybrid search.
 - ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site —

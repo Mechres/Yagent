@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -154,7 +155,7 @@ func TestSubagentParallel(t *testing.T) {
 	var mu sync.Mutex
 	active := 0
 	max := 0
-	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string) (string, error) {
+	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string, toolset []string) (string, error) {
 		mu.Lock()
 		active++
 		if active > max {
@@ -180,5 +181,73 @@ func TestSubagentParallel(t *testing.T) {
 	// validation
 	if _, err := tool.Execute(ctx(), argsJSON(t, map[string]any{})); err == nil {
 		t.Error("empty args should fail")
+	}
+}
+
+func TestSubagentToolSet(t *testing.T) {
+	var mu sync.Mutex
+	var gotTools []string
+	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string, toolset []string) (string, error) {
+		mu.Lock()
+		gotTools = append(gotTools, toolset...)
+		mu.Unlock()
+		return "SUMMARY " + task, nil
+	}}
+	// single task + tool subset
+	if _, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"task": "x", "tools": []string{"web_search", "web_fetch"}})); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotTools, []string{"web_search", "web_fetch"}) {
+		t.Errorf("tool subset not passed through: %v", gotTools)
+	}
+	// parallel tasks share the subset
+	gotTools = nil
+	if _, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"tasks": []string{"a", "b"}, "tools": []string{"fs_read"}})); err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range gotTools {
+		if tk != "fs_read" {
+			t.Errorf("parallel tool subset = %v", gotTools)
+			break
+		}
+	}
+	// no tools -> nil (full default set)
+	gotTools = nil
+	if _, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"task": "x"})); err != nil {
+		t.Fatal(err)
+	}
+	if gotTools != nil {
+		t.Errorf("empty tools should be nil, got %v", gotTools)
+	}
+}
+
+func TestRegistryRestrict(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), Options{})
+	full := reg.Names()
+	if len(full) == 0 {
+		t.Fatal("expected a non-empty tool registry")
+	}
+	sub, err := reg.Restrict([]string{"grep", "fs_read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.Names()) != 2 {
+		t.Errorf("restricted registry = %v", sub.Names())
+	}
+	if _, ok := sub.Get("grep"); !ok {
+		t.Error("grep missing from restricted registry")
+	}
+	if _, ok := sub.Get("fs_write"); ok {
+		t.Error("fs_write should not be in a read-only subagent subset")
+	}
+	// unknown tool -> validation error naming what IS available
+	if _, err := reg.Restrict([]string{"nope"}); err == nil {
+		t.Error("restricting to an unknown tool should fail")
+	}
+	// subagents build the child registry read-only, so destructive tools
+	// can't be requested into a subset there
+	ro := NewRegistry(t.TempDir(), Options{ReadOnly: true})
+	if _, err := ro.Restrict([]string{"shell_exec"}); err == nil {
+		t.Error("restricting a read-only registry to shell_exec should fail")
 	}
 }

@@ -83,8 +83,9 @@ type Options struct {
 	ShellSandbox string
 	// ReadOnly restricts the registry to read-only tools (used by subagents).
 	ReadOnly bool
-	// Subagent delegates a task to an isolated child agent (M7 v1).
-	Subagent func(ctx context.Context, task, workspace string) (string, error)
+	// Subagent delegates a task to an isolated child agent (M7 v1). The
+	// tools slice scopes the child registry (M7 beyond v2); nil = full set.
+	Subagent func(ctx context.Context, task, workspace string, tools []string) (string, error)
 	// Jobs enables background-process tools (may be nil).
 	Jobs *jobs.Registry
 	// ConsultCmd is an installed terminal AI app used as the advisor, e.g.
@@ -159,7 +160,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 }
 
 // SetSubagent wires the subagent delegate at runtime.
-func (r *Registry) SetSubagent(fn func(ctx context.Context, task, workspace string) (string, error)) {
+func (r *Registry) SetSubagent(fn func(ctx context.Context, task, workspace string, tools []string) (string, error)) {
 	if t, ok := r.tools["subagent"].(*subagentTool); ok {
 		t.run = fn
 	} else if fn != nil {
@@ -196,6 +197,23 @@ func (r *Registry) Names() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Restrict returns a shallow copy of the registry exposing only the named
+// tools, validating each name exists. Used to scope a subagent to a tool
+// subset (M7 beyond v2): requested tools that aren't in this registry — e.g. a
+// destructive tool on a read-only subagent — produce an error the model can
+// read and fix.
+func (r *Registry) Restrict(names []string) (*Registry, error) {
+	nr := &Registry{workspace: r.workspace, tools: make(map[string]Tool, len(names))}
+	for _, n := range names {
+		t, ok := r.tools[n]
+		if !ok {
+			return nil, fmt.Errorf("tool %q is not available to subagents (available: %s)", n, strings.Join(r.Names(), ", "))
+		}
+		nr.tools[n] = t
+	}
+	return nr, nil
 }
 
 // Schemas returns all tool schemas, sorted by name.

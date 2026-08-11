@@ -1,0 +1,15 @@
+name: subagent-toolset
+description: M7 beyond v2 — scope a subagent to a tool subset; invalid tools are rejected and fed back
+subagent: true
+files:
+  a.txt: |
+    data
+input: use a subagent restricted to fs_read, then check a.txt
+steps:
+  - tool_call: {name: subagent, args: '{"task":"x","tools":["shell_exec"]}'}
+  - tool_call: {name: subagent, args: '{"task":"check a.txt","tools":["fs_read"]}'}
+  - answer: "CHILD SUMMARY: a.txt exists."
+  - answer: The subagent confirmed with fs_read.
+assert:
+  tool_results_contain: ["not available to subagents"]
+  final_answer_contains: "confirmed"

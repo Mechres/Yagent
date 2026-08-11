@@ -94,6 +94,8 @@ func TestLoadConfigFromFile(t *testing.T) {
 }
 
 func TestLoadConfigAPIKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate from the real user config
+	t.Setenv("XDG_CONFIG_HOME", "")
 	// from file
 	path := writeConfig(t, "server_url: https://openrouter.ai/api/v1\nmodel: x\napi_key: file-key\n")
 	cfg, err := LoadConfig(path)
@@ -471,6 +473,25 @@ func TestLoadConfigSampling(t *testing.T) {
 	}
 	if err := Set(path, "sampling.top_k", "-3"); err == nil {
 		t.Error("negative top_k should be rejected")
+	}
+	// Set must persist typed scalars (not quoted strings), so LoadConfig can
+	// round-trip without "cannot unmarshal !!str" errors
+	path = writeConfig(t, "server_url: x\nmodel: y\n")
+	if err := Set(path, "sampling.top_k", "20"); err != nil {
+		t.Fatalf("set top_k: %v", err)
+	}
+	if err := Set(path, "sampling.repetition_penalty", "1.05"); err != nil {
+		t.Fatalf("set rep_penalty: %v", err)
+	}
+	if err := Set(path, "sampling.temperature", "0.6"); err != nil {
+		t.Fatalf("set temperature: %v", err)
+	}
+	reloaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("reload after Set: %v", err)
+	}
+	if reloaded.Sampling.TopK != 20 || reloaded.Sampling.RepetitionPenalty != 1.05 || reloaded.Sampling.Temperature != 0.6 {
+		t.Errorf("round-trip sampling = %+v", reloaded.Sampling)
 	}
 }
 

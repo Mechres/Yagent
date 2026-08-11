@@ -46,6 +46,12 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## v0.1.1 — 2026-08-11
 
 ### Added
+- **M7 beyond v2 — subagent tool subsets**: `subagent` gained a `tools[]`
+  array that scopes each child to a subset of the read-only tools (e.g.
+  `["web_search","web_fetch"]` for research, `["grep","fs_read",
+  "index_search"]` for code exploration). Invalid or destructive requests
+  (e.g. `["shell_exec"]`) are rejected with the available set fed back to the
+  model, and each child's system prompt lists exactly the tools it has.
 - **M7 v2 parallel subagents**: `subagent` gained a `tasks[]` array — each
   subtask runs in an isolated read-only child agent concurrently and the
   summaries are combined in order.

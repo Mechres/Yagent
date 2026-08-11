@@ -377,7 +377,8 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken func(string), onTool func(llm.ToolCall)) *agent.Agent {
 	ws, _ := os.Getwd()
 	// M7 v1: subagents are read-only child agents that return a summary.
-	env.registry.SetSubagent(func(ctx context.Context, task, workspace string) (string, error) {
+	// M7 beyond v2: an optional tools slice scopes each child's registry.
+	env.registry.SetSubagent(func(ctx context.Context, task, workspace string, toolset []string) (string, error) {
 		reg := tools.NewRegistry(workspace, tools.Options{
 			ReadOnly:       true,
 			Web:            env.web,
@@ -386,6 +387,13 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 			ProjectVectors: env.projVS,
 			Skills:         env.sk,
 		})
+		if len(toolset) > 0 {
+			var err error
+			reg, err = reg.Restrict(toolset)
+			if err != nil {
+				return err.Error(), nil
+			}
+		}
 		return agent.RunSubagent(ctx, client, reg, task, workspace)
 	})
 	return agent.New(client, env.registry, approver, agent.Config{
