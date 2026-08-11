@@ -89,3 +89,28 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   not a fit for a local-first single binary; would add surface and, for
   telemetry, conflict with the privacy stance. (CI shipped in M6.18 —
   `.github/workflows/ci.yml` runs gofmt/vet/test/race on every push.)
+
+## Proposed (external agent reviews — not yet scoped/started)
+
+Copilot's "explore-codebase-and-plan-improvements" plan (2026-08-11). Ideas
+only; status notes reflect what already exists so they can be evaluated on top
+of reality:
+
+- 🟡 **Structured subagent workspace** (M7 "deeper orchestration"). Upgrade
+  subagent output from plain summary text to shared structured artifacts
+  (task id, type, payload, provenance, confidence). Suggested trimmed scope:
+  add `return_artifacts` to the subagent tool — the child lists which scratch
+  notes are its results, and the parent's result comes back structured instead
+  of free-text. Backward compatible with existing subagent/scratch behavior.
+  *Already present:* scratchpad (`scratch_write`/`scratch_read`), parallel
+  `tasks[]` ordering, per-child token tally, tool subsets.
+- 🟡 **fs_patch approval UX v2** — true centered modal with file/hunk
+  navigation, selection state, select-all/select-none, and a final apply
+  summary (vs. today's in-stream per-hunk walker). Partial selection must
+  always yield a valid reconstructed patch or an explicit denial.
+  *Already present:* per-hunk y/n/q walker + `RebuildPatch` args rewrite.
+- 🟡 **Eval + benchmark expansion** — golden evals for structured subagent
+  workflows, partial fs_patch approvals, and failure-recovery paths;
+  benchmarks for subagent fan-out/fan-in and patch split/rebuild.
+  *Already present:* evals for subagent/toolset, fuzzy args, code_references;
+  chunker/symbol/hybrid-search benchmarks.
