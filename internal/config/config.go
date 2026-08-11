@@ -52,12 +52,19 @@ type WebConfig struct {
 	SearxngURL string `yaml:"searxng_url"`
 }
 
-// ConsultConfig configures the `consult` tool (a second, "advisor" model).
+// ConsultConfig configures the `consult` tool (an "advisor" model). Two
+// backends: a remote OpenAI-compatible server (ServerURL/Model/APIKey) or an
+// installed terminal AI app run as a subprocess (Cmd, e.g. ["claude", "-p"],
+// with the prompt appended as the final argument).
 type ConsultConfig struct {
 	// ServerURL of the advisor model (defaults to server_url when Model is set).
 	ServerURL string `yaml:"server_url"`
-	// Model is the advisor model name; consult is disabled until both are set.
+	// Model is the advisor model name (HTTP backend).
 	Model string `yaml:"model"`
+	// APIKey enables cloud OpenAI-compatible endpoints (Authorization: Bearer).
+	APIKey string `yaml:"api_key"`
+	// Cmd is a terminal AI app used as the advisor, e.g. ["claude", "-p"].
+	Cmd []string `yaml:"cmd"`
 }
 
 // Defaults applied when no config file and no env override is present.
@@ -82,6 +89,7 @@ const (
 	EnvVarSearxngURL      = "YAGENT_SEARXNG_URL"
 	EnvVarConsultServer   = "YAGENT_CONSULT_SERVER_URL"
 	EnvVarConsultModel    = "YAGENT_CONSULT_MODEL"
+	EnvVarConsultAPIKey   = "YAGENT_CONSULT_API_KEY"
 )
 
 // DefaultPath is the config file used when no explicit path is given.
@@ -184,6 +192,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if v := os.Getenv(EnvVarConsultModel); v != "" {
 		cfg.Consult.Model = v
+	}
+	if v := os.Getenv(EnvVarConsultAPIKey); v != "" {
+		cfg.Consult.APIKey = v
 	}
 
 	if cfg.ServerURL == "" {

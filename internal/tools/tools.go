@@ -73,6 +73,9 @@ type Options struct {
 	Web *web.Client
 	// Consult enables the `consult` advisor tool (may be nil).
 	Consult *llm.Client
+	// ConsultCmd is an installed terminal AI app used as the advisor, e.g.
+	// ["claude", "-p"] (the prompt is appended as the final argument).
+	ConsultCmd []string
 	// SkillsWriteApproval gates skill writes (stage instead of apply).
 	SkillsWriteApproval bool
 	// IndexProgress reports index_repo progress lines to the UI (optional).
@@ -119,8 +122,8 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		reg["web_search"] = &webSearchTool{client: opts.Web}
 		reg["web_fetch"] = &webFetchTool{client: opts.Web}
 	}
-	if opts.Consult != nil {
-		reg["consult"] = &consultTool{client: opts.Consult}
+	if opts.Consult != nil || len(opts.ConsultCmd) > 0 {
+		reg["consult"] = &consultTool{client: opts.Consult, cmd: opts.ConsultCmd}
 	}
 	for name, t := range reg {
 		r.tools[name] = t

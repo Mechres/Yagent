@@ -38,7 +38,7 @@ The ui implements `Approver`; prompts show the tool name, args (command/diff), a
 | `index_search` | M4 | RO | semantic code search; returns `path:start-end` + snippet |
 | `web_search` | M5 | RO | DuckDuckGo HTML by default (`html.duckduckgo.com/html/?q=`; no key, unofficial scraping — structure can change, rate-limits); Mojeek (`www.mojeek.com/search?q=`, independent index, may serve a JS challenge from datacenter IPs) or SearXNG JSON (`format: json` in settings.yml) via `web_search.provider`; top-8 results: title, url, snippet |
 | `web_fetch` | M5 | RO | GET url → HTML→text (strip scripts/nav/footer via `x/net/html`) → cap 16 KiB; 15s timeout; redirect limit 5; no POSTs ever |
-| `consult` | M6.13 | RO | ask a second configured "advisor" model (`consult.server_url`/`consult.model`) for guidance or a second opinion; 60s timeout; result is a normal tool result |
+| `consult` | M6.13 | RO | ask a configured "advisor" for guidance or a second opinion. Two backends: a remote OpenAI-compatible server (`consult.server_url`/`consult.model`, optional `consult.api_key` for cloud endpoints like Gemini/OpenRouter) or an installed terminal AI app run as a subprocess (`consult.cmd`, e.g. `[claude, -p]`, prompt appended as the final arg); 60s timeout |
 
 ## Execution rules
 

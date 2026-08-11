@@ -323,6 +323,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 			consultURL = cfg.ServerURL
 		}
 		consultClient = llm.NewClient(consultURL, cfg.Consult.Model)
+		consultClient.BearerToken = cfg.Consult.APIKey
 	}
 
 	sessionID, initialHistory, initialSummary, forkSource, err := resolveSession(ctx, st, ws, continueID, forkID)
@@ -342,6 +343,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		Index:               idx,
 		Web:                 webClient,
 		Consult:             consultClient,
+		ConsultCmd:          cfg.Consult.Cmd,
 		SkillsWriteApproval: cfg.Skills.WriteApproval,
 	})
 	return env, nil

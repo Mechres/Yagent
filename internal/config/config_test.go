@@ -311,3 +311,25 @@ func TestLoadConfigConsult(t *testing.T) {
 		t.Errorf("consult = %+v", cfg.Consult)
 	}
 }
+
+func TestLoadConfigConsultAPIKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarConsultServer, "")
+	t.Setenv(EnvVarConsultModel, "")
+	t.Setenv(EnvVarConsultAPIKey, "")
+	t.Setenv(EnvVarDataDir, "")
+	t.Setenv(EnvVarModel, "")
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvVarConsultModel, "gemini-2.0-flash")
+	t.Setenv(EnvVarConsultAPIKey, "sk-secret")
+	cfg, err = LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Consult.Model != "gemini-2.0-flash" || cfg.Consult.APIKey != "sk-secret" {
+		t.Errorf("consult = %+v", cfg.Consult)
+	}
+}

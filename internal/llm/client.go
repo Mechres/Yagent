@@ -54,6 +54,10 @@ type Client struct {
 	ServerURL string // base URL, e.g. http://localhost:11434; /v1 is appended by calls
 	Model     string
 	HTTP      *http.Client
+	// BearerToken, when set, is sent as `Authorization: Bearer <token>` on
+	// every request (used by the consult tool against cloud OpenAI-compatible
+	// endpoints).
+	BearerToken string
 }
 
 // NewClient constructs a Client with default HTTP settings.
@@ -157,6 +161,9 @@ func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta func(s
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	}
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -228,6 +235,9 @@ func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]f
 		return nil, fmt.Errorf("build embed request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	}
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {

@@ -55,3 +55,35 @@ func TestConsultToolUnconfigured(t *testing.T) {
 		t.Errorf("unconfigured consult = %q", res)
 	}
 }
+
+func TestConsultToolCLIAdvisor(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), Options{ConsultCmd: []string{"echo", "ADVISOR:"}})
+	got := execTool(t, reg, "consult", map[string]any{"question": "should I do it?"})
+	if !strings.Contains(got, "ADVISOR: should I do it?") {
+		t.Errorf("cli consult = %q", got)
+	}
+}
+
+func TestConsultToolAPISendsAuthHeader(t *testing.T) {
+	var auth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"advice\"}}]}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer ts.Close()
+	client := llm.NewClient(ts.URL, "advisor")
+	client.BearerToken = "sekrit"
+	reg := NewRegistry(t.TempDir(), Options{Consult: client})
+	got := execTool(t, reg, "consult", map[string]any{"question": "x"})
+	if !strings.Contains(got, "advice") {
+		t.Errorf("consult = %q", got)
+	}
+	if auth != "Bearer sekrit" {
+		t.Errorf("Authorization = %q, want Bearer sekrit", auth)
+	}
+}
