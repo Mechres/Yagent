@@ -335,10 +335,14 @@ func resolvePath(workspace, p string) (string, error) {
 	if p == "" {
 		return "", validationErrorf(`argument "path" is required`)
 	}
-	if filepath.IsAbs(p) {
-		return "", validationErrorf("absolute path %q not allowed; use a path relative to the workspace root", p)
+	// Absolute paths are accepted when they stay inside the workspace: local
+	// models habitually emit them, and rejecting outright derails the loop.
+	// Containment below handles the safety either way.
+	abs := p
+	if !filepath.IsAbs(p) {
+		abs = filepath.Join(workspace, p)
 	}
-	abs := filepath.Clean(filepath.Join(workspace, p))
+	abs = filepath.Clean(abs)
 	root := filepath.Clean(workspace)
 	if err := ensureContained(root, abs); err != nil {
 		return "", err

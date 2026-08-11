@@ -21,6 +21,12 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   to `/dev/null`, so a sandboxed command cannot read them.
 
 ### Changed
+- `resolvePath` accepts **absolute paths inside the workspace** (models
+  habitually emit them; containment is still enforced either way) — a rejected
+  absolute grep/fs path no longer derails the agent loop.
+- System prompt hardened against the Qwythos persona quirk: explicit
+  "never self-identify as a model/creator" rule, plus "do not narrate your
+  plan before a tool call".
 - `docs/models.md` gained a community model compatibility matrix
   (model, server, tool-call reliability, context behavior).
 - `improvement.md`: reconciled the stale "CI not a fit" note (CI shipped in

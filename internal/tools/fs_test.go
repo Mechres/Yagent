@@ -205,6 +205,14 @@ func TestWorkspaceScoping(t *testing.T) {
 	if got := execTool(t, reg, "fs_read", map[string]any{"path": "alias"}); !strings.Contains(got, "ok") {
 		t.Errorf("fs_read in-workspace symlink = %q", got)
 	}
+	// absolute paths inside the workspace are accepted (models habitually emit
+	// them); absolute paths outside are still rejected
+	if got := execTool(t, reg, "fs_read", map[string]any{"path": filepath.Join(ws, "real.txt")}); !strings.Contains(got, "ok") {
+		t.Errorf("fs_read absolute in-workspace = %q", got)
+	}
+	if got := execTool(t, reg, "fs_write", map[string]any{"path": "/tmp/evil.txt", "content": "x"}); !strings.Contains(got, "escapes") {
+		t.Errorf("fs_write absolute outside = %q", got)
+	}
 }
 
 func TestStrictArgValidation(t *testing.T) {

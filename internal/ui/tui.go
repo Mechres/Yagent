@@ -612,13 +612,18 @@ func fsApprovalDiff(th Theme, ws string, call llm.ToolCall) string {
 	return renderApprovalDiff(th, oldText, newText)
 }
 
-// approvePath resolves a model path relative to the workspace, rejecting
-// escapes (mirrors tools.resolvePath, including symlink containment).
+// approvePath resolves a model path against the workspace, rejecting escapes
+// (mirrors tools.resolvePath, including symlink containment). Absolute paths
+// are accepted when they stay inside the workspace.
 func approvePath(ws, p string) (string, error) {
-	if p == "" || filepath.IsAbs(p) {
+	if p == "" {
 		return "", fmt.Errorf("bad path %q", p)
 	}
-	abs := filepath.Clean(filepath.Join(ws, p))
+	abs := p
+	if !filepath.IsAbs(p) {
+		abs = filepath.Join(ws, p)
+	}
+	abs = filepath.Clean(abs)
 	root := filepath.Clean(ws)
 	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q escapes workspace", p)
