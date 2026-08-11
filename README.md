@@ -65,7 +65,11 @@ go build ./cmd/yagent
 ## Security & privacy
 
 - **Local-first**: LLM and embedding requests go only to the configured server.
-  The one opt-in cloud path is `consult` with an explicit `api_key`.
+  By default that's a local Ollama/llama.cpp — nothing leaves the machine.
+- **Opt-in cloud**: set `api_key` (or `YAGENT_API_KEY`) and point `server_url`
+  at any OpenAI-compatible endpoint (OpenRouter, Groq, Together, Gemini) to run
+  the whole loop in the cloud; `consult` has its own `api_key` for a separate
+  advisor model. Both are deliberate opt-ins — the default config stays local.
 - **Redaction**: before anything is written to SQLite (messages, summaries,
   memories) or exported, likely secrets (`api_key`/`token`/`password`/`bearer`
   values) and home paths are scrubbed to `[redacted]`/`[home]` markers. This is

@@ -61,6 +61,7 @@ func main() {
 			os.Exit(2)
 		}
 		client := llm.NewClient(cfg.ServerURL, cfg.Model)
+		client.BearerToken = cfg.APIKey
 		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{
 			Plain: *plain, YOLO: *yolo, Fork: *forkID, Goal: *goal, Rounds: *rounds,
 		}); err != nil {

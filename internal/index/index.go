@@ -106,6 +106,13 @@ func Open(workspace, dataDir, embedURL, embedModel string) (*Store, error) {
 // Close releases the database handle.
 func (s *Store) Close() error { return s.db.Close() }
 
+// SetBearerToken applies Bearer auth to embedding requests (cloud endpoints).
+func (s *Store) SetBearerToken(token string) {
+	if token != "" {
+		s.client.BearerToken = token
+	}
+}
+
 // Count reports how many chunks are indexed.
 func (s *Store) Count() int {
 	var n int

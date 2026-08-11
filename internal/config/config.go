@@ -13,8 +13,14 @@ import (
 
 // Config contains runtime configuration for the agent.
 type Config struct {
-	ServerURL      string `yaml:"server_url"`
-	Model          string `yaml:"model"`
+	ServerURL string `yaml:"server_url"`
+	Model     string `yaml:"model"`
+	// APIKey, when set, is sent as `Authorization: Bearer <api_key>` on every
+	// LLM/embedding request. This is the deliberately opt-in cloud path: point
+	// server_url at any OpenAI-compatible endpoint (OpenRouter, Groq, Together,
+	// Gemini) to run the whole loop in the cloud. Local-first remains the
+	// default (empty = no auth header).
+	APIKey         string `yaml:"api_key"`
 	EmbeddingModel string `yaml:"embedding_model"`
 	// EmbeddingServerURL is where /v1/embeddings is served; defaults to
 	// ServerURL. Set it to a dedicated embedding server (e.g. a second
@@ -95,6 +101,7 @@ const (
 const (
 	EnvVarServerURL       = "YAGENT_SERVER_URL"
 	EnvVarModel           = "YAGENT_MODEL"
+	EnvVarAPIKey          = "YAGENT_API_KEY"
 	EnvVarEmbeddingModel  = "YAGENT_EMBEDDING_MODEL"
 	EnvVarEmbeddingServer = "YAGENT_EMBEDDING_SERVER_URL"
 	EnvVarDataDir         = "YAGENT_DATA_DIR"
@@ -192,6 +199,9 @@ func LoadConfig(path string) (*Config, error) {
 	if v := os.Getenv(EnvVarModel); v != "" {
 		cfg.Model = v
 	}
+	if v := os.Getenv(EnvVarAPIKey); v != "" {
+		cfg.APIKey = v
+	}
 	if v := os.Getenv(EnvVarEmbeddingModel); v != "" {
 		cfg.EmbeddingModel = v
 	}
@@ -287,6 +297,7 @@ func Settings() []SettingKey {
 	return []SettingKey{
 		{Key: "server_url", Label: "Server URL"},
 		{Key: "model", Label: "Model"},
+		{Key: "api_key", Label: "API key (Bearer auth, cloud)"},
 		{Key: "embedding_model", Label: "Embedding model"},
 		{Key: "embedding_server_url", Label: "Embedding server URL"},
 		{Key: "context_window", Label: "Context window (tokens)"},
@@ -310,6 +321,8 @@ func (c *Config) Get(key string) string {
 		return c.ServerURL
 	case "model":
 		return c.Model
+	case "api_key":
+		return c.APIKey
 	case "embedding_model":
 		return c.EmbeddingModel
 	case "embedding_server_url":
@@ -405,7 +418,7 @@ func saveConfigNode(doc *yaml.Node, path string) error {
 // validateKey rejects unknown keys and invalid values.
 func validateKey(parts []string, value string) error {
 	known := map[string]bool{
-		"server_url": true, "model": true, "embedding_model": true,
+		"server_url": true, "model": true, "api_key": true, "embedding_model": true,
 		"embedding_server_url": true, "context_window": true, "data_dir": true,
 		"web_search.provider": true, "web_search.searxng_url": true,
 		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,

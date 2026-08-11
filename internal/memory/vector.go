@@ -102,6 +102,13 @@ func openAt(dbPath, dir, embedURL, embedModel string) (*VectorStore, error) {
 // Close releases the database handle.
 func (v *VectorStore) Close() error { return v.db.Close() }
 
+// SetBearerToken applies Bearer auth to embedding requests (cloud endpoints).
+func (v *VectorStore) SetBearerToken(token string) {
+	if token != "" {
+		v.client.BearerToken = token
+	}
+}
+
 // Dir returns the store's data directory.
 func (v *VectorStore) Dir() string { return v.dir }
 

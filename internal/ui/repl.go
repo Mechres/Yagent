@@ -312,10 +312,12 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		st.Close()
 		return nil, fmt.Errorf("open memory store: %w", err)
 	}
+	vs.SetBearerToken(cfg.APIKey)
 	projVS, err := memory.OpenProjectVectorStore(filepath.Join(ws, ".yagent", "memory"), cfg.EmbeddingServerURL, cfg.EmbeddingModel)
 	if err != nil {
 		return nil, fmt.Errorf("open project memory store: %w", err)
 	}
+	projVS.SetBearerToken(cfg.APIKey)
 	skillsRoot := cfg.Skills.DataDir
 	if skillsRoot == "" {
 		skillsRoot = cfg.DataDir
@@ -328,6 +330,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 	if err != nil {
 		return nil, fmt.Errorf("open code index: %w", err)
 	}
+	idx.SetBearerToken(cfg.APIKey)
 	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL})
 	if err != nil {
 		return nil, fmt.Errorf("web search config: %w", err)

@@ -4,9 +4,13 @@
 # `.yagent/config.yaml` in a workspace overrides these for that repo.
 # Every key also has an env override (YAGENT_SERVER_URL, ...).
 
-# OpenAI-compatible inference server (Ollama or llama.cpp).
+# OpenAI-compatible inference server (Ollama, llama.cpp — or any cloud
+# OpenAI-compatible endpoint: OpenRouter, Groq, Together, Gemini).
 server_url: http://localhost:11434
 model: qwen2.5-coder:14b
+# api_key: ""                  # Bearer token for cloud endpoints (opt-in).
+#                              # YAGENT_API_KEY env var works too; local-first
+#                              # is the default (empty = no auth header).
 
 # Embeddings: same server by default. Point at a dedicated model/server for
 # better recall (e.g. a second llama-server running bge-m3).

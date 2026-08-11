@@ -93,6 +93,36 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAPIKey(t *testing.T) {
+	// from file
+	path := writeConfig(t, "server_url: https://openrouter.ai/api/v1\nmodel: x\napi_key: file-key\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.APIKey != "file-key" {
+		t.Errorf("APIKey from file = %q", cfg.APIKey)
+	}
+	// env beats file
+	t.Setenv(EnvVarAPIKey, "env-key")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.APIKey != "env-key" {
+		t.Errorf("APIKey after env = %q", cfg.APIKey)
+	}
+	// defaults to empty
+	t.Setenv(EnvVarAPIKey, "")
+	cfg, err = LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.APIKey != "" {
+		t.Errorf("APIKey default = %q, want empty", cfg.APIKey)
+	}
+}
+
 func TestLoadConfigEnvOverridesFile(t *testing.T) {
 	path := writeConfig(t, "server_url: http://file.test\nmodel: file-model\n")
 	t.Setenv(EnvVarServerURL, "http://env.test:1234")

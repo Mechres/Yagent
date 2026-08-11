@@ -119,6 +119,41 @@ func TestChatStreamCollectsDeltas(t *testing.T) {
 	}
 }
 
+func TestChatStreamBearerToken(t *testing.T) {
+	t.Parallel()
+	var gotAuth atomic.Value
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		if r.URL.Path == "/v1/embeddings" {
+			_, _ = fmt.Fprintf(w, `{"data":[{"embedding":[0.1,0.2]}]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", chunkData("ok"))
+		flusher.Flush()
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	client.BearerToken = "secret-key"
+	if _, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if got := gotAuth.Load().(string); got != "Bearer secret-key" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer secret-key")
+	}
+	// embed path sends it too
+	if _, err := client.Embed(context.Background(), "test-model", []string{"hello"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if got := gotAuth.Load().(string); got != "Bearer secret-key" {
+		t.Errorf("embed Authorization = %q", got)
+	}
+}
+
 func TestChatStreamSendsToolSchemas(t *testing.T) {
 	t.Parallel()
 	var gotReq atomic.Value

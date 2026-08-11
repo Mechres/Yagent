@@ -94,6 +94,9 @@ func Run(cfg *config.Config) Report {
 	default:
 		rep.add("config", StatusPass, fmt.Sprintf("server_url %s, model %q, data dir %s, context window %d", cfg.ServerURL, cfg.Model, cfg.DataDir, cfg.ContextWindow))
 	}
+	if cfg.APIKey != "" {
+		rep.add("config", StatusInfo, "api_key set — requests are sent to a cloud OpenAI-compatible endpoint (opt-in)")
+	}
 	if cfg.ProjectPath != "" {
 		rep.add("project config", StatusInfo, fmt.Sprintf("%s overlays the global config", cfg.ProjectPath))
 	}
