@@ -111,7 +111,7 @@ func TestEvalUndoRevertsAgentWrite(t *testing.T) {
 	defer llmServer.Close()
 	client := llm.NewClient(llmServer.URL, "test-model")
 
-	a := agent.New(client, reg, &stubApprover{allow: true}, agent.Config{MaxIterations: 5}, ws)
+	a := agent.New(client, reg, newTaskApprover(Task{}, ws), agent.Config{MaxIterations: 5}, ws)
 	ub.StartTurn()
 	answer, err := a.Run(context.Background(), "create new.txt")
 	ub.EndTurn()

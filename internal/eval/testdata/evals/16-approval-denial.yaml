@@ -1,0 +1,11 @@
+name: approval-denial-recovery
+description: M2 recovery — the user denies a write; the agent adapts without creating the file
+input: write a file notes.txt
+deny_first: 1
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"notes.txt","content":"draft"}'}
+  - answer: I cannot write files without your approval, so I left notes.txt untouched.
+assert:
+  min_tool_results: 1
+  final_answer_contains: "approval"
+  file_not_contains: [{path: notes.txt, text: draft}]

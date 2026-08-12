@@ -52,6 +52,15 @@ type Task struct {
 	// Subagent wires the subagent tool to a child agent (M7).
 	Subagent bool `yaml:"subagent"`
 
+	// DenyFirst denies the first N write/destructive approvals (the model
+	// must recover from a user saying no). 0 = allow everything.
+	DenyFirst int `yaml:"deny_first"`
+	// PatchFilter exercises the fs_patch per-hunk approval path: when set, the
+	// harness approves the patch with rewritten args containing only the named
+	// hunk subset ("first_hunk" | "last_hunk"), so the eval can assert that
+	// only the kept hunks were applied.
+	PatchFilter string `yaml:"patch_filter"`
+
 	Assert Assertions `yaml:"assert"`
 }
 
@@ -85,6 +94,16 @@ type Assertions struct {
 	// a plain user message (regression: the budget must never summarize the
 	// current user turn away — Qwythos rejects tool-only message lists).
 	AllRequestsHaveUser bool `yaml:"all_requests_have_user"`
+	// FileContains / FileNotContains assert on workspace file contents after
+	// the run (used by the fs_patch partial-approval and denial evals).
+	FileContains    []FileAssert `yaml:"file_contains"`
+	FileNotContains []FileAssert `yaml:"file_not_contains"`
+}
+
+// FileAssert is one post-run file-content assertion.
+type FileAssert struct {
+	Path string `yaml:"path"`
+	Text string `yaml:"text"`
 }
 
 // Run executes one task end-to-end and reports failures via t.
@@ -184,7 +203,7 @@ func Run(t *testing.T, task Task) {
 	if task.Summary != "" {
 		summ = &fixedSummaryLLM{summary: task.Summary}
 	}
-	a := agent.New(client, reg, &stubApprover{allow: true}, agent.Config{
+	a := agent.New(client, reg, newTaskApprover(task, ws), agent.Config{
 		MaxIterations:   20,
 		Window:          task.Window,
 		Vectors:         vs,
@@ -273,14 +292,87 @@ func Run(t *testing.T, task Task) {
 			}
 		}
 	}
+	for _, fa := range task.Assert.FileContains {
+		data, err := os.ReadFile(filepath.Join(ws, fa.Path))
+		if err != nil {
+			t.Errorf("file %s: %v", fa.Path, err)
+			continue
+		}
+		if !strings.Contains(string(data), fa.Text) {
+			t.Errorf("file %s missing %q", fa.Path, fa.Text)
+		}
+	}
+	for _, fa := range task.Assert.FileNotContains {
+		data, err := os.ReadFile(filepath.Join(ws, fa.Path))
+		if err != nil {
+			continue // file absent = the assertion holds
+		}
+		if strings.Contains(string(data), fa.Text) {
+			t.Errorf("file %s contains %q (should not)", fa.Path, fa.Text)
+		}
+	}
 }
 
-// stubApprover auto-approves every write (evals script the model, not the
-// user).
-type stubApprover struct{ allow bool }
+// taskApprover implements the scripted user for evals: it allows read-only
+// tools, denies the first DenyFirst write/destructive calls, and — when
+// PatchFilter is set — approves fs_patch with rewritten args that keep only
+// the selected hunk subset (exercising the real per-hunk approval path).
+type taskApprover struct {
+	denyFirst   int
+	patchFilter string
+	ws          string
+	mu          sync.Mutex
+	writes      int
+}
 
-func (s *stubApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
-	return agent.Approval{OK: s.allow || risk == tools.RiskReadOnly}, nil
+func newTaskApprover(task Task, ws string) *taskApprover {
+	return &taskApprover{denyFirst: task.DenyFirst, patchFilter: task.PatchFilter, ws: ws}
+}
+
+func (a *taskApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
+	if risk == tools.RiskReadOnly {
+		return agent.Approval{OK: true}, nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if call.Function.Name == "fs_patch" && a.patchFilter != "" {
+		return a.filterPatch(call)
+	}
+	a.writes++
+	if a.denyFirst > 0 && a.writes <= a.denyFirst {
+		return agent.Approval{OK: false}, nil
+	}
+	return agent.Approval{OK: true}, nil
+}
+
+// filterPatch approves an fs_patch with only the selected hunk subset applied,
+// mirroring the TUI's hunk walker (RebuildPatch + rewritten Args).
+func (a *taskApprover) filterPatch(call llm.ToolCall) (agent.Approval, error) {
+	var args struct {
+		Patch string `json:"patch"`
+	}
+	if err := json.Unmarshal(call.Function.Arguments, &args); err != nil {
+		return agent.Approval{OK: true}, nil // unreadable; let the tool handle it
+	}
+	hunks, err := tools.PatchHunks(args.Patch)
+	if err != nil || len(hunks) < 2 {
+		return agent.Approval{OK: true}, nil // nothing to filter
+	}
+	keep := make([]bool, len(hunks))
+	switch a.patchFilter {
+	case "first_hunk":
+		keep[0] = true
+	case "last_hunk":
+		keep[len(hunks)-1] = true
+	default:
+		return agent.Approval{OK: true}, nil
+	}
+	rebuilt, err := tools.RebuildPatch(args.Patch, keep)
+	if err != nil {
+		return agent.Approval{OK: false}, nil
+	}
+	out, _ := json.Marshal(map[string]string{"patch": rebuilt})
+	return agent.Approval{OK: true, Args: out}, nil
 }
 
 // fixedSummaryLLM always returns a fixed message; used as the budget

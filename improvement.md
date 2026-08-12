@@ -1,8 +1,9 @@
 # Yagent improvement roadmap
 
-Consolidated, prioritized plan for post-M6 work. Status: **P0, P1 and the B
-quick wins (B1–B4) plus C1/C2 are shipped** (2026-08-12 batch); the remaining
-items are C3 and the M7 gated/deferred items.
+Consolidated, prioritized plan for post-M6 work. Status: **P0, P1, B1–B4,
+C1/C2 and the eval/benchmark expansion are all shipped** (2026-08-12 batches);
+the remaining items are C3 and the M7 gated/deferred items, both waiting on
+evidence that the current design is the bottleneck.
 
 Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
@@ -84,8 +85,14 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   memory beyond a string summary (a true subagent workspace), and an
   interactive per-hunk fs_patch approval modal. Only if real use shows the
   summary / atomic approval is the bottleneck.
-- 🟡 More eval coverage (TUI/verification flows) + benchmarks for chunker and
-  hybrid search.
+- ✅ More eval coverage + benchmarks (2026-08-12): the harness gained
+  `deny_first` (approval-denial recovery), `patch_filter` (partial fs_patch
+  approval via `Approval.Args` rewrite), and `file_contains`/`file_not_contains`
+  assertions; new golden evals 15–17 (execution-error recovery, approval-denial
+  recovery, partial fs_patch); benchmarks for patch split/rebuild (200 hunks,
+  ~65–120µs) and subagent fan-out/fan-in (4/8/32 tasks, ~3–21µs). TUI flows are
+  covered by `tui_test.go` (hunk walker, find, settings, sessions); chunker /
+  symbol / hybrid-search benchmarks were already present (M6.16).
 - ⚪ Telemetry / metrics / Docker / systemd / man pages / docs site —
   not a fit for a local-first single binary; would add surface and, for
   telemetry, conflict with the privacy stance. (CI shipped in M6.18 —
@@ -110,11 +117,13 @@ of reality:
   summary (vs. today's in-stream per-hunk walker). Partial selection must
   always yield a valid reconstructed patch or an explicit denial.
   *Already present:* per-hunk y/n/q walker + `RebuildPatch` args rewrite.
-- 🟡 **Eval + benchmark expansion** — golden evals for structured subagent
-  workflows, partial fs_patch approvals, and failure-recovery paths;
-  benchmarks for subagent fan-out/fan-in and patch split/rebuild.
-  *Already present:* evals for subagent/toolset, fuzzy args, code_references;
-  chunker/symbol/hybrid-search benchmarks.
+- ✅ **Eval + benchmark expansion** (2026-08-12) — partial fs_patch approvals
+  (`patch_filter` + `file_contains` assertions), failure-recovery paths
+  (execution-error retry, approval denial), and benchmarks for subagent
+  fan-out/fan-in and patch split/rebuild are all shipped. Structured subagent
+  workflows remain deferred with C3 (evidence: the live fidelity eval shows no
+  summary loss). *Already present:* evals for subagent/toolset, fuzzy args,
+  code_references; chunker/symbol/hybrid-search benchmarks.
 
 A second external agent's plan (2026-08-11). Its section A (fs_patch modal v2)
 was superseded mid-inspection — that work is already shipped (per-hunk walker

@@ -2,6 +2,22 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## Unreleased — 2026-08-12
+
+### Added
+- **Eval harness: failure-recovery and partial-approval scripting.** Tasks can
+  set `deny_first` (the scripted user denies the first N write/destructive
+  approvals), `patch_filter: first_hunk|last_hunk` (fs_patch is approved with
+  rewritten args that keep only that hunk, exercising the real `Approval.Args`
+  path), and `file_contains` / `file_not_contains` post-run assertions.
+- **Three new golden evals (15–17)**: execution-error recovery (a missing-file
+  read is fed back and the model self-corrects via glob), approval-denial
+  recovery (denied write leaves no file), and partial fs_patch approval (only
+  the accepted hunk is applied).
+- **Benchmarks**: patch split/rebuild over a 200-hunk multi-file diff
+  (~65–120µs) and subagent fan-out/fan-in for 4/8/32 parallel tasks
+  (~3–21µs), the per-delegation overhead floor.
+
 ## v0.1.4 — 2026-08-12
 
 ### Added

@@ -1,0 +1,15 @@
+name: exec-error-recovery
+description: M2 recovery — an execution error (missing file) is fed back as result text and the model self-corrects via glob
+files:
+  src/actual.txt: |
+    the real contents
+input: read the file in src/
+steps:
+  - tool_call: {name: fs_read, args: '{"path":"readme.txt"}'}
+  - tool_call: {name: glob, args: '{"pattern":"src/*.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"src/actual.txt"}'}
+  - answer: The file contains "the real contents".
+assert:
+  min_tool_results: 3
+  tool_results_contain: ["no such file", "the real contents"]
+  final_answer_contains: "the real contents"
