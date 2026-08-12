@@ -3,6 +3,7 @@ package ui
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -401,7 +402,63 @@ func executePlaybook(ctx context.Context, client *llm.Client, cfg *config.Config
 			fmt.Fprintf(w, "\nphase %d failed: %v\n", i+1, err)
 			break
 		}
+		// Deterministic success predicates (Luna #11): the model's DONE is a
+		// proposal — when checks are set, the phase isn't complete until they
+		// pass. Re-run the phase once to let the agent fix failures.
+		if phase.HasChecks() {
+			fails := evaluatePhaseChecks(ws, env, phase)
+			if len(fails) > 0 {
+				fmt.Fprintf(w, "success checks failed:\n")
+				for _, f := range fails {
+					fmt.Fprintf(w, "  - %s\n", f)
+				}
+				fmt.Fprintf(w, "re-running the phase once to fix them…\n")
+				if _, err := ag.RunGoal(ctx, phase.Goal, rounds, func(r int, _ string) {
+					fmt.Fprintf(w, "\n—— round %d ——\n", r)
+				}); err == nil {
+					fails = evaluatePhaseChecks(ws, env, phase)
+				}
+				if len(fails) > 0 {
+					fmt.Fprintf(w, "checks still failing — aborting playbook\n")
+					for _, f := range fails {
+						fmt.Fprintf(w, "  - %s\n", f)
+					}
+					break
+				}
+			}
+		}
 	}
+}
+
+// evaluatePhaseChecks runs a phase's deterministic success predicates against
+// the workspace (including the diagnostics check via the registry) and returns
+// the failures.
+func evaluatePhaseChecks(ws string, env *chatEnv, phase playbook.Phase) []string {
+	var fails []string
+	for _, c := range phase.Checks {
+		fails = append(fails, c.Evaluate(ws)...)
+		if c.DiagnosticsPass {
+			res := runDiagnosticsCheck(env)
+			if res != "" && !strings.Contains(res, "no diagnostics configured") && !strings.Contains(res, "(no output)") {
+				fails = append(fails, "workspace_diagnostics reported problems")
+			}
+		}
+	}
+	return fails
+}
+
+// runDiagnosticsCheck executes the workspace_diagnostics tool for a success
+// predicate (the tool commands are fixed and read-only).
+func runDiagnosticsCheck(env *chatEnv) string {
+	tool, ok := env.registry.Get("workspace_diagnostics")
+	if !ok {
+		return ""
+	}
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	return res
 }
 
 // chatEnv is the shared runtime state for the REPL and TUI.
@@ -622,6 +679,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		Reserve:         cfg.ContextWindow / 8, // P2: auto-reserve as a % of the window
 		Counter:         client,
 		Trace:           trace,
+		VerifyWrites:    true, // deterministic verify-don't-trust "done" gate
 	}, ws)
 }
 

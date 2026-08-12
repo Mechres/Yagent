@@ -1020,6 +1020,43 @@ func TestRunNudgesProseToolCall(t *testing.T) {
 	}
 }
 
+func TestVerifyBarrierRunsDiagnostics(t *testing.T) {
+	// The model writes a syntax-valid but compile-broken Go file (missing fmt
+	// import — pre-flight syntax validation can't catch this) and claims done.
+	// The deterministic verify barrier runs go vet, injects the failure, and
+	// only then lets the turn finish.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module bench\n\ngo 1.22\n")
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_write", `{"path":"main.go","content":"package main\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"}`),
+		finalContent("done with the change"),
+		finalContent("fixed the import"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 8, VerifyWrites: true}, ws)
+
+	answer, err := a.Run(context.Background(), "write a go program that prints hi")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "fixed the import" {
+		t.Errorf("final answer = %q", answer)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "Deterministic verification ran it now") {
+		t.Error("verify barrier did not inject the diagnostics result")
+	}
+	if !strings.Contains(joined, "undefined") {
+		t.Error("the injected verification did not carry the go vet failure")
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",

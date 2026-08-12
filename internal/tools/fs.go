@@ -70,7 +70,7 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 		}
 	}
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return errorClass("missing_path", true, []string{"glob"}, fmt.Sprintf("%v — the file does not exist", err)), nil
 	}
 	if isBinary(data) {
 		return fmt.Sprintf("error: %s is a binary file; use grep or shell tools instead", a.Path), nil
@@ -241,11 +241,11 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	n := strings.Count(old, a.OldString)
 	switch n {
 	case 0:
-		return fmt.Sprintf("error: old_string not found in %s; re-read the file and copy the exact text%s", a.Path, nearestLineHint(old, a.OldString)), nil
+		return errorClass("old_string_not_found", true, []string{"fs_read"}, fmt.Sprintf("old_string not found in %s; re-read the file and copy the exact text%s", a.Path, nearestLineHint(old, a.OldString))), nil
 	case 1:
 		// proceed
 	default:
-		return fmt.Sprintf("error: old_string matches %d times in %s; include more surrounding context", n, a.Path), nil
+		return errorClass("ambiguous_match", true, []string{"fs_read"}, fmt.Sprintf("old_string matches %d times in %s; include more surrounding context", n, a.Path)), nil
 	}
 	newContent := strings.Replace(old, a.OldString, a.NewString, 1)
 	if msg := preflightSyntax(a.Path, newContent); msg != "" {

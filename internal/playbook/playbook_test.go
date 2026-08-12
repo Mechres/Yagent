@@ -49,6 +49,52 @@ phases:
 	}
 }
 
+func TestSuccessPredicates(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(ws, "pkg/a.go"), []byte("func helper() {}\n"), 0o644)
+
+	// passing checks
+	checks := []Check{
+		{FileContains: &FileAssert{Path: "pkg/a.go", Text: "helper"}},
+		{FileExists: "pkg/a.go"},
+		{FileNotContains: &FileAssert{Path: "pkg/a.go", Text: "TODOnever"}},
+	}
+	for _, c := range checks {
+		if fails := c.Evaluate(ws); len(fails) != 0 {
+			t.Errorf("check should pass: %+v -> %v", c, fails)
+		}
+	}
+	// failing checks
+	if fails := (Check{FileContains: &FileAssert{Path: "pkg/a.go", Text: "absent"}}).Evaluate(ws); len(fails) != 1 {
+		t.Errorf("missing text should fail: %v", fails)
+	}
+	if fails := (Check{FileExists: "nope.go"}).Evaluate(ws); len(fails) != 1 {
+		t.Errorf("missing file should fail: %v", fails)
+	}
+	if fails := (Check{FileNotContains: &FileAssert{Path: "pkg/a.go", Text: "helper"}}).Evaluate(ws); len(fails) != 1 {
+		t.Errorf("present text under file_not_contains should fail: %v", fails)
+	}
+
+	// a playbook phase with checks parses and reports HasChecks
+	writePlaybook(t, ws, "checks", `name: checks
+phases:
+  - goal: "write the file"
+    checks:
+      - file_contains: {path: out.txt, text: done}
+      - file_exists: out.txt
+`)
+	pb, err := Load(ws, "checks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pb.Phases[0].HasChecks() || len(pb.Phases[0].Checks) != 2 {
+		t.Errorf("phase checks = %+v", pb.Phases[0].Checks)
+	}
+}
+
 func TestLoadValidation(t *testing.T) {
 	ws := t.TempDir()
 	writePlaybook(t, ws, "empty", "name: empty\nphases: []\n")

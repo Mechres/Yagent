@@ -22,9 +22,56 @@ type Phase struct {
 	Rounds int `yaml:"rounds"`
 	// Tools scopes the phase to this read/write tool subset (empty = all).
 	Tools []string `yaml:"tools"`
-	// Success is a human-readable acceptance note; the goal loop's DONE verdict
-	// is what actually ends the phase.
+	// Success is a human-readable acceptance note.
 	Success string `yaml:"success"`
+	// Checks are machine-verifiable success predicates (Luna review #11): the
+	// model's DONE verdict is a proposal — when checks are set, the phase only
+	// completes if they all pass.
+	Checks []Check `yaml:"checks"`
+}
+
+// HasChecks reports whether the phase has deterministic success predicates.
+func (p Phase) HasChecks() bool { return len(p.Checks) > 0 }
+
+// FileAssert is one file-content assertion (same shape as the eval harness).
+type FileAssert struct {
+	Path string `yaml:"path"`
+	Text string `yaml:"text"`
+}
+
+// Check is one deterministic success predicate for a phase.
+type Check struct {
+	FileContains    *FileAssert `yaml:"file_contains"`
+	FileNotContains *FileAssert `yaml:"file_not_contains"`
+	FileExists      string      `yaml:"file_exists"`
+	// DiagnosticsPass requires workspace_diagnostics to report a clean run; the
+	// runner evaluates it (it needs the tool runtime).
+	DiagnosticsPass bool `yaml:"diagnostics"`
+}
+
+// Evaluate runs the file-based predicates against the workspace and returns a
+// description of each failure (empty = all passed). The diagnostics predicate
+// is evaluated by the caller.
+func (c Check) Evaluate(ws string) []string {
+	var fails []string
+	if c.FileContains != nil {
+		data, err := os.ReadFile(filepath.Join(ws, c.FileContains.Path))
+		if err != nil || !strings.Contains(string(data), c.FileContains.Text) {
+			fails = append(fails, fmt.Sprintf("file %s does not contain %q", c.FileContains.Path, c.FileContains.Text))
+		}
+	}
+	if c.FileNotContains != nil {
+		data, err := os.ReadFile(filepath.Join(ws, c.FileNotContains.Path))
+		if err == nil && strings.Contains(string(data), c.FileNotContains.Text) {
+			fails = append(fails, fmt.Sprintf("file %s contains %q (should not)", c.FileNotContains.Path, c.FileNotContains.Text))
+		}
+	}
+	if c.FileExists != "" {
+		if _, err := os.Stat(filepath.Join(ws, c.FileExists)); err != nil {
+			fails = append(fails, fmt.Sprintf("file %s does not exist", c.FileExists))
+		}
+	}
+	return fails
 }
 
 // Playbook is a declarative multi-stage workflow.

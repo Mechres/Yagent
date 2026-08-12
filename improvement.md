@@ -255,6 +255,29 @@ untracked) deduped. Highest recurring picks shipped here:
   counters. Deferred: structured error envelopes, verify-barrier enforcement,
   goal-progress ledger, retrieval thresholds, crash-safe undo, TUI arg editor.
 
+The "make DONE real" batch (2026-08-12) — deterministic enforcement instead of
+prompt hope:
+
+- ✅ **Verify-don't-trust barrier** (luna #3) — `agent.Config.VerifyWrites`
+  (UI-enabled): any write marks the turn unverified; before accepting a final
+  answer the agent deterministically runs `workspace_diagnostics` and feeds the
+  result back, so "done" after an unverified write is impossible. The model's
+  own `workspace_diagnostics` call clears the flag (a new write re-arms it).
+  Unit-tested with a compile-broken-but-syntax-valid file (pre-flight can't
+  catch missing imports; go vet does).
+- ✅ **Playbook success predicates** (luna #11) — playbook phases can declare
+  machine-verifiable `checks:` (`file_contains`, `file_not_contains`,
+  `file_exists`, `diagnostics`). The model's DONE is a proposal: a phase only
+  completes when its checks pass, with one automatic re-run to let the agent
+  fix failures.
+- ✅ **Structured error envelopes** (luna #8 / nemotron #4/#9) — key tool
+  errors now carry `[class=… retryable=… suggest=…]` markers
+  (`missing_path`→glob, `old_string_not_found`→fs_read, `ambiguous_match`,
+  `timeout`) the model can act on programmatically.
+- Deferred from the same reviews: goal-progress ledger, retrieval confidence
+  thresholds, crash-safe undo journal, TUI arg editor, /retry, dedup read
+  buffer, t/s meter.
+
 Making the small local model work better is now a measurable loop, not folklore. A Hermes review (2026-08-12) — "push correctness into tools, treat the model as proposer not executor" — transferred next:
 
 - ✅ **`clarify` tool** (Hermes #1/#5) — the model calls `clarify(question, choices[])` when a task is ambiguous or a decision matters; the UI renders the question as real options (REPL numbered prompt, TUI modal) and the user's pick returns to the agent as tool data (`user answered: X`). Ambiguity is now a hard stop with a structured handoff, not a prose guess. Live-verified on Qwythos (:8089): model asked via clarify, piped pick flowed back as data.

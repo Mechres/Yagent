@@ -101,7 +101,7 @@ func (t *shellExecTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-done
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("error: command timed out after %s:\n%s%s", timeout, out.String(), errBuf.String()), nil
+			return errorClass("timeout", true, nil, fmt.Sprintf("command timed out after %s:\n%s%s", timeout, out.String(), errBuf.String())), nil
 		}
 		return fmt.Sprintf("error: command canceled:\n%s%s", out.String(), errBuf.String()), nil
 	case err := <-done:

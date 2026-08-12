@@ -5,6 +5,18 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased — 2026-08-12
 
 ### Added
+- **Verify-don't-trust barrier**: when a turn writes files without running
+  `workspace_diagnostics`, the agent deterministically runs it before accepting
+  a final answer and feeds the result back — "done" after an unverified write
+  is impossible. The model's own diagnostics call clears the flag.
+- **Playbook success predicates**: playbook phases can declare machine-
+  verifiable `checks:` (`file_contains`, `file_not_contains`, `file_exists`,
+  `diagnostics`); a phase completes only when they pass (with one automatic
+  re-run to fix failures).
+- **Structured error envelopes**: key tool errors carry
+  `[class=… retryable=… suggest=…]` markers (`missing_path`→glob,
+  `old_string_not_found`→fs_read, `ambiguous_match`, `timeout`) the model can
+  act on programmatically.
 - **SlotLock (inference serialization)**: a process-wide per-server semaphore
   serializes chat/embed/tokenizer requests so parallel subagents, consult and
   embeddings never hit a single-slot local server concurrently (HTTP 500 / VRAM

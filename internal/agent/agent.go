@@ -155,6 +155,12 @@ type Config struct {
 	// the len/4 heuristic is used everywhere.
 	Counter TokenCounter
 
+	// VerifyWrites deterministically gates "done": when a turn wrote files but
+	// never ran workspace_diagnostics, the agent runs it before accepting the
+	// final answer and feeds the result back (Luna review #3). The UI enables
+	// it; tests leave it off.
+	VerifyWrites bool
+
 	// Trace, when set, receives a per-section dump of every assembled context
 	// with token estimates (B2, `yagent chat --trace <file>`). The segments sum
 	// to ContextUsage.
@@ -206,6 +212,10 @@ type Agent struct {
 	runningSummary string
 	injected       []string
 	totalToolCalls int
+
+	// unverifiedWrite is set when the most recent write/destructive tool ran
+	// and cleared when workspace_diagnostics runs (verify-don't-trust barrier).
+	unverifiedWrite bool
 
 	// Cached accurate token estimates (C1). sysTokens/summaryTokens/
 	// injectedTokens are counted at the point each piece is set; lastCtx holds
@@ -371,6 +381,25 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 						return "", err
 					}
 					continue
+				}
+			}
+			// Verify-don't-trust barrier (Luna #3): the model wrote files this
+			// turn but never ran diagnostics — run it deterministically before
+			// accepting "done" and feed the result back.
+			if a.cfg.VerifyWrites {
+				a.mu.Lock()
+				unverified := a.unverifiedWrite
+				a.mu.Unlock()
+				if unverified {
+					a.mu.Lock()
+					a.unverifiedWrite = false
+					a.mu.Unlock()
+					if verify := a.verifyBarrier(ctx); verify != "" {
+						if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: verify}); err != nil {
+							return "", err
+						}
+						continue
+					}
 				}
 			}
 			a.totalToolCalls += turnCalls
@@ -572,6 +601,23 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 		}
 	}
 	return last, fmt.Errorf("goal not achieved after %d rounds", maxRounds)
+}
+
+// verifyBarrier runs workspace_diagnostics deterministically and returns a user
+// message carrying the result, or "" when there is nothing to verify (no tool,
+// no project detected).
+func (a *Agent) verifyBarrier(ctx context.Context) string {
+	tool, ok := a.registry.Get("workspace_diagnostics")
+	if !ok {
+		return ""
+	}
+	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err != nil || result == "" || strings.Contains(result, "no diagnostics configured") {
+		return ""
+	}
+	return "The agent wrote files this turn but did not run workspace_diagnostics. " +
+		"Deterministic verification ran it now; the result is:\n" + result +
+		"\n\nIf the check found problems, fix them now. Otherwise give your final answer."
 }
 
 // proseToolName matches a known tool name on a line.
@@ -1266,6 +1312,15 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		}
 		return "error: " + err.Error()
 	}
+	// Track write/verify state for the deterministic "done" barrier: any write
+	// marks the turn unverified; running workspace_diagnostics clears it.
+	a.mu.Lock()
+	if name == "workspace_diagnostics" {
+		a.unverifiedWrite = false
+	} else if tool.Risk() != tools.RiskReadOnly {
+		a.unverifiedWrite = true
+	}
+	a.mu.Unlock()
 	slog.Debug("tool executed", "tool", name)
 	armed = true // a successful call arms the dedup for an identical repeat
 	return result

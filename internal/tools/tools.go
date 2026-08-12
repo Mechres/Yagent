@@ -46,6 +46,21 @@ func (r RiskLevel) String() string {
 	return "unknown"
 }
 
+// errorClass renders a tool error with a machine-readable class marker the
+// model can act on programmatically (Luna review #8 / Nemotron #4): a stable
+// class name, whether retrying makes sense, and suggested next tools.
+func errorClass(class string, retryable bool, suggest []string, msg string) string {
+	var b strings.Builder
+	b.WriteString("error: ")
+	b.WriteString(msg)
+	fmt.Fprintf(&b, " [class=%s retryable=%t", class, retryable)
+	if len(suggest) > 0 {
+		fmt.Fprintf(&b, " suggest=%s", strings.Join(suggest, ","))
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
 // ValidationError marks argument-validation failures; the agent counts these
 // toward the per-call retry cap.
 type ValidationError struct{ msg string }
