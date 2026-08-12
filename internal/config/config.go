@@ -113,6 +113,9 @@ type UIConfig struct {
 	// ShowReasoning toggles the dimmed "thinking" block in the TUI/REPL
 	// (reasoning_content). Reasoning never enters history either way.
 	ShowReasoning bool `yaml:"show_reasoning"`
+	// LoopGuard auto-cancels a running turn when the model visibly repeats
+	// itself (a stuck generation loop). Default on.
+	LoopGuard bool `yaml:"loop_guard"`
 }
 
 // Defaults applied when no config file and no env override is present.
@@ -186,7 +189,7 @@ func LoadConfig(path string) (*Config, error) {
 		EmbeddingModel: DefaultEmbeddingModel,
 		ContextWindow:  DefaultContextWindow,
 		Theme:          DefaultTheme,
-		UI:             UIConfig{ShowReasoning: true},
+		UI:             UIConfig{ShowReasoning: true, LoopGuard: true},
 		Sampling:       SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
 		Skills:         SkillsConfig{WriteApproval: false},
 	}
@@ -352,6 +355,7 @@ func Settings() []SettingKey {
 		{Key: "sampling.top_k", Label: "Sampling top_k (0 = off)"},
 		{Key: "sampling.repetition_penalty", Label: "Sampling repetition penalty (0 = off)"},
 		{Key: "ui.show_reasoning", Label: "Show thinking block", Options: []string{"true", "false"}},
+		{Key: "ui.loop_guard", Label: "Stop repeating-generation loops", Options: []string{"true", "false"}},
 		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng"}},
 		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
 		{Key: "skills.write_approval", Label: "Skills write approval", Options: []string{"false", "true"}},
@@ -394,6 +398,8 @@ func (c *Config) Get(key string) string {
 		return strconv.FormatFloat(c.Sampling.RepetitionPenalty, 'f', -1, 64)
 	case "ui.show_reasoning":
 		return strconv.FormatBool(c.UI.ShowReasoning)
+	case "ui.loop_guard":
+		return strconv.FormatBool(c.UI.LoopGuard)
 	case "web_search.provider":
 		return c.Web.Provider
 	case "web_search.searxng_url":
@@ -489,6 +495,7 @@ func validateKey(parts []string, value string) error {
 		"sampling.temperature": true, "sampling.top_p": true,
 		"sampling.top_k": true, "sampling.repetition_penalty": true,
 		"ui.show_reasoning":   true,
+		"ui.loop_guard":       true,
 		"web_search.provider": true, "web_search.searxng_url": true,
 		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
 		"shell.sandbox":      true,
@@ -529,9 +536,9 @@ func validateKey(parts []string, value string) error {
 		if err != nil || n < 0 {
 			return &ValidationError{msg: "sampling.top_k must be a non-negative integer (0 = off)"}
 		}
-	case "ui.show_reasoning":
+	case "ui.show_reasoning", "ui.loop_guard":
 		if value != "true" && value != "false" {
-			return &ValidationError{msg: "ui.show_reasoning must be true or false"}
+			return &ValidationError{msg: key + " must be true or false"}
 		}
 	case "shell.sandbox":
 		if value != "" && value != "bwrap" {
@@ -550,7 +557,7 @@ func validateKey(parts []string, value string) error {
 // existing write_approval/context_window convention.
 func typedScalar(key, value string) *yaml.Node {
 	switch key {
-	case "write_approval", "show_reasoning":
+	case "write_approval", "show_reasoning", "loop_guard":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
 	case "context_window", "top_k":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}

@@ -47,7 +47,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	defer env.jobs.StopAll()
 
 	incoming := make(chan tea.Msg, 4096)
-	inputCh := make(chan string, 1)
+	inputCh := make(chan turnRequest, 1)
 	runnerCtx, runnerCancel := context.WithCancel(ctx)
 	runnerDone := make(chan struct{})
 	ap := newToggleableApprover(&tuiApprover{incoming: incoming, ctx: runnerCtx})
@@ -88,11 +88,11 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 				}
 				cancel()
 				return
-			case line := <-inputCh:
+			case req := <-inputCh:
 				env.undo.StartTurn()
-				answer, err := ag.Run(runnerCtx, line)
+				answer, err := ag.Run(req.ctx, req.text)
 				env.undo.EndTurn()
-				incoming <- turnDoneMsg{answer: answer, err: err}
+				incoming <- turnDoneMsg{answer: answer, err: err, seq: req.seq}
 			}
 		}
 	}()
@@ -100,7 +100,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	m := tuiModel{
 		cfg: cfg, env: env, ag: ag, client: client,
 		incoming: incoming, inputCh: inputCh,
-		runnerCancel: runnerCancel, runnerDone: runnerDone,
+		runnerCtx: runnerCtx, runnerCancel: runnerCancel, runnerDone: runnerDone,
 		input: newInput(), yoloToggler: ap,
 	}
 	if ws, err := os.Getwd(); err == nil {
@@ -141,6 +141,15 @@ type progressMsg struct{ text string }
 type turnDoneMsg struct {
 	answer string
 	err    error
+	seq    int // turn sequence; stale messages from a cancelled turn are ignored
+}
+
+// turnRequest carries one submitted turn plus its own context, so the model can
+// cancel just this turn (Esc / loop guard) without killing the session.
+type turnRequest struct {
+	text string
+	ctx  context.Context
+	seq  int
 }
 type approvalRequestMsg struct {
 	call    llm.ToolCall
@@ -184,9 +193,17 @@ type tuiModel struct {
 	yoloToggler *toggleableApprover
 
 	incoming     chan tea.Msg
-	inputCh      chan string
+	inputCh      chan turnRequest
+	runnerCtx    context.Context
 	runnerCancel context.CancelFunc
 	runnerDone   chan struct{}
+
+	// Per-turn cancellation: turnCancel aborts the running turn (Esc, or the
+	// loop guard); turnCancelled/cancelReason describe why it stopped.
+	turnCancel    context.CancelFunc
+	turnCancelled bool
+	cancelReason  string
+	turnSeq       int
 
 	input    textinput.Model
 	viewport viewport.Model
@@ -255,7 +272,7 @@ type tuiModel struct {
 
 func newInput() textinput.Model {
 	in := textinput.New()
-	in.Placeholder = "message (enter to send, ctrl-f to search, ctrl-c to quit, pgup/dn to scroll)"
+	in.Placeholder = "message (enter to send, esc to cancel, ctrl-f to search, pgup/dn to scroll)"
 	in.CharLimit = 4000
 	in.Prompt = iconCommand + " "
 	return in
@@ -680,6 +697,17 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.nextCmd()
 			}
 			return m, m.quitCmd()
+		case "esc":
+			// Cancel the running turn (keep the session): the model stops
+			// generating, the partial reasoning/answer is dropped, and the
+			// next message starts a fresh turn.
+			if m.busy && m.turnCancel != nil {
+				m.turnCancelled = true
+				m.cancelReason = "turn cancelled (esc) — send another message"
+				m.turnCancel()
+				m.append("  cancelling turn…")
+				return m, m.nextCmd()
+			}
 		case "ctrl+m":
 			return m, m.toggleMouse()
 		case "t", "T":
@@ -738,6 +766,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stream.WriteString(msg.delta)
 		m.turnTokens += len(msg.delta) / 4
 		m.syncViewport()
+		m.checkLoop()
 		return m, m.nextCmd()
 
 	case reasoningMsg:
@@ -753,6 +782,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning = "[… earlier reasoning omitted]\n" + m.reasoning[len(m.reasoning)-reasoningCap:]
 		}
 		m.syncViewport()
+		m.checkLoop()
 		return m, m.nextCmd()
 
 	case toolMsg:
@@ -788,8 +818,24 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.nextCmd()
 
 	case turnDoneMsg:
+		if msg.seq != m.turnSeq {
+			return m, m.nextCmd() // stale turn (cancelled; a new one started)
+		}
+		if m.turnCancelled {
+			// The turn was stopped (Esc or the loop guard); drop the partial
+			// reasoning/stream instead of committing it as an answer.
+			m.reasoning = ""
+			m.reasoningTruncated = false
+			m.stream.Reset()
+			m.busy = false
+			m.turnCancelled = false
+			m.turnCancel = nil
+			m.append("  " + m.cancelReason)
+			return m, m.nextCmd()
+		}
 		m.flushStream()
 		m.busy = false
+		m.turnCancel = nil
 		if msg.err != nil {
 			m.append(fmt.Sprintf("  error: %v", msg.err))
 		}
@@ -815,6 +861,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.input.Reset()
 		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /mouse /skills list|pending|diff|approve|reject|approval /skill-name")
 		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty; search: Ctrl+F; mouse capture: Ctrl+M")
+		m.append("esc cancels the running turn; a repeating-thinking loop is auto-stopped (ui.loop_guard)")
 		return m, m.nextCmd()
 	case "/settings":
 		m.input.Reset()
@@ -872,8 +919,19 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.reasoningTruncated = false
 	m.turnTokens = 0
 	m.toolCalls = 0
+	m.turnCancelled = false
+	m.cancelReason = ""
 	m.follow = true // new input snaps back to the bottom
-	m.inputCh <- text
+	// Each turn gets its own cancelable context, so Esc / the loop guard stop
+	// just this turn while the session (and the runner) stay alive.
+	parent := m.runnerCtx
+	if parent == nil {
+		parent = context.Background() // e.g. in tests that drive the model directly
+	}
+	turnCtx, turnCancel := context.WithCancel(parent)
+	m.turnCancel = turnCancel
+	m.turnSeq++
+	m.inputCh <- turnRequest{text: text, ctx: turnCtx, seq: m.turnSeq}
 	return m, nil
 }
 
@@ -1362,6 +1420,42 @@ func (m *tuiModel) sessionsView() string {
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(m.th.Primary).
 		Padding(0, 1).Render(title + "\n\n" + bodyStyle + "\n\n" + hint)
+}
+
+// checkLoop cancels the running turn when the streamed text (reasoning or
+// answer) visibly repeats itself — the model stuck in a generation loop. Gated
+// by ui.loop_guard so users can turn it off.
+func (m *tuiModel) checkLoop() {
+	if !m.busy || m.turnCancel == nil || m.turnCancelled {
+		return
+	}
+	if m.cfg != nil && !m.cfg.UI.LoopGuard {
+		return
+	}
+	if repeatLoop(m.reasoning) || repeatLoop(m.stream.String()) {
+		m.turnCancelled = true
+		m.cancelReason = "stopped: the model was repeating itself (thinking loop) — /set sampling.repetition_penalty 1.05 often fixes it, or re-ask"
+		m.turnCancel()
+	}
+}
+
+// repeatLoop reports whether the tail of s shows any unit (20–160 chars)
+// repeated at least three times in a row — a strong signal of a model stuck in
+// a generation loop. Units shorter than ~20 chars are too common to trust;
+// legitimate reasoning rarely repeats a 20+ char unit three times verbatim.
+func repeatLoop(s string) bool {
+	const (
+		minUnit = 20
+		maxUnit = 160
+		reps    = 3
+	)
+	for unit := minUnit; unit <= maxUnit && len(s) >= unit*reps; unit++ {
+		tail := s[len(s)-unit*reps:]
+		if tail[:unit] == tail[unit:unit*2] && tail[unit:unit*2] == tail[unit*2:] {
+			return true
+		}
+	}
+	return false
 }
 
 // flushStream commits the current reasoning block and streamed answer into the

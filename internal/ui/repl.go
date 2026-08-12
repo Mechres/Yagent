@@ -174,6 +174,8 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		env.registry.SetSkillsWriteApproval(false)
 	}
 
+	var thinkBuf strings.Builder
+	loopWarned := false
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
 		// Thinking is shown dimmed/italic above the answer (display-only),
@@ -181,6 +183,11 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		func(delta string) {
 			if !cfg.UI.ShowReasoning {
 				return
+			}
+			thinkBuf.WriteString(delta)
+			if !loopWarned && repeatLoop(thinkBuf.String()) {
+				loopWarned = true
+				fmt.Fprintf(w, "\n[the model appears to be repeating itself — /set sampling.repetition_penalty 1.05 often fixes it, or press Ctrl-C]\n")
 			}
 			_, _ = fmt.Fprintf(w, "\x1b[2m\x1b[3m%s\x1b[0m", delta)
 		},
@@ -244,6 +251,8 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			continue
 		}
 
+		thinkBuf.Reset()
+		loopWarned = false
 		env.undo.StartTurn()
 		_, err = ag.Run(ctx, line)
 		env.undo.EndTurn()
@@ -872,6 +881,12 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 			return err
 		}
 		c.UI.ShowReasoning = b
+	case "ui.loop_guard":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		c.UI.LoopGuard = b
 	case "context_window":
 		n, err := strconv.Atoi(value)
 		if err != nil {

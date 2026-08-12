@@ -712,6 +712,81 @@ func TestTranscriptFind(t *testing.T) {
 	}
 }
 
+func TestRepeatLoopDetector(t *testing.T) {
+	cases := map[string]bool{
+		"":      false,
+		"short": false,
+		strings.Repeat("I need to check the file. ", 3):              true,  // 24-char unit ×3
+		strings.Repeat("still verifying the output here ", 4):        true,  // 33-char unit
+		strings.Repeat("x", 300):                                     true,  // mono run
+		"the quick brown fox jumps over the lazy dog and back again": false, // no repetition
+	}
+	for in, want := range cases {
+		if got := repeatLoop(in); got != want {
+			t.Errorf("repeatLoop(%q…) = %v, want %v", in[:min(len(in), 40)], got, want)
+		}
+	}
+}
+
+func TestEscCancelsRunningTurn(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 24
+
+	// a running turn can be cancelled, keeping the session alive
+	m.busy = true
+	_, cancel := context.WithCancel(context.Background())
+	m.turnCancel = cancel
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.turnCancelled {
+		t.Fatal("esc did not mark the turn cancelled")
+	}
+	if !strings.Contains(m.cancelReason, "cancelled") {
+		t.Errorf("cancelReason = %q", m.cancelReason)
+	}
+	// esc when idle must not cancel anything
+	m.busy = false
+	m.turnCancelled = false
+	m.turnCancel = cancel
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.turnCancelled {
+		t.Error("esc when idle should not cancel")
+	}
+}
+
+func TestLoopGuardCancelsRepeatingTurn(t *testing.T) {
+	rep := strings.Repeat("I need to check the file. ", 3)
+
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m", UI: config.UIConfig{ShowReasoning: true, LoopGuard: true}}
+	m.width, m.height = 80, 24
+	m.busy = true
+	_, cancel := context.WithCancel(context.Background())
+	m.turnCancel = cancel
+	m.Update(reasoningMsg{delta: rep})
+	if !m.turnCancelled {
+		t.Fatal("loop guard did not cancel a repeating turn")
+	}
+	if !strings.Contains(m.cancelReason, "repeating") {
+		t.Errorf("cancelReason = %q", m.cancelReason)
+	}
+
+	// ui.loop_guard off -> no auto-cancel
+	m2 := testModel(t)
+	m2.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m2.cfg = &config.Config{Model: "m", UI: config.UIConfig{ShowReasoning: true, LoopGuard: false}}
+	m2.width, m2.height = 80, 24
+	m2.busy = true
+	_, cancel2 := context.WithCancel(context.Background())
+	m2.turnCancel = cancel2
+	m2.Update(reasoningMsg{delta: rep})
+	if m2.turnCancelled {
+		t.Error("loop guard off still cancelled the turn")
+	}
+}
+
 func TestSessionsBrowser(t *testing.T) {
 	st, err := memory.Open(t.TempDir())
 	if err != nil {

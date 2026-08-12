@@ -83,6 +83,57 @@ func recallValues(client *llm.Client, summary string, facts []string) (recalled,
 	return recalled, reported, nil
 }
 
+// TestLiveTurnCancellation proves the Esc / loop-guard cancel actually stops a
+// real generation mid-stream: the turn's context is cancelled after the first
+// token and Run must return promptly (this is what keeps the TUI session alive
+// when the user hits Esc or the loop guard fires).
+func TestLiveTurnCancellation(t *testing.T) {
+	if os.Getenv("YAGENT_LIVE_EVAL") == "" {
+		t.Skip("set YAGENT_LIVE_EVAL=1 to run the real-hardware cancellation eval")
+	}
+	client := liveClient(t)
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{ReadOnly: true})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan struct{})
+	a := agent.New(client, reg, nil, agent.Config{
+		MaxIterations: 1,
+		Window:        16384,
+		OnToken: func(string) {
+			select {
+			case <-first:
+			default:
+				close(first)
+			}
+		},
+	}, ws)
+
+	done := make(chan struct{})
+	var answer string
+	var err error
+	go func() {
+		answer, err = a.Run(ctx, "Explain the history of the Roman Empire in at least ten long paragraphs.")
+		close(done)
+	}()
+
+	select {
+	case <-first:
+	case <-time.After(90 * time.Second):
+		t.Fatal("no token streamed within 90s")
+	}
+	cancel()
+	select {
+	case <-done:
+		t.Logf("cancelled cleanly: err=%v", err)
+		if err == nil && answer == "" {
+			t.Error("Run returned with no error and no answer after a cancel")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return within 30s of cancellation")
+	}
+}
+
 // jsonFindingsNote validates a JSON-array findings report, returning a short
 // verdict note (or "" when not requested).
 func jsonFindingsNote(summary string) string {

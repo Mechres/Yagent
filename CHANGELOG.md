@@ -2,7 +2,7 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
-## Unreleased — 2026-08-12
+## v0.1.5 — 2026-08-12
 
 ### Added
 - **Eval harness: failure-recovery and partial-approval scripting.** Tasks can
@@ -17,6 +17,13 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 - **Benchmarks**: patch split/rebuild over a 200-hunk multi-file diff
   (~65–120µs) and subagent fan-out/fan-in for 4/8/32 parallel tasks
   (~3–21µs), the per-delegation overhead floor.
+- **Esc cancels the running turn** (TUI): the model stops generating, the
+  partial reasoning/answer is dropped, and the session stays alive — send a
+  new message immediately. Ctrl-C still quits the whole session.
+- **Loop guard** (`ui.loop_guard`, default on): a turn that visibly repeats
+  itself (thinking/content loop) is auto-cancelled with a hint to try
+  `sampling.repetition_penalty`; toggleable from `/settings`. The plain REPL
+  prints the same hint (no cancel there).
 
 ## v0.1.4 — 2026-08-12
 
