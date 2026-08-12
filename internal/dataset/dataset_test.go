@@ -151,3 +151,84 @@ func TestExportEmptyAssistantDropped(t *testing.T) {
 		t.Fatalf("n = %d, want 0 (empty assistant turn dropped)", n)
 	}
 }
+
+func TestExportDPO(t *testing.T) {
+	dir := t.TempDir()
+	st, err := memory.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	// A turn where the model's first edit fails (old_string_not_found) and a
+	// retry succeeds -> exactly one preference pair.
+	writeSession(t, st, []memory.Message{
+		{Role: "user", Content: "fix the typo in greeting()"},
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{
+			ID: "c1", Type: "function",
+			Function: llm.ToolCallFunction{Name: "fs_edit", Arguments: []byte(`{"path":"a.go","old_string":"helo","new_string":"hello"}`)},
+		}}},
+		{Role: "tool", Content: "error: old_string not found in a.go; re-read the file [class=old_string_not_found retryable=true suggest=fs_read]", ToolCallID: "c1"},
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{
+			ID: "c2", Type: "function",
+			Function: llm.ToolCallFunction{Name: "fs_edit", Arguments: []byte(`{"path":"a.go","old_string":"helo ","new_string":"hello "}`)},
+		}}},
+		{Role: "tool", Content: "edited a.go:\n- helo\n+ hello", ToolCallID: "c2"},
+		{Role: "assistant", Content: "fixed the typo"},
+	})
+
+	var buf bytes.Buffer
+	n, err := Export(context.Background(), st, &buf, Options{Format: FormatDPO})
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("n = %d, want 1 preference pair", n)
+	}
+	var line struct {
+		Prompt   string `json:"prompt"`
+		Chosen   string `json:"chosen"`
+		Rejected string `json:"rejected"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &line); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !strings.Contains(line.Prompt, "typo") {
+		t.Errorf("prompt = %q", line.Prompt)
+	}
+	if !strings.Contains(line.Rejected, "old_string_not_found") {
+		t.Errorf("rejected should carry the failed call: %q", line.Rejected)
+	}
+	if !strings.Contains(line.Chosen, "edited a.go") || !strings.Contains(line.Chosen, "+ hello") {
+		t.Errorf("chosen should carry the successful result: %q", line.Chosen)
+	}
+}
+
+func TestExportDPORequiresFailureThenSuccess(t *testing.T) {
+	dir := t.TempDir()
+	st, err := memory.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	// A clean turn (no failure) yields no DPO pair.
+	writeSession(t, st, []memory.Message{
+		{Role: "user", Content: "add a function"},
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{
+			ID: "c1", Type: "function",
+			Function: llm.ToolCallFunction{Name: "fs_edit", Arguments: []byte(`{"path":"a.go","old_string":"x","new_string":"y"}`)},
+		}}},
+		{Role: "tool", Content: "edited a.go", ToolCallID: "c1"},
+		{Role: "assistant", Content: "done"},
+	})
+
+	var buf bytes.Buffer
+	n, err := Export(context.Background(), st, &buf, Options{Format: FormatDPO})
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("n = %d, want 0 (no failure, no pair)", n)
+	}
+}

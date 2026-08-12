@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -357,5 +358,69 @@ func TestCompactLines(t *testing.T) {
 	uniq := "one\ntwo\nthree\n"
 	if got := compactLines(uniq); got != uniq {
 		t.Errorf("unique lines altered: %q", got)
+	}
+}
+
+func TestGroupErrorCascade(t *testing.T) {
+	// A single root cause (undefined: fmt) producing a large cascade of
+	// derived errors must collapse to a few signatures with a count.
+	cascade := "go vet\n"
+	for i := 1; i <= 40; i++ {
+		cascade += fmt.Sprintf("internal/agent/agent.go:%d:13: undefined: fmt\n", i)
+	}
+	cascade += "internal/agent/loop.go:3:5: undefined: fmt\n"
+	got := groupErrorCascade(cascade)
+	if got == "" {
+		t.Fatal("error cascade not grouped")
+	}
+	if strings.Contains(got, "agent.go:39:") && strings.Contains(got, "agent.go:1:") {
+		t.Errorf("cascade kept too many instances: %q", got)
+	}
+	if !strings.Contains(got, "similar omitted") && !strings.Contains(got, "more error lines") {
+		t.Errorf("cascade missing a fold count: %q", got)
+	}
+	// a single signature repeated: one representative + a count
+	single := strings.Repeat("x.go:1:2: undefined: fmt\n", 10)
+	got = groupErrorCascade(single)
+	if strings.Count(got, "x.go:") != 1 {
+		t.Errorf("repeated signature kept %d representatives: %q", strings.Count(got, "x.go:"), got)
+	}
+	// non-error output passes through untouched
+	normal := "hello\nworld\n"
+	if got := groupErrorCascade(normal); got != "" {
+		t.Errorf("normal output grouped: %q", got)
+	}
+	// distinct root causes: top 3 kept, the rest folded
+	var multi strings.Builder
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&multi, "pkg/a.go:%d:2: undefined: fmt\n", i)
+	}
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&multi, "pkg/b.go:%d:3: undefined: os\n", i)
+	}
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&multi, "pkg/c.go:%d:4: undefined: log\n", i)
+	}
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&multi, "pkg/d.go:%d:5: undefined: net\n", i)
+	}
+	got = groupErrorCascade(multi.String())
+	if !strings.Contains(got, "and 20 more error lines") {
+		t.Errorf("4th signature not folded: %q", got)
+	}
+}
+
+func TestCapResultGroupsCascade(t *testing.T) {
+	// capResult applies the cascade group when output would otherwise be huge.
+	var cascade strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&cascade, "pkg/f.go:%d:2: undefined: something\n", i)
+	}
+	out := capResult(cascade.String(), 4096)
+	if len(out) > 4096 {
+		t.Errorf("capped result too big: %d", len(out))
+	}
+	if !strings.Contains(out, "similar omitted") && !strings.Contains(out, "more error lines") {
+		t.Errorf("capResult did not group: %q", out[:min(len(out), 120)])
 	}
 }

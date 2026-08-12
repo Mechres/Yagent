@@ -115,7 +115,7 @@ func main() {
 	case "export-dataset":
 		fs := flag.NewFlagSet("export-dataset", flag.ContinueOnError)
 		output := fs.String("output", "", "write the dataset to this file (default: stdout)")
-		format := fs.String("format", "openai", "output format: openai | sharegpt")
+		format := fs.String("format", "openai", "output format: openai | sharegpt | dpo")
 		sessionID := fs.String("session", "", "only export this session id (default: all)")
 		minMsgs := fs.Int("min-messages", 2, "skip sessions with fewer messages than this")
 		if err := fs.Parse(args[1:]); err != nil {

@@ -21,6 +21,7 @@ type Format string
 const (
 	FormatOpenAI   Format = "openai"   // {"messages":[{"role","content","tool_calls"}...]}
 	FormatShareGPT Format = "sharegpt" // {"conversations":[{"from","value"}...]}
+	FormatDPO      Format = "dpo"      // {"prompt","chosen","rejected"} preference pairs
 )
 
 // OpenAI message shapes (mirrors llm.Message but flattened to the wire form
@@ -36,6 +37,13 @@ type openAIMessage struct {
 type shareGPTMessage struct {
 	From  string `json:"from"` // system | human | gpt | tool
 	Value string `json:"value"`
+}
+
+// dpoPair is one preference example: the same user prompt answered two ways.
+type dpoPair struct {
+	Prompt   string `json:"prompt"`
+	Chosen   string `json:"chosen"`
+	Rejected string `json:"rejected"`
 }
 
 // Options control trajectory extraction.
@@ -85,6 +93,15 @@ func Export(ctx context.Context, st *memory.Store, w io.Writer, opt Options) (in
 		switch opt.Format {
 		case FormatShareGPT:
 			line = shareGPTLine(clean)
+		case FormatDPO:
+			pairs := dpoPairs(clean)
+			for _, p := range pairs {
+				if err := enc.Encode(p); err != nil {
+					return written, err
+				}
+				written++
+			}
+			continue
 		default:
 			line = map[string]any{"messages": openAILine(clean)}
 		}
@@ -94,6 +111,98 @@ func Export(ctx context.Context, st *memory.Store, w io.Writer, opt Options) (in
 		written++
 	}
 	return written, nil
+}
+
+// isToolError reports whether a tool result carries an execution failure.
+func isToolError(content string) bool {
+	if strings.HasPrefix(strings.TrimSpace(content), "error:") || strings.HasPrefix(strings.TrimSpace(content), "Error:") {
+		return true
+	}
+	return strings.Contains(content, "[class=") && (strings.Contains(content, "retryable=") || strings.Contains(content, "suggest="))
+}
+
+// dpoPairs mines preference pairs from a trajectory: within each user turn, a
+// failed tool call (the model's first attempt — the REJECTED response) paired
+// with the eventual successful call or answer (the CHOSEN response). Only
+// turns that contain both a failure and a later success yield a pair — the
+// model's self-correction IS the preference signal. One pair per failed call.
+func dpoPairs(msgs []llm.Message) []dpoPair {
+	var pairs []dpoPair
+	var prompt string
+	var turn []llm.Message
+	flush := func() {
+		if len(turn) == 0 {
+			return
+		}
+		pairs = append(pairs, pairTurn(prompt, turn)...)
+		turn = nil
+	}
+	for _, m := range msgs {
+		switch m.Role {
+		case "user":
+			flush()
+			prompt = m.Content
+		case "system":
+			continue
+		default:
+			turn = append(turn, m)
+		}
+	}
+	flush()
+	return pairs
+}
+
+// pairTurn turns one user turn's messages into (rejected, chosen) pairs.
+func pairTurn(prompt string, turn []llm.Message) []dpoPair {
+	var out []dpoPair
+	var rejected *dpoPair
+	for i, m := range turn {
+		// A tool result: does it fail?
+		if m.Role == "tool" {
+			if isToolError(m.Content) {
+				// The assistant message before this result emitted the bad call.
+				if i > 0 && turn[i-1].Role == "assistant" && len(turn[i-1].ToolCalls) > 0 {
+					rejected = &dpoPair{Prompt: prompt, Rejected: renderAssistant(turn[i-1]) + "\n" + m.Content}
+				}
+				continue
+			}
+			// A success after a failure closes the pair.
+			if rejected != nil {
+				rejected.Chosen = m.Content
+				if len(strings.TrimSpace(rejected.Chosen)) > 0 && len(strings.TrimSpace(rejected.Rejected)) > 0 {
+					out = append(out, *rejected)
+				}
+				rejected = nil
+			}
+			continue
+		}
+		// An assistant answer (no tool call) after a failure also closes it.
+		if m.Role == "assistant" && rejected != nil && len(m.ToolCalls) == 0 && strings.TrimSpace(m.Content) != "" {
+			rejected.Chosen = m.Content
+			if len(strings.TrimSpace(rejected.Chosen)) > 0 && len(strings.TrimSpace(rejected.Rejected)) > 0 {
+				out = append(out, *rejected)
+			}
+			rejected = nil
+		}
+	}
+	return out
+}
+
+// renderAssistant renders an assistant message's tool call as text (the
+// rejected response is "what the model tried" — the call + its rationale).
+func renderAssistant(m llm.Message) string {
+	if len(m.ToolCalls) == 0 {
+		return m.Content
+	}
+	var b strings.Builder
+	if m.Content != "" {
+		b.WriteString(m.Content)
+		b.WriteString("\n")
+	}
+	for _, tc := range m.ToolCalls {
+		fmt.Fprintf(&b, "tool_call %s(%s)", tc.Function.Name, tc.Function.Arguments)
+	}
+	return b.String()
 }
 
 // cleanTrajectory drops messages that would poison a fine-tune: redacted

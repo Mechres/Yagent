@@ -279,6 +279,29 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	n := strings.Count(old, a.OldString)
 	switch n {
 	case 0:
+		// P6 — whitespace soft-normalization: small models emit tabs where the
+		// file has spaces (or vice versa). When the whitespace-normalized
+		// old_string lands at exactly one span, auto-align to the on-disk text
+		// and apply instead of failing.
+		if start, end, ok := whitespaceNormalizedMatch(old, a.OldString); ok {
+			aligned := old[start:end]
+			// Re-indent new_string lines with the on-disk span's leading
+			// whitespace pattern (file tabs stay tabs even though the model
+			// wrote spaces).
+			indents := leadingWS(aligned)
+			reindented := applyIndents(a.NewString, indents)
+			newContent := old[:start] + reindented + old[end:]
+			if msg := preflightSyntax(a.Path, newContent); msg != "" {
+				return "error: " + msg, nil
+			}
+			if msg := preflightSymbols(a.Path, old, newContent); msg != "" {
+				return "error: " + msg, nil
+			}
+			if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+				return fmt.Sprintf("error: %v", err), nil
+			}
+			return fmt.Sprintf("[auto-aligned whitespace indentation]\nedited %s:\n%s", a.Path, simpleDiff(aligned, reindented, 100)), nil
+		}
 		return errorClass("old_string_not_found", true, []string{"fs_read"}, fmt.Sprintf("old_string not found in %s; re-read the file and copy the exact text%s", a.Path, nearestLineHint(old, a.OldString))), nil
 	case 1:
 		// proceed
@@ -343,6 +366,106 @@ func lineSimilarity(line, target string) float64 {
 		return 0
 	}
 	return 1.0 - float64(levenshtein(line, target))/float64(longer)
+}
+
+// whitespaceNormalizedMatch finds the (unique) span in content whose lines
+// match target after normalizing leading whitespace per line. Small models
+// often emit tabs where the file has spaces (or vice versa); when the
+// normalized old_string lands at exactly one place, fs_edit can auto-align
+// instead of burning a retry turn. Returns (start, end) byte offsets and
+// ok=false unless the match is unique.
+func whitespaceNormalizedMatch(content, target string) (int, int, bool) {
+	if target == "" || content == "" {
+		return 0, 0, false
+	}
+	tgt := normalizeLeadingWS(target)
+	if tgt == "" {
+		return 0, 0, false
+	}
+	// Split content into lines keeping offsets.
+	lines := strings.Split(content, "\n")
+	offs := make([]int, len(lines))
+	pos := 0
+	for i, ln := range lines {
+		offs[i] = pos
+		pos += len(ln) + 1
+	}
+	tgtLines := strings.Split(tgt, "\n")
+	// Normalize the content lines once.
+	normLines := make([]string, len(lines))
+	for i, ln := range lines {
+		normLines[i] = normalizeLeadingWS(ln)
+	}
+	matches := []int{}
+	for i := 0; i+len(tgtLines) <= len(normLines); i++ {
+		ok := true
+		for j := range tgtLines {
+			if normLines[i+j] != tgtLines[j] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			matches = append(matches, i)
+		}
+	}
+	if len(matches) != 1 {
+		return 0, 0, false
+	}
+	start := matches[0]
+	end := start + len(tgtLines) - 1
+	begin := offs[start]
+	finish := offs[end] + len(lines[end])
+	if begin >= finish {
+		return 0, 0, false
+	}
+	return begin, finish, true
+}
+
+// normalizeLeadingWS replaces each line's leading whitespace with a canonical
+// single tab-equivalent (a "T" marker), so tab-vs-space indentation slips
+// compare equal while the rest of the line stays exact.
+func normalizeLeadingWS(s string) string {
+	out := make([]string, 0, strings.Count(s, "\n")+1)
+	for _, ln := range strings.Split(s, "\n") {
+		trimmed := strings.TrimLeft(ln, " \t")
+		out = append(out, "T"+trimmed)
+	}
+	return strings.Join(out, "\n")
+}
+
+// leadingWS returns each line's leading whitespace run (spaces/tabs).
+func leadingWS(s string) []string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, len(lines))
+	for i, ln := range lines {
+		j := 0
+		for j < len(ln) && (ln[j] == ' ' || ln[j] == '\t') {
+			j++
+		}
+		out[i] = ln[:j]
+	}
+	return out
+}
+
+// applyIndents re-indents each line of s using the corresponding entry in
+// indents (cycling the last one for extra lines), stripping any leading
+// whitespace the model emitted first. Preserves on-disk indentation style when
+// auto-aligning a whitespace-mismatched edit.
+func applyIndents(s string, indents []string) string {
+	lines := strings.Split(s, "\n")
+	if len(indents) == 0 {
+		return s
+	}
+	for i, ln := range lines {
+		trimmed := strings.TrimLeft(ln, " \t")
+		idx := i
+		if idx >= len(indents) {
+			idx = len(indents) - 1
+		}
+		lines[i] = indents[idx] + trimmed
+	}
+	return strings.Join(lines, "\n")
 }
 
 // simpleDiff emits a crude -/+ line diff, capped at maxLines.

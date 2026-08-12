@@ -518,3 +518,56 @@ closed with reasons — do not re-propose them without new evidence.**
   the best fit for heavy programming". A format-translation layer for one
   mid-tier model is not worth the complexity. If a future top-tier model is
   Pythonic-native, revisit.
+
+## Review batch 2026-08-13 (second agy review — 6 proposals: 4 shipped, 2 rejected)
+
+A follow-up agy review (2026-08-13) screened against improvement.md — none of
+its proposals repeat the closed/rejected items above. Four implemented (all
+tested), two rejected with reasons. **Rejected items are closed — do not
+re-propose them without new evidence.**
+
+### Shipped
+
+- ✅ **Diagnostic error sanitizer + signature grouping** (#1) — `capResult`
+  now runs a `groupErrorCascade` pass after `compactLines`: when output is an
+  error cascade (≥5 error lines, ≥30% of the output), errors are grouped by
+  signature (path:line:col stripped) and the top 3 distinct root causes are
+  kept with their first precise pointer plus a fold count
+  (`… and N more error lines in M other signatures omitted`). Normal tool
+  output passes through untouched. Covered by `TestGroupErrorCascade` +
+  `TestCapResultGroupsCascade`.
+- ✅ **fs_edit whitespace soft-normalization** (#2) — when `old_string` isn't
+  found exactly, `fs_edit` tries a leading-whitespace-normalized match (tabs
+  vs spaces per line). If it lands at exactly one span, the edit is applied to
+  the on-disk text, new_string is re-indented with the file's own indentation,
+  and the result is marked `[auto-aligned whitespace indentation]`. Ambiguous
+  matches never auto-apply. Covered by `TestEditWhitespaceNormalizedMatch`.
+- ✅ **`code_topology` tool** (#4) — `index.BuildTopology` scans the workspace
+  once (gitignore-aware) and renders a compact package-level import DAG:
+  module path, which package dirs import which local packages, and entry
+  points. Reads import statements directly (tree-sitter queries per language,
+  Go module-prefix + relative + bare-dir resolution), no index/embedding
+  needed. Offered with the code-tool group. Covered by `TestBuildTopology` +
+  `TestCodeTopologyTool`.
+- ✅ **`export-dataset --format dpo`** (#6) — the exporter gained a DPO/ORPO
+  preference mode: within each user turn, a failed tool call (rejected) is
+  paired with the eventual successful call/answer (chosen), emitting
+  `{"prompt","chosen","rejected"}` lines. The model's self-correction IS the
+  preference signal; turns without a failure yield no pair. Covered by
+  `TestExportDPO` + `TestExportDPORequiresFailureThenSuccess`. (The proposed
+  `--distill` collapse is not separate: openai/sharegpt export already drops
+  failed turns, so the clean-trajectory case is covered.)
+
+### Rejected (do not re-propose)
+
+- ⚪ **Zero-LLM "static" subagent mode** (#3) — a mode that executes one
+  deterministic structural query (call-graph / symbol search / regex) without
+  the LLM is just calling the tool directly: the parent agent already has
+  `code_references`, `index_search`, `code_outline`, and now `code_topology` in
+  its read-only set. A static subagent adds no capability the parent doesn't
+  already hold.
+- ⚪ **TUI steering hotkeys (Tab / Ctrl+D / Ctrl+E)** (#5) — all three keys are
+  taken: Tab = command completion, Ctrl+D = viewport scroll-down, Ctrl+E =
+  textarea cursor-to-line-end. Remapping them would break existing UX for
+  marginal gain; `/yolo`, `clarify`/`plan`, `/retry` and the approval prompts
+  already cover developer steering.

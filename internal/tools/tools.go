@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -140,6 +141,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"fs_refactor":           &refactorTool{ws: r.workspace, undo: opts.Undo},
 		"code_outline":          &codeOutlineTool{ws: r.workspace},
 		"code_slice":            &codeSliceTool{ws: r.workspace},
+		"code_topology":         &codeTopologyTool{ws: r.workspace},
 		"glob":                  &globTool{ws: r.workspace},
 		"grep":                  &grepTool{ws: r.workspace},
 		"workspace_diagnostics": &diagnosticsTool{ws: r.workspace},
@@ -665,10 +667,95 @@ func capResult(s string, maxBytes int) string {
 	// Collapse repeated runs of identical lines first: build/test logs spam
 	// the same line (repeating errors, progress ticks) and eat the budget.
 	compact := compactLines(s)
+	// Then, if the output is an error cascade (a single root cause producing
+	// dozens of derived compiler/linter errors), group by signature so the
+	// model sees the top few root causes instead of 200 lines of noise.
+	if grouped := groupErrorCascade(compact); grouped != "" {
+		compact = grouped
+	}
 	if len(compact) <= maxBytes {
 		return compact
 	}
 	return compact[:maxBytes] + fmt.Sprintf("\n... truncated (%d bytes omitted)", len(compact)-maxBytes)
+}
+
+// maxDistinctErrors is how many distinct root causes the cascade summarizer
+// keeps before folding the rest into a count.
+const maxDistinctErrors = 3
+
+// errorLocRe matches a compiler/linter error line that starts with a
+// path:line(:col): prefix (go vet/compile, tsc, eslint, rustc, …).
+var errorLocRe = regexp.MustCompile(`^[A-Za-z0-9_./\\-]+:(\d+)(?::(\d+))?\s*:\s*(.*)$`)
+
+// errorSig strips location prefixes and trailing "at …" suffixes so every
+// instance of the same root cause normalizes to one signature.
+func errorSig(line string) string {
+	m := errorLocRe.FindStringSubmatch(line)
+	if m == nil {
+		return ""
+	}
+	msg := m[3]
+	msg = regexp.MustCompile(`(?:\s+at\s+[^ ]+:\d+(?::\d+)?)+$`).ReplaceAllString(msg, "")
+	return strings.TrimSpace(msg)
+}
+
+// groupErrorCascade summarizes an error-dominated output: the top
+// maxDistinctErrors root causes (by error signature) are kept with their
+// first precise path:line:col pointer, and everything else is folded into a
+// count. Returns "" when the output is not error-dominated, so normal tool
+// results pass through untouched.
+func groupErrorCascade(s string) string {
+	lines := strings.Split(s, "\n")
+	var errLines, other []string
+	for _, ln := range lines {
+		if errorSig(ln) != "" {
+			errLines = append(errLines, ln)
+		} else {
+			other = append(other, ln)
+		}
+	}
+	// Only engage on a real cascade: ≥ 5 error lines forming ≥ 30% of output.
+	if len(errLines) < 5 || len(errLines)*100 < 30*len(lines) {
+		return ""
+	}
+	type g struct {
+		sig   string
+		first string
+		count int
+	}
+	var groups []g
+	idx := map[string]int{}
+	for _, ln := range errLines {
+		sig := errorSig(ln)
+		if i, ok := idx[sig]; ok {
+			groups[i].count++
+			continue
+		}
+		idx[sig] = len(groups)
+		groups = append(groups, g{sig: sig, first: ln, count: 1})
+	}
+	var b strings.Builder
+	if body := strings.TrimSpace(strings.Join(other, "\n")); body != "" {
+		b.WriteString(body)
+		b.WriteString("\n")
+	}
+	shown, folded := 0, 0
+	for _, gr := range groups {
+		if shown < maxDistinctErrors {
+			b.WriteString(gr.first)
+			if gr.count > 1 {
+				fmt.Fprintf(&b, " … [%d similar omitted]", gr.count-1)
+			}
+			b.WriteString("\n")
+			shown++
+		} else {
+			folded += gr.count
+		}
+	}
+	if folded > 0 {
+		fmt.Fprintf(&b, "… and %d more error lines in %d other signatures omitted to preserve context\n", folded, len(groups)-shown)
+	}
+	return b.String()
 }
 
 // compactLines collapses consecutive duplicate lines into "line" + "… [N×]",

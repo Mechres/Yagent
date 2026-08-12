@@ -800,7 +800,7 @@ func RepeatLoop(s string) bool {
 }
 
 // proseToolName matches a known tool name on a line.
-var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|index_search|index_repo|code_references|code_slice|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
+var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|index_search|index_repo|code_references|code_slice|code_topology|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
 
 // intentWord marks a line as the model *planning* a tool call in prose rather
 // than reporting one it already made.
@@ -948,7 +948,7 @@ var (
 		"skills_list", "skill_view", "consult",
 	}
 	webToolNames    = []string{"web_search", "web_fetch"}
-	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline"}
+	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline", "code_topology"}
 	skillManageName = []string{"skill_manage"}
 )
 

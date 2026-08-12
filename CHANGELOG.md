@@ -2,6 +2,27 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.28 — 2026-08-13
+
+### Added
+- **Diagnostic error sanitizer with signature grouping.** `capResult` now
+  groups compiler/linter error cascades by signature and keeps the top 3
+  distinct root causes with their first precise `path:line:col` pointer plus a
+  fold count, instead of flooding the context with 200 derived errors. Applied
+  only when output is error-dominated; normal tool results pass through.
+- **`fs_edit` whitespace soft-normalization.** When `old_string` isn't found
+  exactly, a leading-whitespace-normalized match (tabs vs spaces) that lands at
+  exactly one span auto-applies with an `[auto-aligned whitespace indentation]`
+  marker, re-indenting `new_string` with the file's own indentation. Ambiguous
+  matches never auto-apply.
+- **`code_topology` tool.** `index.BuildTopology` scans the workspace once
+  (gitignore-aware) and renders a compact package-level import DAG — module
+  path, per-package local imports, entry points — from import statements
+  directly. No index or embedding needed.
+- **`yagent export-dataset --format dpo`.** Preference-mode export: each failed
+  tool call (rejected) is paired with the eventual success (chosen) per turn
+  as `{"prompt","chosen","rejected"}` lines for DPO/ORPO fine-tuning.
+
 ## v0.1.27 — 2026-08-13
 
 ### Added

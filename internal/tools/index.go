@@ -125,6 +125,30 @@ func kindNote(kind string) string {
 	return " of kind " + kind + " "
 }
 
+// ---------- code_topology ----------
+
+// codeTopologyTool renders the workspace's package-level import DAG (module
+// path, which packages import which, entry points) without loading files into
+// context — a cheap architectural map for large-repo questions.
+type codeTopologyTool struct{ ws string }
+
+var codeTopologySchema = fnSchema("code_topology", "render the workspace's package topology as a compact ASCII dependency DAG: the module path, each package directory and which local packages it imports, and entry points (main packages / entry scripts). Use it for architectural questions like 'what are the layers?' or 'what depends on X?' before drilling in with fs_read/code_outline. No index needed; reads import statements directly",
+	map[string]any{}, []string{})
+
+func (t *codeTopologyTool) Schema() llm.ToolSchema { return codeTopologySchema }
+func (t *codeTopologyTool) Risk() RiskLevel        { return RiskReadOnly }
+
+func (t *codeTopologyTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	if err := decodeArgs(raw, &struct{}{}); err != nil {
+		return "", err
+	}
+	topo, err := index.BuildTopology(t.ws)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+	return capResult(topo.Render(), maxResultBytes), nil
+}
+
 // ---------- code_references ----------
 
 type codeReferencesTool struct{ store *index.Store }

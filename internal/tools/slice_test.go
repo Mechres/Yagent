@@ -145,3 +145,35 @@ func helper() int { return 1 }
 		t.Errorf("fs_write blocked: %q", res4)
 	}
 }
+
+func TestEditWhitespaceNormalizedMatch(t *testing.T) {
+	ws := t.TempDir()
+	// file uses TAB indentation
+	writeFile(t, ws, "tabs.go", "package demo\n\nfunc f() int {\n\treturn 1\n}\n")
+	reg := NewRegistry(ws, Options{})
+
+	// model emits SPACE indentation for the same block
+	res := execTool(t, reg, "fs_edit", map[string]any{
+		"path": "tabs.go", "old_string": "func f() int {\n    return 1\n}", "new_string": "func f() int {\n    return 2\n}",
+	})
+	if !strings.Contains(res, "auto-aligned whitespace") {
+		t.Fatalf("whitespace fallback not applied: %q", res)
+	}
+	data, _ := os.ReadFile(filepath.Join(ws, "tabs.go"))
+	if !strings.Contains(string(data), "return 2") {
+		t.Errorf("edit not applied: %q", data)
+	}
+	// the on-disk indentation must remain tabs (only the value changed)
+	if !strings.Contains(string(data), "\treturn 2") {
+		t.Errorf("on-disk indentation not preserved: %q", data)
+	}
+
+	// an ambiguous normalized match must NOT auto-apply (two identical bodies)
+	writeFile(t, ws, "dup.go", "package demo\n\nfunc a() int {\n\treturn 1\n}\n\nfunc b() int {\n\treturn 1\n}\n")
+	res2 := execTool(t, reg, "fs_edit", map[string]any{
+		"path": "dup.go", "old_string": "func _() int {\n    return 1\n}", "new_string": "func _() int {\n    return 2\n}",
+	})
+	if !strings.Contains(res2, "not found") {
+		t.Errorf("ambiguous whitespace match auto-applied: %q", res2)
+	}
+}
