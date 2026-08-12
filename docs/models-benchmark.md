@@ -4,10 +4,17 @@ What to expect from different local models running Yagent's agent loop, measured
 on the reference hardware. Re-run on your own machine with:
 
 ```bash
-yagent bench                 # per-task pass/fail + timing for the configured model
-yagent bench --json          # machine-readable (collect across models)
-yagent calibrate             # tune sampling recipes for the configured model
+yagent bench                        # per-task pass/fail + timing + t/s for the configured model
+yagent bench --repeat 3             # run each task 3× for a stabler score (flaky tasks vary)
+yagent bench --json                 # machine-readable (collect across models)
+yagent calibrate                    # tune sampling recipes for the configured model
 ```
+
+Each task reports its **pass rate**, **average wall time**, **content t/s** and
+**reasoning tokens**. Reading the t/s column: for a reasoning model the content
+t/s looks low because most of the wall time is thinking — the "think" count
+shows that overhead. `--repeat N` is worth using before judging a model: the
+`multi-turn` and `code-locate` tasks are the flakiest and swing run-to-run.
 
 ## How the benchmark works
 

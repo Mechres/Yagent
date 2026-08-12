@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Mechres/Yagent/internal/agent"
 	"github.com/Mechres/Yagent/internal/llm"
@@ -156,14 +157,27 @@ func Recipes() []Recipe {
 	}
 }
 
-// Result is one task's outcome.
+// Result is one task's outcome, including timing and (heuristic, len/4)
+// token counts so guidance can show generation speed and thinking overhead.
 type Result struct {
-	Pass   bool
-	Detail string
+	Pass         bool
+	Detail       string
+	WallMS       int64 // total wall time for the task's runs
+	Tokens       int   // assistant content tokens generated (len/4)
+	ReasonTokens int   // reasoning/thinking tokens generated (len/4)
+}
+
+// TokPerSec is the content-generation speed (heuristic tokens/second).
+func (r Result) TokPerSec() float64 {
+	if r.WallMS <= 0 {
+		return 0
+	}
+	return float64(r.Tokens) / (float64(r.WallMS) / 1000)
 }
 
 // RunTask executes one task against a real model client and returns its result.
 func RunTask(client *llm.Client, task Task) Result {
+	start := time.Now()
 	ws, err := os.MkdirTemp("", "yagent-bench-*")
 	if err != nil {
 		return Result{Detail: "setup: " + err.Error()}
@@ -174,13 +188,19 @@ func RunTask(client *llm.Client, task Task) Result {
 			return Result{Detail: "setup: " + err.Error()}
 		}
 	}
+	var tokens, reasonTokens int
 	reg := tools.NewRegistry(ws, tools.Options{ReadOnly: true})
-	a := agent.New(client, reg, nil, agent.Config{MaxIterations: 8, Window: 8192}, ws)
+	a := agent.New(client, reg, nil, agent.Config{
+		MaxIterations: 8,
+		Window:        8192,
+		OnToken:       func(d string) { tokens += len(d) / 4 },
+		OnReasoning:   func(d string) { reasonTokens += len(d) / 4 },
+	}, ws)
 	var answer string
 	for _, in := range task.Inputs {
 		answer, err = a.Run(context.Background(), in)
 		if err != nil {
-			return Result{Detail: "run: " + err.Error()}
+			return Result{Detail: "run: " + err.Error(), WallMS: time.Since(start).Milliseconds()}
 		}
 	}
 	var toolResults []string
@@ -190,7 +210,8 @@ func RunTask(client *llm.Client, task Task) Result {
 		}
 	}
 	pass, detail := task.Check(answer, toolResults)
-	return Result{Pass: pass, Detail: detail}
+	return Result{Pass: pass, Detail: detail, WallMS: time.Since(start).Milliseconds(),
+		Tokens: tokens, ReasonTokens: reasonTokens}
 }
 
 // RecipeResult is one recipe's sweep outcome.

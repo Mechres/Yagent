@@ -145,10 +145,11 @@ func main() {
 	case "bench":
 		fs := flag.NewFlagSet("bench", flag.ContinueOnError)
 		jsonOut := fs.Bool("json", false, "machine-readable JSON report")
+		repeat := fs.Int("repeat", 1, "run each task N times for a stabler score (default 1)")
 		if err := fs.Parse(args[1:]); err != nil {
 			os.Exit(2)
 		}
-		if err := runBench(cfg, *jsonOut); err != nil {
+		if err := runBench(cfg, *jsonOut, *repeat); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -421,7 +422,7 @@ func copyDir(src, dst string) error {
 // runBench runs the canonical small-model tasks once against the configured
 // model and reports per-task pass/fail + timing. --json emits a machine-readable
 // report so results can be collected across models (see docs/models-benchmark.md).
-func runBench(cfg *config.Config, jsonOut bool) error {
+func runBench(cfg *config.Config, jsonOut bool, repeat int) error {
 	client := llm.NewClient(cfg.ServerURL, cfg.Model)
 	client.BearerToken = cfg.APIKey
 	client.Sampling = llm.Sampling{
@@ -437,35 +438,43 @@ func runBench(cfg *config.Config, jsonOut bool) error {
 	if _, err := client.ChatStream(ctx, []llm.Message{{Role: "user", Content: "reply with the single word ok"}}, nil, func(string) {}, nil); err != nil {
 		return fmt.Errorf("cannot reach the model at %s: %w", cfg.ServerURL, err)
 	}
-
-	type taskReport struct {
-		Name   string `json:"name"`
-		Pass   bool   `json:"pass"`
-		Detail string `json:"detail,omitempty"`
-		WallMS int64  `json:"wall_ms"`
+	if repeat < 1 {
+		repeat = 1
 	}
+
 	tasks := bench.Tasks()
 	start := time.Now()
-	reports := make([]taskReport, 0, len(tasks))
+	reports := make([]benchTaskReport, 0, len(tasks))
 	for _, tk := range tasks {
-		ts := time.Now()
-		res := bench.RunTask(client, tk)
-		reports = append(reports, taskReport{tk.Name, res.Pass, res.Detail, time.Since(ts).Milliseconds()})
+		var passed, reason, tokens int
+		var wallMS int64
+		var detail string
+		for i := 0; i < repeat; i++ {
+			res := bench.RunTask(client, tk)
+			passed += b2i(res.Pass)
+			wallMS += res.WallMS
+			tokens += res.Tokens
+			reason += res.ReasonTokens
+			if detail == "" {
+				detail = res.Detail
+			}
+		}
+		avg := int64(repeat)
+		reports = append(reports, benchTaskReport{
+			Name: tk.Name, Passed: passed, Runs: repeat, Detail: detail,
+			WallMS: wallMS / avg, TokensPerSec: float64(tokens) / (float64(wallMS) / 1000),
+			ReasonTokens: reason / repeat,
+		})
 	}
 	total := time.Since(start)
-	passed := 0
-	for _, r := range reports {
-		if r.Pass {
-			passed++
-		}
-	}
 
 	if jsonOut {
 		out := map[string]any{
 			"model":    cfg.Model,
 			"server":   cfg.ServerURL,
-			"pass":     passed,
-			"total":    len(tasks),
+			"repeat":   repeat,
+			"pass":     passedRuns(reports),
+			"total":    len(tasks) * repeat,
 			"wall_sec": total.Seconds(),
 			"sampling": client.Sampling,
 			"tasks":    reports,
@@ -475,17 +484,50 @@ func runBench(cfg *config.Config, jsonOut bool) error {
 		return enc.Encode(out)
 	}
 
-	fmt.Printf("benchmark %q across %d canonical tasks (sampling: temp %v, top_p %v, reasoning cap %d)\n",
-		cfg.Model, len(tasks), client.Sampling.Temperature, client.Sampling.TopP, client.Sampling.ReasoningMaxTokens)
+	fmt.Printf("benchmark %q across %d canonical tasks × %d run(s) (sampling: temp %v, top_p %v, reasoning cap %d)\n",
+		cfg.Model, len(tasks), repeat, client.Sampling.Temperature, client.Sampling.TopP, client.Sampling.ReasoningMaxTokens)
 	for _, r := range reports {
 		mark := "ok  "
-		if !r.Pass {
-			mark = "FAIL"
+		if r.Passed < r.Runs {
+			mark = fmt.Sprintf("%d/%d", r.Passed, r.Runs)
 		}
-		fmt.Printf("  %-12s %s  %7s  %s\n", r.Name, mark, (time.Duration(r.WallMS) * time.Millisecond).Round(100*time.Millisecond), r.Detail)
+		think := ""
+		if r.ReasonTokens > 0 {
+			think = fmt.Sprintf(" · %d think", r.ReasonTokens)
+		}
+		fmt.Printf("  %-12s %s  %7s  %6.1f t/s%s  %s\n", r.Name, mark,
+			(time.Duration(r.WallMS) * time.Millisecond).Round(100*time.Millisecond),
+			r.TokensPerSec, think, r.Detail)
 	}
-	fmt.Printf("\n%d/%d tasks pass · total %s\n", passed, len(tasks), total.Round(time.Second))
+	fmt.Printf("\n%d/%d run(s) passed · total %s\n", passedRuns(reports), len(tasks)*repeat, total.Round(time.Second))
 	return nil
+}
+
+// benchTaskReport is one task's aggregate across its runs.
+type benchTaskReport struct {
+	Name         string  `json:"name"`
+	Passed       int     `json:"passed"` // runs that passed
+	Runs         int     `json:"runs"`
+	Detail       string  `json:"detail,omitempty"`
+	WallMS       int64   `json:"wall_ms"` // average per run
+	TokensPerSec float64 `json:"tok_s"`
+	ReasonTokens int     `json:"reason_tokens"` // avg thinking tokens per run
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// passedRuns sums the passed runs across the per-task reports.
+func passedRuns(reports []benchTaskReport) int {
+	n := 0
+	for _, r := range reports {
+		n += r.Passed
+	}
+	return n
 }
 
 // runCalibrate runs the canonical small-model benchmark across the sampling

@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.22 — 2026-08-12
+
+### Changed
+- **`yagent bench` enhanced**: reports per-task **generation speed (t/s)** and
+  **reasoning tokens** alongside pass/time (shows how much a model "thinks" per
+  task), and gained `--repeat N` to run each task N times for a stabler score —
+  the flaky `multi-turn` / `code-locate` tasks swing run-to-run. `--json` now
+  carries the per-task aggregates. `bench.RunTask` counts tokens and times
+  itself internally.
+
 ## v0.1.21 — 2026-08-12
 
 ### Added
