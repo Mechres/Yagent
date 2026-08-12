@@ -2,6 +2,36 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.6 — 2026-08-12
+
+### Added
+- **Project-instructions reader (P1)**: the agent auto-discovers developer
+  instructions in the workspace — `.yagent/instructions.md` > `AGENTS.md` >
+  `CLAUDE.md` > `.cursorrules` (first found) — and folds them into the system
+  prompt (capped at 16 KiB), so repo-specific rules are respected without
+  manual prompting.
+- **Preset subagent roles (P2)**: the `subagent` tool accepts `role:
+  architect|auditor|test-engineer|docs-writer` — each applies a focused system
+  prompt, a default read-only tool subset, and a temperature (child client
+  cloned via `llm.Client.Clone`). Unknown roles are rejected with a clear
+  error.
+- **Structured session exports (P3)**: `yagent sessions export <id> --format
+  html|md` (default `md`); `Store.RenderHTML` emits an escaped, styled,
+  dependency-free HTML archive.
+- **Tool-output pruning in the budget (P4)**: when the context window is
+  exceeded, the budget now first collapses old tool results (before the current
+  user turn) into a one-line `[tool output concealed; N lines hidden]` marker,
+  keeping the user's instructions and the model's reasoning turns alive —
+  summarization only runs if still over budget.
+- **`workspace_diagnostics` tool (P5)**: detects the project type and runs its
+  static checker (`go vet ./...`, `cargo check`, `npx tsc --noEmit`, eslint,
+  `ruff check .` or a python syntax check) with a 120s timeout. Read-only (the
+  commands are fixed by the tool, not the model), so edits can be verified
+  without the approval gate.
+- **Skills manager modal (P6)**: bare `/skills` in the TUI opens a modal over
+  pending staged skill writes — ↑/↓ pick, `d` diff, `v` verify, `a` approve,
+  `r` reject, esc close.
+
 ## v0.1.5 — 2026-08-12
 
 ### Added

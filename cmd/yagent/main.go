@@ -370,20 +370,29 @@ func runSessionsCmd(cfg *config.Config, args []string) error {
 		return runSessionSearch(cfg, args[1])
 	case "export":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: yagent sessions export <id> [--output file.md]")
+			return fmt.Errorf("usage: yagent sessions export <id> [--output file] [--format md|html]")
 		}
 		output := ""
-		if len(args) > 2 {
-			if args[2] == "--output" {
-				if len(args) < 4 {
-					return fmt.Errorf("usage: yagent sessions export <id> [--output file.md]")
+		format := "md"
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--output":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--output needs a file path")
 				}
-				output = args[3]
-			} else {
-				return fmt.Errorf("unknown option %q (use --output)", args[2])
+				i++
+				output = args[i]
+			case "--format":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--format needs md or html")
+				}
+				i++
+				format = args[i]
+			default:
+				return fmt.Errorf("unknown option %q (use --output or --format)", args[i])
 			}
 		}
-		return runSessionExport(cfg, args[1], output)
+		return runSessionExport(cfg, args[1], output, format)
 	}
 	return fmt.Errorf("unknown sessions command %q (search | export)", args[0])
 }
@@ -413,26 +422,34 @@ func runSessionSearch(cfg *config.Config, query string) error {
 	return nil
 }
 
-// runSessionExport renders a session transcript as Markdown.
-func runSessionExport(cfg *config.Config, id, output string) error {
+// runSessionExport renders a session transcript as Markdown or HTML.
+func runSessionExport(cfg *config.Config, id, output, format string) error {
 	st, err := memory.Open(cfg.DataDir)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-	md, err := st.RenderMarkdown(context.Background(), id)
+	var body string
+	switch format {
+	case "md":
+		body, err = st.RenderMarkdown(context.Background(), id)
+	case "html":
+		body, err = st.RenderHTML(context.Background(), id)
+	default:
+		return fmt.Errorf("unknown format %q (md | html)", format)
+	}
 	if err != nil {
 		return err
 	}
 	if output == "-" {
-		fmt.Print(md)
+		fmt.Print(body)
 		return nil
 	}
 	if output == "" {
-		output = "session-" + id + ".md"
+		output = "session-" + id + "." + format
 	}
-	noteRedacted(md)
-	if err := os.WriteFile(output, []byte(md), 0o644); err != nil {
+	noteRedacted(body)
+	if err := os.WriteFile(output, []byte(body), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("exported %s -> %s\n", id[:8], output)

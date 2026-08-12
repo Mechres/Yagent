@@ -86,7 +86,8 @@ type Options struct {
 	ReadOnly bool
 	// Subagent delegates a task to an isolated child agent (M7 v1). The
 	// tools slice scopes the child registry (M7 beyond v2); nil = full set.
-	Subagent func(ctx context.Context, task, workspace string, tools []string) (string, error)
+	// The role is the resolved preset profile (P2), zero value when none.
+	Subagent func(ctx context.Context, task, workspace string, tools []string, role SubagentRole) (string, error)
 	// Jobs enables background-process tools (may be nil).
 	Jobs *jobs.Registry
 	// ConsultCmd is an installed terminal AI app used as the advisor, e.g.
@@ -113,19 +114,20 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		skills:    opts.Skills,
 	}
 	reg := map[string]Tool{
-		"fs_read":       &fsReadTool{ws: r.workspace},
-		"fs_write":      &fsWriteTool{ws: r.workspace, undo: opts.Undo},
-		"fs_edit":       &fsEditTool{ws: r.workspace, undo: opts.Undo},
-		"fs_patch":      &fsPatchTool{ws: r.workspace, undo: opts.Undo},
-		"code_outline":  &codeOutlineTool{ws: r.workspace},
-		"glob":          &globTool{ws: r.workspace},
-		"grep":          &grepTool{ws: r.workspace},
-		"shell_exec":    &shellExecTool{ws: r.workspace, sandbox: opts.ShellSandbox},
-		"git_status":    &gitStatusTool{ws: r.workspace},
-		"git_diff":      &gitDiffTool{ws: r.workspace},
-		"git_log":       &gitLogTool{ws: r.workspace},
-		"memory_save":   &memorySaveTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors, sessionID: opts.SessionID},
-		"memory_search": &memorySearchTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors},
+		"fs_read":               &fsReadTool{ws: r.workspace},
+		"fs_write":              &fsWriteTool{ws: r.workspace, undo: opts.Undo},
+		"fs_edit":               &fsEditTool{ws: r.workspace, undo: opts.Undo},
+		"fs_patch":              &fsPatchTool{ws: r.workspace, undo: opts.Undo},
+		"code_outline":          &codeOutlineTool{ws: r.workspace},
+		"glob":                  &globTool{ws: r.workspace},
+		"grep":                  &grepTool{ws: r.workspace},
+		"workspace_diagnostics": &diagnosticsTool{ws: r.workspace},
+		"shell_exec":            &shellExecTool{ws: r.workspace, sandbox: opts.ShellSandbox},
+		"git_status":            &gitStatusTool{ws: r.workspace},
+		"git_diff":              &gitDiffTool{ws: r.workspace},
+		"git_log":               &gitLogTool{ws: r.workspace},
+		"memory_save":           &memorySaveTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors, sessionID: opts.SessionID},
+		"memory_search":         &memorySearchTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors},
 	}
 	if opts.Skills != nil {
 		reg["skills_list"] = &skillsListTool{store: opts.Skills}
@@ -165,8 +167,10 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	return r
 }
 
-// SetSubagent wires the subagent delegate at runtime.
-func (r *Registry) SetSubagent(fn func(ctx context.Context, task, workspace string, tools []string) (string, error)) {
+// SetSubagent wires the subagent delegate at runtime. The callback receives the
+// tool subset and the resolved role preset (P2), so the caller can scope the
+// child registry and sampling accordingly.
+func (r *Registry) SetSubagent(fn func(ctx context.Context, task, workspace string, tools []string, role SubagentRole) (string, error)) {
 	if t, ok := r.tools["subagent"].(*subagentTool); ok {
 		t.run = fn
 	} else if fn != nil {

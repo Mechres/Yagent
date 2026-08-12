@@ -222,7 +222,7 @@ func TestLiveSubagentInfoLoss(t *testing.T) {
 	for _, v := range variants {
 		t.Logf("\n===== variant: %s =====", v.name)
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
-		summary, tokens, err := agent.RunSubagent(ctx, client, reg, v.task, ws)
+		summary, tokens, err := agent.RunSubagent(ctx, client, reg, v.task, ws, tools.SubagentRole{})
 		cancel()
 		r := result{err: err}
 		if err != nil {

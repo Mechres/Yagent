@@ -125,6 +125,74 @@ of reality:
   summary loss). *Already present:* evals for subagent/toolset, fuzzy args,
   code_references; chunker/symbol/hybrid-search benchmarks.
 
+A third review (2026-08-12, "agy") proposed 12 items across four domains.
+Screened against the codebase (see session notes); **skipped** items marked ⚪:
+
+- 🟡 **P1 project-instructions reader** — auto-discover `.yagent/instructions.md`
+  / `AGENTS.md` / `CLAUDE.md` / `.cursorrules` and append to the system prompt
+  (capped). `buildSystemPrompt` is currently a fixed template.
+- 🟡 **P2 preset subagent roles** — architect/auditor/test-engineer/docs-writer
+  presets (system prompt + tool subset + temperature) built on the existing
+  `tools[]` scoping.
+- 🟡 **P3 structured session exports** — `yagent sessions export <id>
+  --format html|md` (markdown exists; HTML with inline styling, no new deps).
+- 🟡 **P4 tool-output pruning in the budget** — collapse old tool results to
+  `[Output concealed; N lines hidden]` instead of summarizing user/reasoning
+  turns away. Refines `budget`, keeps user instructions alive.
+- 🟡 **P5 `workspace_diagnostics` tool** — detect project type and run
+  `go vet`/`tsc --noEmit`/`cargo check`/`ruff` as a typed read-only tool
+  (explicit call, not an auto-hook after every write).
+- 🟡 **P6 skills manager modal** — TUI overlay for `/skills pending`
+  (diff, verify, approve/reject) following the `/settings`+`/sessions` modal
+  patterns.
+- 🟡 **P7 `fs_refactor` rename** — symbol rename across call sites using
+  `index_calls`/`code_references`, applied via staged `fs_edit`s through the
+  undo buffer + approval. Highest effort; do last, carefully.
+- 🟡 **P8 declarative playbooks** — `.yagent/playbooks/*.yaml` = phases of
+  `{goal, rounds, tools[], success criteria}` run through `RunGoal` + tool
+  subsets. Effectively user-land M7 orchestration.
+- ⚪ Git worktree isolation (`--worktree`) — overlaps `internal/checkpoint`
+  rollback; conflicts with the no-git-mutations constraint.
+- ⚪ Multimodal local vision — needs a multimodal message-part architecture
+  change + a vision model on 12 GB VRAM (tight); not a local-first fit now.
+- ⚪ `/plan` interactive mode — big TUI lift; goal mode + checkpoints already
+  give a linear plan; playbooks cover the structured case.
+- ⚪ TUI dual viewport (Ctrl+W live-diff split) — the TUI is already packed;
+  high rework for medium value.
+
+**Phase plan**: A = P1+P2+P3 (quick wins) → B = P4+P5+P6 (medium) →
+C = P7+P8 (bigger). Status: **Phase A + B shipped** (2026-08-12); Phase C next.
+
+Phase A status:
+- ✅ **P1 project-instructions reader** — `repoInstructions` (agent.go) appends
+  `.yagent/instructions.md` > `AGENTS.md` > `CLAUDE.md` > `.cursorrules`
+  (first found, 16 KiB cap) to the system prompt. Verified live on :8089 via
+  `--trace`.
+- ✅ **P2 preset subagent roles** — `architect`/`auditor`/`test-engineer`/
+  `docs-writer` (`tools.SubagentRole`): role system-prompt suffix + default
+  read-only tool subset + temperature (child client cloned via `llm.Client.
+  Clone`); `subagent.role` arg, unknown roles rejected.
+- ✅ **P3 structured exports** — `yagent sessions export <id> --format
+  html|md` (default md); `Store.RenderHTML` emits an escaped, styled,
+  dependency-free HTML page.
+
+Phase B status:
+- ✅ **P4 tool-output pruning in the budget** — `budget` first collapses old
+  tool results (before the current user turn) to a one-line
+  `[tool output concealed; N lines hidden]` marker, keeping user/assistant
+  turns alive; summarization only runs if still over budget. In-memory only
+  (resumed sessions reload full messages and re-prune). Eval 07 now asserts
+  the concealed marker.
+- ✅ **P5 `workspace_diagnostics` tool** — detects the project
+  (go.mod → `go vet ./...`, Cargo.toml → `cargo check`, package.json+tsconfig →
+  `npx tsc --noEmit`, eslint when configured, py → `ruff check .` or
+  compileall) and runs the checker with a 120s timeout. Read-only: commands are
+  fixed by the tool, so no approval gate, but the agent gets a first-class
+  self-healing loop after edits. In the core schema set.
+- ✅ **P6 skills manager modal** — bare `/skills` opens a TUI modal over the
+  pending staged writes (following the `/settings`+`/sessions` patterns):
+  ↑/↓ pick, `d` diff, `v` verify, `a` approve, `r` reject, esc close.
+
 A second external agent's plan (2026-08-11). Its section A (fs_patch modal v2)
 was superseded mid-inspection — that work is already shipped (per-hunk walker
 + `RebuildPatch`). Sections B/C/D recorded for evaluation:

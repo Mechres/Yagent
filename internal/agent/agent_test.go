@@ -827,6 +827,99 @@ func TestRunSkipsEmptyIndexInjection(t *testing.T) {
 
 // ---------- M3.5: verification harness ----------
 
+func TestRepoInstructionsInSystemPrompt(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "AGENTS.md", "REPO-RULE: always use tabs")
+	s := newScriptedLLM(t, [][]string{finalContent("ok")})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	joined := ""
+	for _, m := range a.assembleContext("", "") {
+		joined += m.Content
+	}
+	if !strings.Contains(joined, "REPO-RULE: always use tabs") {
+		t.Errorf("AGENTS.md not folded into the system prompt: %q", joined[:min(len(joined), 200)])
+	}
+}
+
+func TestRepoInstructionsPrecedenceAndCap(t *testing.T) {
+	// precedence: .yagent/instructions.md > AGENTS.md
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, ".yagent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceFile(t, ws, ".yagent/instructions.md", "PROJECT-RULE")
+	writeWorkspaceFile(t, ws, "AGENTS.md", "REPO-RULE")
+	prompt := buildSystemPrompt(ws)
+	if !strings.Contains(prompt, "PROJECT-RULE") || strings.Contains(prompt, "REPO-RULE") {
+		t.Errorf("precedence wrong: %q", prompt)
+	}
+
+	// oversized instructions are capped with a marker
+	ws2 := t.TempDir()
+	writeWorkspaceFile(t, ws2, "AGENTS.md", strings.Repeat("x", maxInstructionsBytes+1000))
+	prompt2 := buildSystemPrompt(ws2)
+	if !strings.Contains(prompt2, "truncated") {
+		t.Errorf("cap marker missing (len %d)", len(prompt2))
+	}
+	if idx := strings.Index(prompt2, "Developer instructions from"); idx >= 0 {
+		if n := strings.Count(prompt2[idx:], "x"); n > maxInstructionsBytes {
+			t.Errorf("instructions not capped: %d x chars", n)
+		}
+	} else {
+		t.Error("instructions section missing from the prompt")
+	}
+}
+
+func TestBudgetPrunesToolOutputsBeforeSummarizing(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 5, Window: 8000, Reserve: 1000}, ws)
+	bigTool := strings.Repeat("tool result line\n", 1600) // ~32 KiB of output
+	a.mu.Lock()
+	a.history = []historyEntry{
+		{msg: llm.Message{Role: "user", Content: "first instruction keep me"}},
+		{msg: llm.Message{Role: "tool", Content: bigTool, ToolCallID: "c1"}},
+		{msg: llm.Message{Role: "tool", Content: bigTool, ToolCallID: "c2"}},
+		{msg: llm.Message{Role: "user", Content: "current turn"}},
+	}
+	for i := range a.history {
+		a.history[i].tokens = len(a.history[i].msg.Content)/4 + len(a.history[i].msg.ToolCallID)/4
+	}
+	a.mu.Unlock()
+
+	if err := a.budget(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	// tool messages are pruned to markers; the summarizer must NOT have run
+	toolPruned := 0
+	for _, h := range a.history {
+		if h.msg.Role == "tool" {
+			if !strings.Contains(h.msg.Content, "tool output concealed") {
+				t.Errorf("tool message not pruned: %q…", h.msg.Content[:min(len(h.msg.Content), 40)])
+			}
+			toolPruned++
+		}
+	}
+	if toolPruned != 2 {
+		t.Errorf("pruned %d tool messages, want 2", toolPruned)
+	}
+	// the user's instruction survives (no summarization happened)
+	found := false
+	for _, h := range a.history {
+		if strings.Contains(h.msg.Content, "first instruction keep me") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("user instruction was summarized away instead of preserved")
+	}
+}
+
 func TestVerifySkillPass(t *testing.T) {
 	s := newScriptedLLM(t, [][]string{
 		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
@@ -851,6 +944,27 @@ func TestVerifySkillPass(t *testing.T) {
 	req := string(s.requests[0])
 	if !strings.Contains(req, "Staged skill to verify") || !strings.Contains(req, "## Verification") {
 		t.Errorf("skill content not injected: %q", req[:300])
+	}
+}
+
+func TestRunSubagentRolePrompt(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{finalContent("architect summary")})
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{ReadOnly: true, SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	role, _ := tools.RoleByName("architect")
+	answer, _, err := RunSubagent(context.Background(), client, reg, "review the design", ws, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "architect summary" {
+		t.Errorf("answer = %q", answer)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req := string(s.requests[0])
+	if !strings.Contains(req, role.Prompt) || !strings.Contains(req, "You are an ARCHITECT") {
+		t.Errorf("role prompt not injected into the child context: %q", req[:min(len(req), 200)])
 	}
 }
 
@@ -1144,7 +1258,7 @@ func TestRunSubagent(t *testing.T) {
 	writeWorkspaceFile(t, ws, "a.txt", "data")
 	reg := tools.NewRegistry(ws, tools.Options{ReadOnly: true})
 	client := llm.NewClient(s.ts.URL, "test-model")
-	answer, _, err := RunSubagent(context.Background(), client, reg, "check a.txt", ws)
+	answer, _, err := RunSubagent(context.Background(), client, reg, "check a.txt", ws, tools.SubagentRole{})
 	if err != nil {
 		t.Fatalf("RunSubagent: %v", err)
 	}

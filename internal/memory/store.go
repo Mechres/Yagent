@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"strings"
@@ -379,6 +380,45 @@ func (s *Store) RenderMarkdown(ctx context.Context, sessionID string) (string, e
 			fmt.Fprintf(&b, "<details><summary>tool result</summary>\n\n```\n%s\n```\n\n</details>\n\n", m.Content)
 		}
 	}
+	return b.String(), nil
+}
+
+// RenderHTML renders a session's transcript as a standalone HTML page (inline
+// styling, content escaped, no JS, no network — a shareable archive).
+func (s *Store) RenderHTML(ctx context.Context, sessionID string) (string, error) {
+	history, err := s.History(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Yagent session %s</title>
+<style>
+body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-width:64rem;margin:2rem auto;padding:0 1rem;color:#d4d4d8;background:#1b1d23;line-height:1.55;}
+h1{color:#e4e4e7;font-size:1.25rem;}
+.msg{margin:1.25rem 0;padding:.75rem 1rem;border-radius:6px;white-space:pre-wrap;word-break:break-word;}
+.user{background:#2a2d36;border-left:3px solid #7aa2f7;}
+.assistant{background:#24272e;border-left:3px solid #9ece6a;}
+.tool{background:#1f2229;border-left:3px solid #5b6270;color:#a1a6b4;font-size:.9em;}
+.role{display:block;font-weight:bold;margin-bottom:.4rem;color:#a1a6b4;}
+</style></head>
+<body><h1>Yagent session %s</h1>`, sessionID, sessionID)
+	for _, m := range history {
+		switch m.Role {
+		case "user":
+			fmt.Fprintf(&b, `<div class="msg user"><span class="role">User</span>%s</div>`, html.EscapeString(m.Content))
+		case "assistant":
+			body := m.Content
+			if body == "" {
+				body = "(tool calls)"
+			}
+			fmt.Fprintf(&b, `<div class="msg assistant"><span class="role">Assistant</span>%s</div>`, html.EscapeString(body))
+		case "tool":
+			fmt.Fprintf(&b, `<div class="msg tool"><span class="role">tool result</span>%s</div>`, html.EscapeString(m.Content))
+		}
+	}
+	b.WriteString(`</body></html>`)
 	return b.String(), nil
 }
 

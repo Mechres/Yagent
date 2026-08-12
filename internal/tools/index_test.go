@@ -192,7 +192,7 @@ func TestSubagentParallel(t *testing.T) {
 	var mu sync.Mutex
 	active := 0
 	max := 0
-	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string, toolset []string) (string, error) {
+	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string, toolset []string, role SubagentRole) (string, error) {
 		mu.Lock()
 		active++
 		if active > max {
@@ -224,7 +224,7 @@ func TestSubagentParallel(t *testing.T) {
 func TestSubagentToolSet(t *testing.T) {
 	var mu sync.Mutex
 	var gotTools []string
-	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string, toolset []string) (string, error) {
+	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string, toolset []string, role SubagentRole) (string, error) {
 		mu.Lock()
 		gotTools = append(gotTools, toolset...)
 		mu.Unlock()
@@ -255,6 +255,59 @@ func TestSubagentToolSet(t *testing.T) {
 	}
 	if gotTools != nil {
 		t.Errorf("empty tools should be nil, got %v", gotTools)
+	}
+}
+
+func TestSubagentRolePreset(t *testing.T) {
+	var mu sync.Mutex
+	var gotTools []string
+	var gotRole SubagentRole
+	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string, toolset []string, role SubagentRole) (string, error) {
+		mu.Lock()
+		gotTools = append([]string(nil), toolset...)
+		gotRole = role
+		mu.Unlock()
+		return "SUMMARY " + task, nil
+	}}
+
+	// a known role applies its default tool subset and is passed through
+	if _, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"task": "audit", "role": "architect"})); err != nil {
+		t.Fatal(err)
+	}
+	arch, ok := RoleByName("architect")
+	if !ok {
+		t.Fatal("architect role missing")
+	}
+	mu.Lock()
+	gotTools1 := append([]string(nil), gotTools...)
+	gotRole1 := gotRole
+	mu.Unlock()
+	if gotRole1.Name != "architect" || gotRole1.Prompt != arch.Prompt || gotRole1.Temperature != arch.Temperature {
+		t.Errorf("role not passed through: %+v", gotRole1)
+	}
+	if !reflect.DeepEqual(gotTools1, arch.Tools) {
+		t.Errorf("role default tools = %v, want %v", gotTools1, arch.Tools)
+	}
+
+	// an explicit tools slice overrides the role default
+	if _, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"task": "x", "role": "auditor", "tools": []string{"grep"}})); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	gotTools2 := append([]string(nil), gotTools...)
+	mu.Unlock()
+	if !reflect.DeepEqual(gotTools2, []string{"grep"}) {
+		t.Errorf("explicit tools should override role default: %v", gotTools2)
+	}
+}
+
+func TestSubagentUnknownRole(t *testing.T) {
+	tool := &subagentTool{ws: t.TempDir(), run: func(ctx context.Context, task, ws string, toolset []string, role SubagentRole) (string, error) {
+		return "ok", nil
+	}}
+	_, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"task": "x", "role": "wizard"}))
+	if err == nil || !strings.Contains(err.Error(), "unknown subagent role") {
+		t.Errorf("unknown role error = %v", err)
 	}
 }
 

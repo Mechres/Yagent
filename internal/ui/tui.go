@@ -21,6 +21,7 @@ import (
 	"github.com/Mechres/Yagent/internal/config"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/skills"
 	"github.com/Mechres/Yagent/internal/tools"
 )
 
@@ -260,6 +261,14 @@ type tuiModel struct {
 	sessionsConfirm bool
 	sessionsAction  string
 	sessions        []memory.SessionSummary
+
+	// Skills manager modal (P6): pending skill writes with diff/verify/
+	// approve/reject actions.
+	skillsOpen bool
+	skillsIdx  int
+	skills     []skills.PendingSummary
+	skillsMsg  string
+	skillsCmd  *skillsHandler
 
 	// In-viewport transcript search (Ctrl+F): findOpen captures keys into
 	// findQuery; findMatches are byte offsets into the joined transcript and
@@ -670,6 +679,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.hunkOpen {
 			return m.handleHunkKey(msg)
 		}
+		if m.skillsOpen {
+			return m.handleSkillsKey(msg)
+		}
 		if m.pending != nil {
 			switch msg.String() {
 			case "y", "Y":
@@ -876,6 +888,9 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.sessionsIdx = 0
 		m.sessionsConfirm = false
 		return m, nil
+	case "/skills":
+		m.input.Reset()
+		return m.openSkillsModal(), nil
 	case "/clear":
 		m.input.Reset()
 		m.ag.Reset()
@@ -1380,6 +1395,145 @@ func (m *tuiModel) loadHistoryIntoTranscript(history []llm.Message, summary stri
 	m.refreshViewport()
 }
 
+// openSkillsModal opens the skills manager: pending staged skill writes with
+// diff / verify / approve / reject actions.
+func (m *tuiModel) openSkillsModal() tea.Model {
+	m.skillsOpen = true
+	m.skillsIdx = 0
+	m.skillsMsg = ""
+	m.skills, _ = m.env.sk.ListPending()
+	m.skillsCmd = &skillsHandler{
+		store:       m.env.sk,
+		reg:         m.env.registry,
+		cfg:         m.cfg,
+		w:           &appendWriter{m: m},
+		approval:    &m.cfg.Skills.WriteApproval,
+		ctx:         context.Background(),
+		client:      m.client,
+		env:         m.env,
+		yoloToggler: m.yoloToggler,
+	}
+	return m
+}
+
+// handleSkillsKey drives the skills manager modal (P6): up/down pick a staged
+// write, d shows its diff, v runs the verification harness, a/r approve or
+// reject it, esc closes.
+func (m *tuiModel) handleSkillsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.skills) == 0 {
+		switch msg.String() {
+		case "esc", "q":
+			m.skillsOpen = false
+			return m, nil
+		}
+		return m, nil
+	}
+	if m.skillsIdx < 0 || m.skillsIdx >= len(m.skills) {
+		m.skillsIdx = 0
+	}
+	p := &m.skills[m.skillsIdx]
+	switch msg.String() {
+	case "esc", "q":
+		m.skillsOpen = false
+		m.skillsMsg = ""
+		return m, nil
+	case "up":
+		if m.skillsIdx > 0 {
+			m.skillsIdx--
+		}
+	case "down":
+		if m.skillsIdx < len(m.skills)-1 {
+			m.skillsIdx++
+		}
+	case "d":
+		diff, err := m.env.sk.PendingDiff(p.ID)
+		if err != nil {
+			m.skillsMsg = "error: " + err.Error()
+		} else {
+			m.skillsMsg = capSkillMsg(diff)
+		}
+	case "v":
+		m.append("  verifying " + shortID(p.ID) + " …")
+		if err := m.skillsCmd.verifyPending(p.ID); err != nil {
+			m.append("  verify error: " + err.Error())
+		}
+		m.skills, _ = m.env.sk.ListPending()
+		m.skillsMsg = ""
+	case "a":
+		warning, err := m.env.sk.ApprovePending(p.ID)
+		if err != nil {
+			m.skillsMsg = "error: " + err.Error()
+		} else {
+			m.append("  approved " + shortID(p.ID))
+			if warning != "" {
+				m.append("  " + warning)
+			}
+			m.skills, _ = m.env.sk.ListPending()
+			m.skillsMsg = ""
+			if m.skillsIdx >= len(m.skills) {
+				m.skillsIdx = len(m.skills) - 1
+			}
+		}
+	case "r":
+		if err := m.env.sk.RejectPending(p.ID); err != nil {
+			m.skillsMsg = "error: " + err.Error()
+		} else {
+			m.append("  rejected " + shortID(p.ID))
+			m.skills, _ = m.env.sk.ListPending()
+			m.skillsMsg = ""
+			if m.skillsIdx >= len(m.skills) {
+				m.skillsIdx = len(m.skills) - 1
+			}
+		}
+	}
+	return m, nil
+}
+
+// capSkillMsg bounds a diff shown inside the skills modal.
+func capSkillMsg(s string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > 40 {
+		lines = append(lines[:40], "…")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// skillsView renders the skills manager modal (centered over the transcript).
+func (m *tuiModel) skillsView() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
+		Render(iconGear + " Pending skill writes")
+	marker := lipgloss.NewStyle().Foreground(m.th.Primary).Render("▸")
+	dim := lipgloss.NewStyle().Foreground(m.th.Muted)
+	var rows []string
+	if len(m.skills) == 0 {
+		rows = append(rows, "  "+dim.Render("no pending skill writes (approval gate off: writes apply immediately)"))
+	}
+	for i, p := range m.skills {
+		note := ""
+		if p.Failures >= skills.MaxSkillFailures {
+			note = fmt.Sprintf("  (stale — failed verification %d×)", p.Failures)
+		} else if p.Failures > 0 {
+			note = fmt.Sprintf("  (verification FAIL %d×)", p.Failures)
+		}
+		line := fmt.Sprintf("%s  %-11s %s%s", shortID(p.ID), p.Action, p.Name, note)
+		if i == m.skillsIdx {
+			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(m.th.Surface).
+				Bold(true).Render(line))
+		} else {
+			rows = append(rows, "  "+dim.Render(line))
+		}
+	}
+	body := strings.Join(rows, "\n")
+	hint := dim.Render("↑/↓ pick · d diff · v verify · a approve · r reject · esc close")
+	if m.skillsMsg != "" {
+		body += "\n\n" + lipgloss.NewStyle().Foreground(m.th.Foreground).Render(m.skillsMsg)
+	}
+	bodyStyle := lipgloss.NewStyle().Foreground(m.th.Foreground).Render(body)
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.th.Primary).
+		Padding(0, 1).Render(title + "\n\n" + bodyStyle + "\n\n" + hint)
+}
+
 // sessionsView renders the session browser (shown as a centered modal over the
 // transcript).
 func (m *tuiModel) sessionsView() string {
@@ -1629,6 +1783,9 @@ func (m *tuiModel) View() string {
 	if m.sessionsOpen {
 		out = overlayModal(m.th, m.sessionsView(), m.width, m.height)
 	}
+	if m.skillsOpen {
+		out = overlayModal(m.th, m.skillsView(), m.width, m.height)
+	}
 	return out
 }
 
@@ -1674,7 +1831,7 @@ func (m *tuiModel) layoutHeight() int {
 
 // showPopover reports whether the "/" command palette should be rendered.
 func (m *tuiModel) showPopover() bool {
-	if m.settingsOpen || m.sessionsOpen || m.findOpen {
+	if m.settingsOpen || m.sessionsOpen || m.skillsOpen || m.findOpen {
 		return false
 	}
 	return strings.HasPrefix(m.input.Value(), "/") && len(m.slashMatches()) > 0

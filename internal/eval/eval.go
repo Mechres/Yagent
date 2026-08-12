@@ -182,7 +182,7 @@ func Run(t *testing.T, task Task) {
 		// The subagent tool delegates to an isolated read-only child agent
 		// that consumes the next scripted response. An optional tools slice
 		// scopes the child registry (M7 beyond v2).
-		opts.Subagent = func(ctx context.Context, subtask, workspace string, toolset []string) (string, error) {
+		opts.Subagent = func(ctx context.Context, subtask, workspace string, toolset []string, role tools.SubagentRole) (string, error) {
 			subReg := tools.NewRegistry(workspace, tools.Options{ReadOnly: true, Web: wc, Index: idx, Skills: sk})
 			if len(toolset) > 0 {
 				var err error
@@ -191,7 +191,7 @@ func Run(t *testing.T, task Task) {
 					return err.Error(), nil
 				}
 			}
-			answer, tokens, err := agent.RunSubagent(ctx, client, subReg, subtask, workspace)
+			answer, tokens, err := agent.RunSubagent(ctx, client, subReg, subtask, workspace, role)
 			if err != nil {
 				return "error: subagent failed: " + err.Error(), nil
 			}

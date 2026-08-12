@@ -12,7 +12,7 @@ import (
 func BenchmarkSubagentFanOut(b *testing.B) {
 	tool := &subagentTool{
 		ws: b.TempDir(),
-		run: func(ctx context.Context, task, ws string, toolset []string) (string, error) {
+		run: func(ctx context.Context, task, ws string, toolset []string, role SubagentRole) (string, error) {
 			return "result for " + task, nil
 		},
 	}
@@ -25,7 +25,7 @@ func BenchmarkSubagentFanOut(b *testing.B) {
 		b.Run(fmt.Sprintf("tasks=%d", n), func(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				out, err := tool.runParallel(ctx, tasks, nil)
+				out, err := tool.runParallel(ctx, tasks, nil, SubagentRole{})
 				if err != nil || out == "" {
 					b.Fatalf("fan-out: %v", err)
 				}

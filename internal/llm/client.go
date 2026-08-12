@@ -79,6 +79,18 @@ func NewClient(serverURL, model string) *Client {
 	}
 }
 
+// Clone returns a new Client with the same server/model/auth/sampling but a
+// fresh tokenizer probe and HTTP handle. Used to give a subagent child its own
+// sampling (e.g. a role temperature) without sharing the parent's Client (which
+// carries a sync.Once and must not be copied).
+func (c *Client) Clone() *Client {
+	nc := NewClient(c.ServerURL, c.Model)
+	nc.HTTP = c.HTTP
+	nc.BearerToken = c.BearerToken
+	nc.Sampling = c.Sampling
+	return nc
+}
+
 // Sampling holds generation parameters forwarded to the server on every chat
 // request. Zero values are omitted, so servers that don't understand a field
 // (some OpenAI-compatible cloud endpoints reject repetition_penalty/top_k)

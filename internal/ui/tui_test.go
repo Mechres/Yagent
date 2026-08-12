@@ -787,6 +787,45 @@ func TestLoopGuardCancelsRepeatingTurn(t *testing.T) {
 	}
 }
 
+func TestSkillsModalApproveAndClose(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 24
+	content := "---\nname: smoke\ndescription: smoke skill\n---\n## When to Use\nx\n## Procedure\ny\n## Verification\ncheck\n"
+	if _, _, err := m.env.sk.Stage(skills.Op{Action: skills.ActionCreate, Name: "smoke", Content: content}); err != nil {
+		t.Fatal(err)
+	}
+
+	m.input.SetValue("/skills")
+	m.submitLine()
+	if !m.skillsOpen {
+		t.Fatal("/skills did not open the modal")
+	}
+	if len(m.skills) != 1 || m.skills[0].Name != "smoke" {
+		t.Fatalf("skills = %+v", m.skills)
+	}
+	v := ansiStrip(m.skillsView())
+	if !strings.Contains(v, "Pending skill writes") || !strings.Contains(v, "smoke") {
+		t.Errorf("skillsView = %q", v)
+	}
+	// diff action populates the message pane
+	m.handleSkillsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if m.skillsMsg == "" {
+		t.Error("diff action left skillsMsg empty")
+	}
+	// approve removes the staged write
+	m.handleSkillsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if len(m.skills) != 0 {
+		t.Errorf("skills after approve = %d, want 0", len(m.skills))
+	}
+	// esc closes
+	m.handleSkillsKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.skillsOpen {
+		t.Fatal("esc did not close the modal")
+	}
+}
+
 func TestSessionsBrowser(t *testing.T) {
 	st, err := memory.Open(t.TempDir())
 	if err != nil {

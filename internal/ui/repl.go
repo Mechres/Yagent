@@ -449,7 +449,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 	ws, _ := os.Getwd()
 	// M7 v1: subagents are read-only child agents that return a summary.
 	// M7 beyond v2: an optional tools slice scopes each child's registry.
-	env.registry.SetSubagent(func(ctx context.Context, task, workspace string, toolset []string) (string, error) {
+	env.registry.SetSubagent(func(ctx context.Context, task, workspace string, toolset []string, role tools.SubagentRole) (string, error) {
 		reg := tools.NewRegistry(workspace, tools.Options{
 			ReadOnly:       true,
 			Web:            env.web,
@@ -465,7 +465,12 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 				return err.Error(), nil
 			}
 		}
-		answer, tokens, err := agent.RunSubagent(ctx, client, reg, task, workspace)
+		childClient := client
+		if role.Temperature > 0 {
+			childClient = client.Clone() // P2: a role may tune the child's sampling
+			childClient.Sampling.Temperature = role.Temperature
+		}
+		answer, tokens, err := agent.RunSubagent(ctx, childClient, reg, task, workspace, role)
 		if err != nil {
 			return "error: subagent failed: " + err.Error(), nil
 		}

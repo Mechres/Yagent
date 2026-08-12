@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -476,13 +478,18 @@ const subagentSystemPrompt = `You are a subagent of Yagent working on a delegate
 // and returns its final message plus a heuristic token count. The caller
 // supplies a read-only registry; the child runs with its own context window,
 // so long investigations do not pollute the parent conversation (M7 v1).
-func RunSubagent(ctx context.Context, client ChatLLM, reg *tools.Registry, task, workspace string) (string, int, error) {
+// A non-zero role (P2) appends its specialized system-prompt suffix.
+func RunSubagent(ctx context.Context, client ChatLLM, reg *tools.Registry, task, workspace string, role tools.SubagentRole) (string, int, error) {
 	var tokens int
 	a := New(client, reg, nil, Config{
 		MaxIterations: 15, Window: 8000, Reserve: 1000,
 		OnToken: func(d string) { tokens += len(d) / 4 },
 	}, workspace)
-	a.InjectSystem(fmt.Sprintf(subagentSystemPrompt, strings.Join(reg.Names(), ", ")))
+	prompt := fmt.Sprintf(subagentSystemPrompt, strings.Join(reg.Names(), ", "))
+	if role.Prompt != "" {
+		prompt += "\n\n" + role.Prompt
+	}
+	a.InjectSystem(prompt)
 	answer, err := a.Run(ctx, task)
 	return answer, tokens, err
 }
@@ -640,6 +647,7 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 var (
 	coreToolNames = []string{
 		"fs_read", "fs_write", "fs_edit", "glob", "grep", "shell_exec",
+		"workspace_diagnostics",
 		"git_status", "git_diff", "git_log", "memory_save", "memory_search",
 		"skills_list", "skill_view", "consult",
 	}
@@ -992,6 +1000,14 @@ func (a *Agent) budget(ctx context.Context) error {
 	if !over {
 		return nil
 	}
+	// P4 — before falling back to summarization, try pruning OLD tool outputs
+	// to a one-line marker. Tool results are the biggest, least valuable part
+	// of history; collapsing them preserves the user's instructions and the
+	// model's own reasoning turns, which the running summary would otherwise
+	// condense away.
+	if a.pruneToolOutputs(limit) {
+		return nil
+	}
 	// Never summarize the current user turn (or anything after it): the
 	// Qwythos chat template rejects a request whose message list has no plain
 	// user query, so the running summary must only cover messages that precede
@@ -1054,6 +1070,43 @@ func (a *Agent) budget(ctx context.Context) error {
 	}
 	return nil
 }
+
+// pruneToolOutputs collapses tool-result messages before the current user turn
+// into a one-line "[tool output concealed; N lines hidden]" marker, keeping
+// user/assistant turns intact. It returns true when that alone brings the
+// context back under the limit (P4). In-memory only: the persisted store keeps
+// the full messages, so a resumed session reloads them and re-prunes.
+func (a *Agent) pruneToolOutputs(limit int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cutoff := len(a.history)
+	for i := len(a.history) - 1; i >= 0; i-- {
+		if a.history[i].msg.Role == "user" {
+			cutoff = i
+			break
+		}
+	}
+	pruned := 0
+	for i := 0; i < cutoff; i++ {
+		h := &a.history[i]
+		if h.msg.Role != "tool" || h.tokens <= markerTokens {
+			continue
+		}
+		lines := strings.Count(h.msg.Content, "\n") + 1
+		h.msg.Content = fmt.Sprintf("[tool output concealed; %d lines hidden]", lines)
+		h.tokens = markerTokens
+		pruned++
+	}
+	if pruned == 0 {
+		return false
+	}
+	slog.Info("pruned tool outputs", "messages", pruned)
+	return a.estTokensLocked() <= limit
+}
+
+// markerTokens is the heuristic token estimate of the one-line tool-output
+// marker used by pruneToolOutputs.
+const markerTokens = 8
 
 // dispatchAll runs tool calls: read-only batches execute concurrently, any
 // write/destructive call forces sequential execution after approval.
@@ -1179,5 +1232,29 @@ Rules:
 - Side-effecting tools (fs_write, fs_edit, shell_exec) prompt the user for approval. If the user denies, find another approach or explain why you cannot proceed.
 - When you answer from web_search / web_fetch results, cite the source URLs.
 - When stuck, unsure, or before a risky change, you may use the consult tool to ask a second AI advisor model for a second opinion.
-- When you have the final answer, reply with plain text and no tool calls.`, workspace)
+- When you have the final answer, reply with plain text and no tool calls.`, workspace) +
+		repoInstructions(workspace)
+}
+
+// maxInstructionsBytes caps auto-discovered developer-instruction files so a
+// big AGENTS.md can't crowd out the rest of the context.
+const maxInstructionsBytes = 16 << 10
+
+// repoInstructions appends the workspace's own developer instructions
+// (.yagent/instructions.md > AGENTS.md > CLAUDE.md > .cursorrules, first found)
+// to the system prompt, so repository-specific rules are respected without
+// manual prompting. Capped at maxInstructionsBytes; missing files are skipped.
+func repoInstructions(workspace string) string {
+	for _, name := range []string{".yagent/instructions.md", "AGENTS.md", "CLAUDE.md", ".cursorrules"} {
+		path := filepath.Join(workspace, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if len(data) > maxInstructionsBytes {
+			data = append(data[:maxInstructionsBytes], []byte("\n… (instructions truncated)")...)
+		}
+		return "\n\nDeveloper instructions from " + name + ":\n" + string(data)
+	}
+	return ""
 }

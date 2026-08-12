@@ -365,6 +365,43 @@ func TestSearchMessagesAndRender(t *testing.T) {
 	}
 }
 
+func TestRenderHTML(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	sess, _ := st.NewSession(ctx, "/tmp/repo")
+	if _, err := st.Append(ctx, sess.ID, Message{Role: "user", Content: "hello <world> & bye"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, sess.ID, Message{Role: "assistant", Content: "hi there"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, sess.ID, Message{Role: "tool", Content: "result payload"}); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := st.RenderHTML(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<html", "<h1>", `class="msg user"`, `class="msg assistant"`, `class="msg tool"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("HTML missing %q", want)
+		}
+	}
+	// content is escaped (no raw markup injection)
+	if !strings.Contains(page, "hello &lt;world&gt; &amp; bye") {
+		t.Errorf("user content not escaped: %q", page)
+	}
+	if strings.Contains(page, "<world>") {
+		t.Error("raw markup leaked into HTML")
+	}
+}
+
 func TestDeleteSession(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(dir)
