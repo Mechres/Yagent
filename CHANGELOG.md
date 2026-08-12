@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.19 — 2026-08-12
+
+### Fixed
+- **TUI message input**: replaced the single-line `textinput` with a multi-line
+  `textarea` — pasted multi-line text now wraps instead of overflowing
+  horizontally, enter submits and alt+enter inserts a literal newline, and the
+  input grows with its content (capped at a third of the screen). The input is
+  now a rounded, bordered bar matching the theme, so the layout reads as
+  finished.
+
 ## v0.1.18 — 2026-08-12
 
 ### Added

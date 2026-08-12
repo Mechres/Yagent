@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -118,7 +119,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		cfg: cfg, env: env, ag: ag, client: client,
 		incoming: incoming, inputCh: inputCh,
 		runnerCtx: runnerCtx, runnerCancel: runnerCancel, runnerDone: runnerDone,
-		input: newInput(), yoloToggler: ap,
+		msgInput: newInput(), yoloToggler: ap,
 	}
 	if ws, err := os.Getwd(); err == nil {
 		m.workspace = ws
@@ -235,7 +236,7 @@ type tuiModel struct {
 	lastTurnText string
 	retriedLoop  bool
 
-	input    textinput.Model
+	msgInput textarea.Model
 	viewport viewport.Model
 	spinner  spinner.Model
 
@@ -319,12 +320,17 @@ type tuiModel struct {
 	findMatch   int
 }
 
-func newInput() textinput.Model {
-	in := textinput.New()
-	in.Placeholder = "message (enter to send, esc to cancel, ctrl-f to search, pgup/dn to scroll)"
-	in.CharLimit = 4000
-	in.Prompt = iconCommand + " "
-	return in
+func newInput() textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = "message (enter to send, alt+enter for a newline, ctrl-f to search)"
+	ta.CharLimit = 8000
+	ta.Prompt = iconCommand + " "
+	ta.ShowLineNumbers = false
+	// Plain enter submits (handled before the textarea sees it); alt+enter
+	// inserts a literal newline. Multi-line pastes wrap instead of overflowing
+	// horizontally.
+	ta.KeyMap.InsertNewline.SetKeys("alt+enter")
+	return ta
 }
 
 // gitBranch returns the current git branch name, or "" when not a repo.
@@ -339,7 +345,7 @@ func gitBranch(ws string) string {
 func (m *tuiModel) Init() tea.Cmd {
 	m.follow = true
 	return tea.Batch(
-		m.input.Focus(),
+		m.msgInput.Focus(),
 		waitIncoming(m.incoming),
 	)
 }
@@ -768,7 +774,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t", "T":
 			// Toggle the last thinking block when the input is empty (so
 			// typing isn't hijacked) and a toggleable block exists.
-			if m.thinkingOpen && m.input.Value() == "" {
+			if m.thinkingOpen && m.msgInput.Value() == "" {
 				m.toggleThinking()
 				return m, m.nextCmd()
 			}
@@ -778,7 +784,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.submitLine()
 		case "tab":
-			if strings.HasPrefix(m.input.Value(), "/") {
+			if strings.HasPrefix(m.msgInput.Value(), "/") {
 				m.completeCommand()
 			}
 			return m, nil
@@ -789,12 +795,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll(false)
 			return m, nil
 		case "up":
-			if m.input.Value() == "" {
+			if m.msgInput.Value() == "" {
 				m.scroll(true)
 				return m, nil
 			}
 		case "down":
-			if m.input.Value() == "" {
+			if m.msgInput.Value() == "" {
 				m.scroll(false)
 				return m, nil
 			}
@@ -810,11 +816,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		if m.input.Value() != m.lastInput {
+		m.msgInput, cmd = m.msgInput.Update(msg)
+		if m.msgInput.Value() != m.lastInput {
 			m.tabIndex = -1 // typing resets the completion cycle
 		}
-		m.lastInput = m.input.Value()
+		m.lastInput = m.msgInput.Value()
 		return m, cmd
 
 	case tokenMsg:
@@ -932,7 +938,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // submitLine handles the submitted line: local slash commands (/exit, /clear,
 // /help, /skills, /skill-name) or a normal agent turn.
 func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
-	text := strings.TrimSpace(m.input.Value())
+	text := strings.TrimSpace(m.msgInput.Value())
 	if text == "" {
 		return m, nil
 	}
@@ -940,32 +946,32 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	case "/exit":
 		return m, m.quitCmd()
 	case "/mouse":
-		m.input.Reset()
+		m.msgInput.Reset()
 		return m, m.toggleMouse()
 	case "/help":
-		m.input.Reset()
+		m.msgInput.Reset()
 		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /mouse /skills list|pending|diff|approve|reject|approval /skill-name")
 		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty; search: Ctrl+F; mouse capture: Ctrl+M")
 		m.append("esc cancels the running turn; a repeating-thinking loop is auto-stopped (ui.loop_guard)")
 		return m, m.nextCmd()
 	case "/settings":
-		m.input.Reset()
+		m.msgInput.Reset()
 		m.settingsOpen = true
 		m.settingsIdx = 0
 		m.editing = false
 		return m, nil
 	case "/sessions":
-		m.input.Reset()
+		m.msgInput.Reset()
 		m.sessions, _ = m.env.st.ListSessions(context.Background())
 		m.sessionsOpen = true
 		m.sessionsIdx = 0
 		m.sessionsConfirm = false
 		return m, nil
 	case "/skills":
-		m.input.Reset()
+		m.msgInput.Reset()
 		return m.openSkillsModal(), nil
 	case "/retry":
-		m.input.Reset()
+		m.msgInput.Reset()
 		if m.lastTurnText == "" {
 			m.append("nothing to retry")
 			return m, m.nextCmd()
@@ -983,7 +989,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.startTurn(m.lastTurnText)
 		return m, nil
 	case "/clear":
-		m.input.Reset()
+		m.msgInput.Reset()
 		m.ag.Reset()
 		m.transcript = nil
 		m.resetThinking()
@@ -993,7 +999,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, m.nextCmd()
 	}
 	if strings.HasPrefix(text, "/") {
-		m.input.Reset()
+		m.msgInput.Reset()
 		skillsCmd := &skillsHandler{
 			store:       m.env.sk,
 			reg:         m.env.registry,
@@ -1017,7 +1023,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
-	m.input.Reset()
+	m.msgInput.Reset()
 	m.append("> " + text)
 	m.startTurn(text)
 	return m, nil
@@ -1898,7 +1904,7 @@ func (m *tuiModel) slashCommands() []string {
 
 // slashMatches filters the "/" menu by the current input prefix.
 func (m *tuiModel) slashMatches() []string {
-	prefix := m.input.Value()
+	prefix := m.msgInput.Value()
 	var out []string
 	for _, c := range m.slashCommands() {
 		if strings.HasPrefix(c, prefix) {
@@ -1913,25 +1919,41 @@ func (m *tuiModel) slashMatches() []string {
 // match.
 func (m *tuiModel) completeCommand() {
 	cmds := m.slashCommands()
-	val := m.input.Value()
+	val := m.msgInput.Value()
 	for i, c := range cmds {
 		if c == val {
-			m.input.SetValue(cmds[(i+1)%len(cmds)])
-			m.input.CursorEnd()
+			m.msgInput.SetValue(cmds[(i+1)%len(cmds)])
+			m.msgInput.CursorEnd()
 			return
 		}
 	}
 	matches := m.slashMatches()
 	if len(matches) > 0 {
 		m.tabIndex = (m.tabIndex + 1) % len(matches)
-		m.input.SetValue(matches[m.tabIndex])
-		m.input.CursorEnd()
+		m.msgInput.SetValue(matches[m.tabIndex])
+		m.msgInput.CursorEnd()
 	}
 }
 
 func (m *tuiModel) View() string {
 	if m.err != nil {
 		return m.err.Error() + "\n"
+	}
+	if m.width > 0 {
+		// A rounded input bar: leave room for the border + padding so the
+		// rendered box exactly matches the window width. Width must be set
+		// before layoutHeight so the wrapped input height is accurate.
+		base := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.th.Border).
+			Foreground(m.th.Foreground).
+			Background(m.th.Surface).
+			Padding(0, 1)
+		m.msgInput.FocusedStyle.Base = base
+		m.msgInput.BlurredStyle.Base = base
+		m.msgInput.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(m.th.Primary)
+		m.msgInput.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(m.th.Muted)
+		m.msgInput.SetWidth(m.width - 4)
 	}
 	m.viewport.Height = m.layoutHeight()
 	if m.width > 0 {
@@ -1945,13 +1967,10 @@ func (m *tuiModel) View() string {
 	if m.showPopover() {
 		out += m.popoverView() + "\n"
 	}
-	if m.width > 0 {
-		m.input.Width = m.width // cap the visible input so long text/placeholder scrolls, never overflows
-	}
 	if m.findOpen {
 		out += m.findView() + "\n"
 	} else {
-		out += m.input.View() + "\n"
+		out += m.msgInput.View() + "\n"
 	}
 	out += m.statusView()
 	if m.settingsOpen {
@@ -1998,15 +2017,47 @@ func (m *tuiModel) contentString() string {
 }
 
 // layoutHeight is the transcript viewport height given the current window
-// (header + status + input always take three lines; the "/" popover borrows
-// two). The streaming content lives inside the viewport, so its height is
-// fixed — the layout is stable for the whole turn.
+// (header + status each take one line; the message input takes its rendered
+// height — it wraps multi-line input, capped at a third of the screen; the "/"
+// popover borrows two). The streaming content lives inside the viewport, so
+// its height is stable for the whole turn.
 func (m *tuiModel) layoutHeight() int {
-	h := m.height - 4
+	m.resizeInput()
+	in := min(m.inputHeight(), max(1, m.height/3))
+	h := m.height - 3 - in
 	if m.showPopover() {
 		h -= 2
 	}
 	return max(5, h)
+}
+
+// inputHeight is the number of terminal rows the message input occupies
+// (multi-line input wraps and grows with its content, capped at a third of the
+// screen).
+func (m *tuiModel) inputHeight() int {
+	return strings.Count(m.msgInput.View(), "\n") + 1
+}
+
+// resizeInput sizes the textarea to its wrapped content so the input grows with
+// a multi-line paste instead of staying a fixed-height box.
+func (m *tuiModel) resizeInput() {
+	width := m.msgInput.Width()
+	if width < 10 {
+		width = 10
+	}
+	rows := 0
+	for _, ln := range strings.Split(m.msgInput.Value(), "\n") {
+		n := len([]rune(ln))
+		rows += 1
+		if n > 0 {
+			rows += (n - 1) / width
+		}
+	}
+	maxRows := max(1, m.height/3)
+	if rows > maxRows {
+		rows = maxRows
+	}
+	m.msgInput.SetHeight(rows)
 }
 
 // showPopover reports whether the "/" command palette should be rendered.
@@ -2014,7 +2065,7 @@ func (m *tuiModel) showPopover() bool {
 	if m.settingsOpen || m.sessionsOpen || m.skillsOpen || m.clarifyOpen || m.findOpen {
 		return false
 	}
-	return strings.HasPrefix(m.input.Value(), "/") && len(m.slashMatches()) > 0
+	return strings.HasPrefix(m.msgInput.Value(), "/") && len(m.slashMatches()) > 0
 }
 
 // headerView is the persistent top bar: app, workspace, model, session, branch.

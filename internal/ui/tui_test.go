@@ -30,27 +30,27 @@ func testModel(t *testing.T) *tuiModel {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &tuiModel{env: &chatEnv{sk: sk}, input: newInput()}
+	return &tuiModel{env: &chatEnv{sk: sk}, msgInput: newInput()}
 }
 
 func TestTabCyclesCommands(t *testing.T) {
 	m := testModel(t)
-	m.input.SetValue("/")
+	m.msgInput.SetValue("/")
 	m.completeCommand()
-	first := m.input.Value()
+	first := m.msgInput.Value()
 	if first == "/" || !strings.HasPrefix(first, "/") {
 		t.Fatalf("first completion = %q", first)
 	}
 	m.completeCommand()
-	second := m.input.Value()
+	second := m.msgInput.Value()
 	if second == first {
 		t.Errorf("tab did not cycle: %q", second)
 	}
 	// an exact command must cycle to a different one (regression: stuck on
 	// the first match)
-	m.input.SetValue("/exit")
+	m.msgInput.SetValue("/exit")
 	m.completeCommand()
-	if m.input.Value() == "/exit" {
+	if m.msgInput.Value() == "/exit" {
 		t.Errorf("tab stuck on /exit, should cycle to the next command")
 	}
 }
@@ -63,7 +63,7 @@ func TestSlashMatchesIncludeSkills(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m.input.SetValue("/smoke")
+	m.msgInput.SetValue("/smoke")
 	matches := m.slashMatches()
 	if len(matches) != 1 || matches[0] != "/smoke-test" {
 		t.Errorf("matches = %v, want [/smoke-test]", matches)
@@ -139,7 +139,7 @@ func TestSettingsPageOpensAndEdits(t *testing.T) {
 		ServerURL: "http://localhost:8089", Model: "m", ContextWindow: 16384,
 		Path: "/tmp/fake.yaml", Skills: config.SkillsConfig{},
 	}
-	m.input.SetValue("/settings")
+	m.msgInput.SetValue("/settings")
 	if got, _ := m.submitLine(); got.(*tuiModel) != m {
 		t.Fatal("submitLine returned a different model")
 	}
@@ -247,7 +247,7 @@ func TestViewLayout(t *testing.T) {
 	}
 	// command palette popover while typing a slash command
 	m.busy = false
-	m.input.SetValue("/skills")
+	m.msgInput.SetValue("/skills")
 	if !m.showPopover() {
 		t.Fatal("popover should show while typing a slash command")
 	}
@@ -849,7 +849,7 @@ func TestSkillsModalApproveAndClose(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m.input.SetValue("/skills")
+	m.msgInput.SetValue("/skills")
 	m.submitLine()
 	if !m.skillsOpen {
 		t.Fatal("/skills did not open the modal")
@@ -946,7 +946,7 @@ func TestRetryCommand(t *testing.T) {
 	m.lastTurnText = "the failing input"
 	m.width, m.height = 80, 24
 
-	m.input.SetValue("/retry")
+	m.msgInput.SetValue("/retry")
 	m.submitLine()
 	select {
 	case req := <-m.inputCh:
@@ -964,7 +964,7 @@ func TestRetryCommand(t *testing.T) {
 	m2 := testModel(t)
 	m2.cfg = &config.Config{Model: "m"}
 	m2.width, m2.height = 80, 24
-	m2.input.SetValue("/retry")
+	m2.msgInput.SetValue("/retry")
 	m2.submitLine()
 	if m2.busy {
 		t.Error("retry with nothing should not start a turn")
@@ -981,6 +981,56 @@ func TestStatusTokensPerSecond(t *testing.T) {
 	state, _ := m.statusText()
 	if !strings.Contains(state, "30.0 t/s") {
 		t.Errorf("status = %q, want a 30.0 t/s reading", state)
+	}
+}
+
+func TestMsgInputHandlesMultilinePaste(t *testing.T) {
+	m := testModel(t)
+	m.msgInput = newInput()
+	m.msgInput.SetWidth(40)
+	m.msgInput.Focus()
+	m.th = themeByName("tokyo")
+
+	// a multi-line paste (newlines in the runes) must keep its lines, not
+	// flatten horizontally.
+	updated, _ := m.msgInput.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line one\nline two\nline three")})
+	m.msgInput = updated
+	if got := m.msgInput.Value(); !strings.Contains(got, "\n") {
+		t.Errorf("paste lost newlines: %q", got)
+	}
+	if h := m.inputHeight(); h < 3 {
+		t.Errorf("inputHeight = %d, want >= 3 for a three-line paste", h)
+	}
+
+	// a long single line wraps to multiple rows instead of overflowing.
+	m2 := testModel(t)
+	m2.msgInput = newInput()
+	m2.msgInput.SetWidth(40)
+	m2.th = themeByName("tokyo")
+	m2.msgInput.SetValue(strings.Repeat("x", 200))
+	if h := m2.inputHeight(); h < 3 {
+		t.Errorf("long line inputHeight = %d, want wrapping", h)
+	}
+}
+
+func TestLayoutShrinksForMultilineInput(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 30
+	m.msgInput = newInput()
+	m.msgInput.SetWidth(76)
+	m.msgInput.SetValue("one\ntwo\nthree")
+	m.th = themeByName("tokyo")
+
+	if h := m.inputHeight(); h < 3 {
+		t.Errorf("inputHeight = %d, want >= 3 for three lines", h)
+	}
+	multi := m.layoutHeight()
+	m.msgInput.SetValue("single")
+	single := m.layoutHeight()
+	if multi >= single {
+		t.Errorf("multi-line input should shrink the viewport: multi=%d single=%d", multi, single)
 	}
 }
 
@@ -1006,7 +1056,7 @@ func TestSessionsBrowser(t *testing.T) {
 	m := testModel(t)
 	m.env.st = st
 	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
-	m.input.SetValue("/sessions")
+	m.msgInput.SetValue("/sessions")
 	m.submitLine()
 	if !m.sessionsOpen {
 		t.Fatal("/sessions did not open the browser")
