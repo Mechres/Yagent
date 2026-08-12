@@ -5,6 +5,16 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased — 2026-08-12
 
 ### Added
+- **`clarify` tool**: the model calls `clarify(question, choices[])` when a
+  task is ambiguous or a choice matters; the UI renders real options (REPL
+  numbered prompt, TUI modal) and the user's pick returns as tool data —
+  ambiguity is a structured handoff, not a prose guess.
+- **`plan` tool**: a lightweight plan-approval gate — the model proposes steps,
+  the user approves or gives revision feedback, returned to the agent as
+  `plan approved` / `plan rejected: <feedback>`.
+- **Verify-don't-trust rule**: the system prompt now requires re-reading a
+  touched file region (fs_read) after any code write and confirming it matches
+  intent before running `workspace_diagnostics`.
 - **Per-model sampling profiles**: a `models:` config section overrides
   sampling per model-name substring (unset fields inherit the base recipe) —
   docs/models.md's tuning matrix is now code.

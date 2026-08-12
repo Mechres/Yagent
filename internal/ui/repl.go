@@ -53,6 +53,33 @@ type Options struct {
 	Trace io.Writer
 }
 
+// replAskUser prompts on stdin with a numbered choice list (or free text) and
+// returns the user's pick — the REPL implementation of the clarify/plan tools.
+func replAskUser(reader *bufio.Reader, w io.Writer) func(ctx context.Context, question string, choices []string) (string, error) {
+	return func(ctx context.Context, question string, choices []string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(w, "\n[ask] %s\n", question)
+		for i, c := range choices {
+			fmt.Fprintf(w, "  %d) %s\n", i+1, c)
+		}
+		fmt.Fprint(w, "answer (number or text): ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		ans := strings.TrimSpace(line)
+		if n, err := strconv.Atoi(ans); err == nil && n >= 1 && n <= len(choices) {
+			return choices[n-1], nil
+		}
+		if ans == "" {
+			return "(no answer)", nil
+		}
+		return ans, nil
+	}
+}
+
 // autoApprover grants every approval without prompting (--yolo).
 type autoApprover struct{}
 
@@ -189,6 +216,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	if opts.YOLO {
 		env.registry.SetSkillsWriteApproval(false)
 	}
+	env.registry.SetAskUser(replAskUser(reader, w))
 
 	var thinkBuf strings.Builder
 	loopWarned := false
@@ -308,11 +336,13 @@ func runPlaybookMode(ctx context.Context, client *llm.Client, cfg *config.Config
 	fmt.Printf("playbook %q — %s (%d phases)\n", pb.Name, pb.Description, len(pb.Phases))
 
 	w := os.Stdout
-	ap := newToggleableApprover(&replApprover{reader: bufio.NewReader(os.Stdin), writer: w})
+	reader := bufio.NewReader(os.Stdin)
+	ap := newToggleableApprover(&replApprover{reader: reader, writer: w})
 	ap.SetYOLO(yolo)
 	if yolo {
 		env.registry.SetSkillsWriteApproval(false)
 	}
+	env.registry.SetAskUser(replAskUser(reader, w))
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
 		func(delta string) {
@@ -398,11 +428,13 @@ type chatEnv struct {
 // Ends with the session id for later resume.
 func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, goal string, rounds int, yolo bool, trace io.Writer) error {
 	w := os.Stdout
-	ap := newToggleableApprover(&replApprover{reader: bufio.NewReader(os.Stdin), writer: w})
+	reader := bufio.NewReader(os.Stdin)
+	ap := newToggleableApprover(&replApprover{reader: reader, writer: w})
 	ap.SetYOLO(yolo)
 	if yolo {
 		env.registry.SetSkillsWriteApproval(false)
 	}
+	env.registry.SetAskUser(replAskUser(reader, w))
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
 		func(delta string) {

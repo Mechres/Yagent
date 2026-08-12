@@ -88,6 +88,10 @@ type Options struct {
 	// tools slice scopes the child registry (M7 beyond v2); nil = full set.
 	// The role is the resolved preset profile (P2), zero value when none.
 	Subagent func(ctx context.Context, task, workspace string, tools []string, role SubagentRole) (string, error)
+	// AskUser prompts the user with a question and optional choices and returns
+	// the answer (wired by the UI); enables the clarify and plan tools. Nil
+	// disables both.
+	AskUser askUserFunc
 	// Jobs enables background-process tools (may be nil).
 	Jobs *jobs.Registry
 	// ConsultCmd is an installed terminal AI app used as the advisor, e.g.
@@ -150,6 +154,10 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	if opts.Subagent != nil {
 		reg["subagent"] = &subagentTool{ws: r.workspace, run: opts.Subagent}
 	}
+	if opts.AskUser != nil {
+		reg["clarify"] = &clarifyTool{ask: opts.AskUser}
+		reg["plan"] = &planTool{ask: opts.AskUser}
+	}
 	if opts.Jobs != nil {
 		reg["shell_bg"] = &shellBgTool{jobs: opts.Jobs, sandbox: opts.ShellSandbox, ws: r.workspace}
 		reg["shell_logs"] = &shellLogsTool{jobs: opts.Jobs}
@@ -176,6 +184,25 @@ func (r *Registry) SetSubagent(fn func(ctx context.Context, task, workspace stri
 		t.run = fn
 	} else if fn != nil {
 		r.tools["subagent"] = &subagentTool{ws: r.workspace, run: fn}
+	}
+}
+
+// SetAskUser wires the user-prompt callback at runtime (after the UI's reader/
+// writer exist) and registers the clarify/plan tools when they weren't at
+// construction.
+func (r *Registry) SetAskUser(fn askUserFunc) {
+	if fn == nil {
+		return
+	}
+	if t, ok := r.tools["clarify"].(*clarifyTool); ok {
+		t.ask = fn
+	} else {
+		r.tools["clarify"] = &clarifyTool{ask: fn}
+	}
+	if t, ok := r.tools["plan"].(*planTool); ok {
+		t.ask = fn
+	} else {
+		r.tools["plan"] = &planTool{ask: fn}
 	}
 }
 

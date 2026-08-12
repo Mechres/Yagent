@@ -1157,6 +1157,7 @@ func TestActiveToolSchemasFilters(t *testing.T) {
 		Skills: sk, Web: wc, Index: idx,
 		Consult:             llm.NewClient("http://127.0.0.1:1", "advisor"),
 		SkillsWriteApproval: true,
+		AskUser:             func(ctx context.Context, q string, choices []string) (string, error) { return "ok", nil },
 	})
 	a := New(nil, reg, nil, Config{MaxIterations: 5}, ws)
 

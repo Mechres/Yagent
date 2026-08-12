@@ -210,6 +210,13 @@ C3 (structured subagent returns, gated on evidence) and the M7 gated items.
 
 ## Local-model tuning (2026-08-12)
 
+Making the small local model work better is now a measurable loop, not folklore. A Hermes review (2026-08-12) — "push correctness into tools, treat the model as proposer not executor" — transferred next:
+
+- ✅ **`clarify` tool** (Hermes #1/#5) — the model calls `clarify(question, choices[])` when a task is ambiguous or a decision matters; the UI renders the question as real options (REPL numbered prompt, TUI modal) and the user's pick returns to the agent as tool data (`user answered: X`). Ambiguity is now a hard stop with a structured handoff, not a prose guess. Live-verified on Qwythos (:8089): model asked via clarify, piped pick flowed back as data.
+- ✅ **`plan` tool** (Hermes #4) — a lightweight plan-approval gate: the model proposes steps, the UI shows them and the user approves or gives revision feedback, returned as `plan approved — execute it now` / `plan rejected: <feedback>`. No TUI lift needed; reuses the same AskUser plumbing.
+- ✅ **Verify, don't trust** (Hermes #2) — the system prompt now requires re-reading the touched region with fs_read after any code write (and confirming the diff matches intent) before `workspace_diagnostics`. Write tools already return confirmable shaped data (`wrote path (N bytes; overwrote M bytes)` + diff), so #3 is largely in place without a reshape.
+- The AskUser callback (`tools.SetAskUser`) powers both tools; they're only registered/offered when the UI wires it (subagents/evals never see them).
+
 Making the small local model work better is now a measurable loop, not folklore. A peer review (2026-08-12) proposed 8 items; implemented here:
 
 - ✅ **P1 per-model sampling profiles** — a `models:` config section matches

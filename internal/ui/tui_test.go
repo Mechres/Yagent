@@ -876,6 +876,66 @@ func TestSkillsModalApproveAndClose(t *testing.T) {
 	}
 }
 
+func TestClarifyModal(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 24
+	respond := make(chan string, 1)
+	m.handleIncomingForTest(clarifyRequestMsg{question: "which target?", choices: []string{"linux", "mac"}, respond: respond})
+	if !m.clarifyOpen || m.clarifyFree {
+		t.Fatal("chooser modal did not open")
+	}
+	// down -> pick "mac", enter confirms
+	m.handleClarifyKey(tea.KeyMsg{Type: tea.KeyDown})
+	m.handleClarifyKey(tea.KeyMsg{Type: tea.KeyEnter})
+	select {
+	case ans := <-respond:
+		if ans != "mac" {
+			t.Errorf("answer = %q, want mac", ans)
+		}
+	default:
+		t.Fatal("no answer delivered")
+	}
+	if m.clarifyOpen {
+		t.Error("modal still open after answering")
+	}
+
+	// no choices -> free text
+	m2 := testModel(t)
+	m2.cfg = &config.Config{Model: "m"}
+	m2.width, m2.height = 80, 24
+	respond2 := make(chan string, 1)
+	m2.handleIncomingForTest(clarifyRequestMsg{question: "describe the issue", respond: respond2})
+	if !m2.clarifyFree {
+		t.Fatal("no-choice question should open free text")
+	}
+	m2.clarifyAnswerInput.SetValue("the parser crashes")
+	m2.handleClarifyKey(tea.KeyMsg{Type: tea.KeyEnter})
+	select {
+	case ans := <-respond2:
+		if ans != "the parser crashes" {
+			t.Errorf("free answer = %q", ans)
+		}
+	default:
+		t.Fatal("no free answer delivered")
+	}
+
+	// esc cancels with an empty answer (agent treats it as no-answer)
+	m3 := testModel(t)
+	m3.cfg = &config.Config{Model: "m"}
+	respond3 := make(chan string, 1)
+	m3.handleIncomingForTest(clarifyRequestMsg{question: "q", choices: []string{"a"}, respond: respond3})
+	m3.handleClarifyKey(tea.KeyMsg{Type: tea.KeyEsc})
+	select {
+	case ans := <-respond3:
+		if ans != "(no answer)" {
+			t.Errorf("cancel answer = %q", ans)
+		}
+	default:
+		t.Fatal("no cancel answer delivered")
+	}
+}
+
 func TestSessionsBrowser(t *testing.T) {
 	st, err := memory.Open(t.TempDir())
 	if err != nil {

@@ -71,6 +71,22 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		func(delta string) { send(reasoningMsg{delta: delta}) },
 		func(call llm.ToolCall) { send(toolMsg{call: call}) },
 		opts.Trace)
+	// The clarify/plan tools route through the TUI modal: block on the user's
+	// answer and hand it back to the agent as tool data.
+	env.registry.SetAskUser(func(ctx context.Context, question string, choices []string) (string, error) {
+		respond := make(chan string, 1)
+		select {
+		case incoming <- clarifyRequestMsg{question: question, choices: choices, respond: respond}:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		select {
+		case ans := <-respond:
+			return ans, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	})
 	env.registry.SetIndexProgress(func(line string) { send(progressMsg{text: line}) })
 	startBackgroundIndex(runnerCtx, env, func(line string) { send(progressMsg{text: line}) })
 
@@ -156,6 +172,14 @@ type approvalRequestMsg struct {
 	call    llm.ToolCall
 	risk    tools.RiskLevel
 	respond chan agent.Approval
+}
+
+// clarifyRequestMsg asks the user a question (clarify/plan tools): the modal
+// renders the question + choices and respond receives the picked answer.
+type clarifyRequestMsg struct {
+	question string
+	choices  []string
+	respond  chan string
 }
 
 // reasoningCap bounds the per-turn thinking buffer so a verbose model can't
@@ -274,6 +298,16 @@ type tuiModel struct {
 	skills     []skills.PendingSummary
 	skillsMsg  string
 	skillsCmd  *skillsHandler
+
+	// Clarify/plan modal (Hermes review #1/#4): a question with choices (or
+	// free text) that returns the user's answer to the agent as tool data.
+	clarifyOpen        bool
+	clarifyQuestion    string
+	clarifyChoices     []string
+	clarifyIdx         int
+	clarifyFree        bool
+	clarifyRespond     chan string
+	clarifyAnswerInput textinput.Model
 
 	// In-viewport transcript search (Ctrl+F): findOpen captures keys into
 	// findQuery; findMatches are byte offsets into the joined transcript and
@@ -687,6 +721,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.skillsOpen {
 			return m.handleSkillsKey(msg)
 		}
+		if m.clarifyOpen {
+			return m.handleClarifyKey(msg)
+		}
 		if m.pending != nil {
 			switch msg.String() {
 			case "y", "Y":
@@ -811,6 +848,22 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case progressMsg:
 		m.flushStream()
 		m.append("  [index] " + msg.text)
+		return m, m.nextCmd()
+
+	case clarifyRequestMsg:
+		m.flushStream()
+		m.clarifyOpen = true
+		m.clarifyQuestion = msg.question
+		m.clarifyChoices = msg.choices
+		m.clarifyIdx = 0
+		m.clarifyFree = len(msg.choices) == 0
+		m.clarifyRespond = msg.respond
+		if m.clarifyFree {
+			m.clarifyAnswerInput = textinput.New()
+			m.clarifyAnswerInput.Placeholder = "type your answer, enter to send"
+			m.clarifyAnswerInput.CharLimit = 1000
+			m.clarifyAnswerInput.Focus()
+		}
 		return m, m.nextCmd()
 
 	case approvalRequestMsg:
@@ -1073,6 +1126,98 @@ func (m *tuiModel) handleHunkKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.renderHunk(m.hunkIdx)
 	return m, m.nextCmd()
+}
+
+// handleClarifyKey drives the clarify/plan modal: with choices, up/down picks
+// and enter confirms (a trailing option types a free answer); without choices,
+// free text. esc cancels with an empty answer.
+func (m *tuiModel) handleClarifyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.clarifyFree {
+		switch msg.String() {
+		case "enter":
+			m.resolveClarify(m.clarifyAnswerInput.Value())
+		case "esc":
+			m.resolveClarify("")
+		default:
+			var cmd tea.Cmd
+			m.clarifyAnswerInput, cmd = m.clarifyAnswerInput.Update(msg)
+			return m, cmd
+		}
+		return m, m.nextCmd()
+	}
+	n := len(m.clarifyChoices)
+	switch msg.String() {
+	case "up":
+		if m.clarifyIdx > 0 {
+			m.clarifyIdx--
+		}
+	case "down":
+		if m.clarifyIdx < n { // index n = the "type your own" option
+			m.clarifyIdx++
+		}
+	case "enter":
+		if m.clarifyIdx < n {
+			m.resolveClarify(m.clarifyChoices[m.clarifyIdx])
+		} else {
+			m.clarifyFree = true
+			m.clarifyAnswerInput = textinput.New()
+			m.clarifyAnswerInput.Placeholder = "type your answer, enter to send"
+			m.clarifyAnswerInput.CharLimit = 1000
+			m.clarifyAnswerInput.Focus()
+		}
+	case "esc":
+		m.resolveClarify("")
+	}
+	return m, m.nextCmd()
+}
+
+// resolveClarify sends the user's answer back to the agent and closes the modal.
+func (m *tuiModel) resolveClarify(answer string) {
+	if m.clarifyRespond != nil {
+		if strings.TrimSpace(answer) == "" {
+			answer = "(no answer)"
+		}
+		m.clarifyRespond <- answer
+	}
+	m.clarifyOpen = false
+	m.clarifyRespond = nil
+}
+
+// clarifyView renders the clarify/plan modal (centered over the transcript).
+func (m *tuiModel) clarifyView() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
+		Render(iconWarn + " The agent needs your input")
+	marker := lipgloss.NewStyle().Foreground(m.th.Primary).Render("▸")
+	dim := lipgloss.NewStyle().Foreground(m.th.Muted)
+
+	body := lipgloss.NewStyle().Foreground(m.th.Foreground).Render(m.clarifyQuestion)
+	if m.clarifyFree {
+		body += "\n\n" + m.clarifyAnswerInput.View()
+		hint := dim.Render("enter to send · esc to cancel")
+		return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.th.Primary).Padding(0, 1).
+			Render(title + "\n\n" + body + "\n\n" + hint)
+	}
+	var rows []string
+	for i, c := range m.clarifyChoices {
+		line := c
+		if i == m.clarifyIdx {
+			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(m.th.Surface).Bold(true).Render(line))
+		} else {
+			rows = append(rows, "  "+line)
+		}
+	}
+	if m.clarifyIdx == len(m.clarifyChoices) {
+		rows = append(rows, marker+" "+lipgloss.NewStyle().Background(m.th.Surface).
+			Bold(true).Render("(type your own answer)"))
+	} else {
+		rows = append(rows, "  "+dim.Render("(type your own answer)"))
+	}
+	body += "\n\n" + strings.Join(rows, "\n")
+	hint := dim.Render("↑/↓ choose · enter confirm · esc cancel")
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.th.Primary).Padding(0, 1).
+		Render(title + "\n\n" + body + "\n\n" + hint)
 }
 
 // finishHunkReview resolves the walk: apply only accepted hunks (rewriting the
@@ -1811,6 +1956,9 @@ func (m *tuiModel) View() string {
 	if m.skillsOpen {
 		out = overlayModal(m.th, m.skillsView(), m.width, m.height)
 	}
+	if m.clarifyOpen {
+		out = overlayModal(m.th, m.clarifyView(), m.width, m.height)
+	}
 	return out
 }
 
@@ -1856,7 +2004,7 @@ func (m *tuiModel) layoutHeight() int {
 
 // showPopover reports whether the "/" command palette should be rendered.
 func (m *tuiModel) showPopover() bool {
-	if m.settingsOpen || m.sessionsOpen || m.skillsOpen || m.findOpen {
+	if m.settingsOpen || m.sessionsOpen || m.skillsOpen || m.clarifyOpen || m.findOpen {
 		return false
 	}
 	return strings.HasPrefix(m.input.Value(), "/") && len(m.slashMatches()) > 0
@@ -1969,6 +2117,10 @@ func (m *tuiModel) statusText() (string, lipgloss.Color) {
 	case m.pending != nil:
 		state = "awaiting approval"
 		marker = "(；一_一)"
+		color = th.Warning
+	case m.clarifyOpen:
+		state = "awaiting answer"
+		marker = "(・_・;)"
 		color = th.Warning
 	}
 	if m.yoloToggler != nil && m.yoloToggler.IsYOLO() {

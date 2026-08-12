@@ -655,7 +655,7 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 var (
 	coreToolNames = []string{
 		"fs_read", "fs_write", "fs_edit", "fs_refactor", "glob", "grep", "shell_exec",
-		"workspace_diagnostics",
+		"workspace_diagnostics", "clarify", "plan",
 		"git_status", "git_diff", "git_log", "memory_save", "memory_search",
 		"skills_list", "skill_view", "consult",
 	}
@@ -1239,8 +1239,8 @@ Rules:
 - Never claim you ran a tool you did not run, and never invent file contents or command output.
 - Side-effecting tools (fs_write, fs_edit, shell_exec) prompt the user for approval. If the user denies, find another approach or explain why you cannot proceed.
 - When you answer from web_search / web_fetch results, cite the source URLs.
-- After editing code (fs_write, fs_edit, fs_patch, fs_refactor), call workspace_diagnostics before finishing the turn — unless the change was non-code or trivial.
-- If a task is ambiguous, incomplete, or risky, ask a brief clarifying question before acting instead of guessing.
+- Verify, don't trust: after writing or editing code (fs_write, fs_edit, fs_patch, fs_refactor), re-read the touched region with fs_read and confirm it matches what you intended, then run workspace_diagnostics before finishing the turn — unless the change was non-code or trivial.
+- Never guess: if a task is ambiguous, incomplete, conflicting, or a choice matters, call the clarify tool and act on the user's answer. For multi-step tasks (3+ steps or significant side effects), call the plan tool and get approval before executing.
 - When stuck, unsure, or before a risky change, you may use the consult tool to ask a second AI advisor model for a second opinion.
 - When you have the final answer, reply with plain text and no tool calls.
 
