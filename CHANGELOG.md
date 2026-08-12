@@ -2,6 +2,15 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.23 — 2026-08-12
+
+### Changed
+- **Model guidance refresh**: `docs/models-benchmark.md` now covers
+  **Qwen3VL-8B-Instruct (18/18 — the recommended default on 12 GB)** and
+  **gpt-oss-20b (14/18)**, measured with `--repeat 3`; the repeat-3 score makes
+  the honest picture visible (Qwythos 11/18, not the single-run 4/6). The
+  compatibility matrix in `docs/models.md` was corrected accordingly.
+
 ## v0.1.22 — 2026-08-12
 
 ### Changed
