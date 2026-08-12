@@ -1,0 +1,20 @@
+name: verify-barrier
+description: a write without diagnostics is deterministically verified before "done" (go vet catches the missing import)
+verify_writes: true
+files:
+  go.mod: |
+    module bench
+
+    go 1.22
+  main.go: |
+    package main
+
+    func main() { println("hi") }
+input: rewrite main.go to use fmt.Println
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"}'}
+  - answer: "done with the rewrite"
+  - answer: "I confirm the file is valid."
+assert:
+  requests_contain: ["Deterministic verification ran it now"]
+  final_answer_contains: "valid"

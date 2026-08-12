@@ -270,6 +270,15 @@ func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta, onRea
 	}
 	respMessage.Message.Role = "assistant"
 	respMessage.Message.ToolCalls = respMessage.ToolCalls
+	// Sanitize truncated tool-call arguments (invalid JSON) into a marker
+	// object so the assistant message can be re-marshaled on the next request
+	// instead of crashing the client.
+	for i := range respMessage.ToolCalls {
+		args := respMessage.ToolCalls[i].Function.Arguments
+		if len(bytes.TrimSpace(args)) > 0 && !json.Valid(args) {
+			respMessage.ToolCalls[i].Function.Arguments = json.RawMessage(TruncatedArgsMarker)
+		}
+	}
 	return respMessage, nil
 }
 
@@ -325,6 +334,12 @@ func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]f
 	}
 	return vectors, nil
 }
+
+// truncatedArgsMarker replaces a tool call whose arguments stream was cut off
+// (invalid JSON) with a valid object the decoder recognizes, so the message can
+// be re-serialized and the model gets the "re-emit" feedback instead of a
+// marshal crash.
+const TruncatedArgsMarker = `{"__truncated":true}`
 
 // CountTokens returns the number of tokens the server's tokenizer assigns to
 // text. It supports llama.cpp's root /tokenize endpoint (the dev llama-server

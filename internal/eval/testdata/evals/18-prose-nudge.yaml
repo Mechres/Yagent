@@ -1,0 +1,14 @@
+name: prose-tool-nudge
+description: a tool call narrated in prose (no tool_calls) is nudged into an emitted call
+files:
+  a.txt: |
+    payload-88
+input: read a.txt and tell me its contents
+steps:
+  - answer: "I will fs_read a.txt now to see what it contains."
+  - tool_call: {name: fs_read, args: '{"path":"a.txt"}'}
+  - answer: the file contains payload-88
+assert:
+  tool_results_contain: ["payload-88"]
+  requests_contain: ["narrated a tool call"]
+  final_answer_contains: "payload-88"

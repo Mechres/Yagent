@@ -1,0 +1,15 @@
+name: error-envelope
+description: tool errors carry machine-readable class markers the model can act on
+files:
+  a.go: |
+    package pkg
+
+    func f() int { return 1 }
+input: change the function to return 2
+steps:
+  - tool_call: {name: fs_edit, args: '{"path":"a.go","old_string":"retrun 1","new_string":"return 2"}'}
+  - tool_call: {name: fs_edit, args: '{"path":"a.go","old_string":"return 1","new_string":"return 2"}'}
+  - answer: edited
+assert:
+  tool_results_contain: ["class=old_string_not_found"]
+  final_answer_contains: "edited"

@@ -1,0 +1,13 @@
+name: truncated-tool-call
+description: cut-off tool-call arguments get a re-emit message and the model retries
+files:
+  a.txt: |
+    data-42
+input: read a.txt
+steps:
+  - tool_call: {name: fs_read, args: '{"path":"a.txt"'}
+  - tool_call: {name: fs_read, args: '{"path":"a.txt"}'}
+  - answer: it contains data-42
+assert:
+  tool_results_contain: ["truncated"]
+  final_answer_contains: "data-42"

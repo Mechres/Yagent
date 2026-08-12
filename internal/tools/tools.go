@@ -333,6 +333,9 @@ func decodeArgs(args json.RawMessage, v any) error {
 	if len(bytes.TrimSpace(args)) == 0 {
 		return validationErrorf("no arguments provided; pass a JSON object with the required fields")
 	}
+	if string(bytes.TrimSpace(args)) == llm.TruncatedArgsMarker {
+		return validationErrorf("tool-call arguments were truncated (incomplete JSON) — re-emit the full tool call with all required fields")
+	}
 	if err := strictDecode(args, v); err == nil {
 		return nil
 	}

@@ -1,0 +1,12 @@
+name: task-ledger
+description: the machine-generated progress ledger is injected after a write
+files:
+  a.txt: |
+    x
+input: write the word "new" to b.txt
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"b.txt","content":"new"}'}
+  - answer: wrote it
+assert:
+  requests_contain: ["TASK STATE"]
+  final_answer_contains: "wrote"

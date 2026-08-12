@@ -55,6 +55,8 @@ type Task struct {
 	// DenyFirst denies the first N write/destructive approvals (the model
 	// must recover from a user saying no). 0 = allow everything.
 	DenyFirst int `yaml:"deny_first"`
+	// VerifyWrites enables the deterministic verify-don't-trust barrier.
+	VerifyWrites bool `yaml:"verify_writes"`
 	// PatchFilter exercises the fs_patch per-hunk approval path: when set, the
 	// harness approves the patch with rewritten args containing only the named
 	// hunk subset ("first_hunk" | "last_hunk"), so the eval can assert that
@@ -98,6 +100,10 @@ type Assertions struct {
 	// the run (used by the fs_patch partial-approval and denial evals).
 	FileContains    []FileAssert `yaml:"file_contains"`
 	FileNotContains []FileAssert `yaml:"file_not_contains"`
+	// RequestsContain requires at least one request body sent to the model to
+	// contain each text (used for the verify-barrier, prose-nudge and ledger
+	// injections, which appear in the request stream, not in tool results).
+	RequestsContain []string `yaml:"requests_contain"`
 }
 
 // FileAssert is one post-run file-content assertion.
@@ -212,6 +218,7 @@ func Run(t *testing.T, task Task) {
 		Index:           idx,
 		IndexAutoInject: false,
 		Summarizer:      summ,
+		VerifyWrites:    task.VerifyWrites,
 	}, ws)
 
 	inputs := task.Inputs
@@ -290,6 +297,18 @@ func Run(t *testing.T, task Task) {
 			if !hasUser {
 				t.Error("a request was sent with no user message (budget swallowed the current turn?)")
 			}
+		}
+	}
+	for _, want := range task.Assert.RequestsContain {
+		found := false
+		for _, body := range reqLog.bodies() {
+			if strings.Contains(string(body), want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no request contained %q", want)
 		}
 	}
 	for _, fa := range task.Assert.FileContains {

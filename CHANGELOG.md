@@ -5,6 +5,17 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased — 2026-08-12
 
 ### Fixed
+- **Truncated tool-call marshal crash**: a cut-off tool-call argument is
+  sanitized into a `{"__truncated":true}` marker at the SSE layer so the
+  assistant message re-serializes on the next request (previously the invalid
+  RawMessage broke the client with "unexpected end of JSON input"); the decoder
+  maps the marker to the "re-emit the full call" feedback.
+
+### Added
+- **Golden evals 18–22**: the new deterministic behaviors are locked into the
+  harness — prose tool-call nudge, verify barrier, truncated tool-call
+  recovery, structured error envelopes, and the task-state ledger. Harness
+  gained `requests_contain` and `verify_writes`.
 - **Agent-side loop guard**: `agent.Run` now watches the streamed content for a
   repeating unit and cancels + feeds back a stop-repeating nudge — previously
   the loop guard was TUI-only, so a looping *subagent* burned the whole request
