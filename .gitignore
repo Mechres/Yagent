@@ -1,2 +1,9 @@
 /yagent
 /ideas/
+# per-project runtime state (keep .yagent/config.yaml committable)
+/.yagent/checkpoints/
+/.yagent/memory/
+/.yagent/playbooks/
+/.yagent/scratch/
+/.yagent/skills/
+/.yagent/undo/

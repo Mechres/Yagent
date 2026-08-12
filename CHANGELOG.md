@@ -2,6 +2,18 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.21 — 2026-08-12
+
+### Added
+- **`yagent bench`**: runs the six canonical agent-loop tasks against the
+  configured model with per-task pass/fail + timing; `--json` emits a
+  machine-readable report for collecting results across models.
+- **`docs/models-benchmark.md`**: which model to run and what to expect,
+  benchmarked on the RX 6700 XT — fable-qwen2.5-3b (6/6, fastest), gemma-4-12B
+  (6/6, strongest), Qwythos-9B / Qwen3.6-14B (4/6, flaky recall), and
+  qwen2.5-coder-7b-instruct (1/6 — doesn't emit tool calls on llama.cpp; use
+  Ollama or an agent-tuned variant). Includes recommended sampling per model.
+
 ## v0.1.20 — 2026-08-12
 
 ### Added

@@ -67,6 +67,7 @@ By default Yagent talks to `http://localhost:11434` (Ollama). Point it elsewhere
 | [`docs/design/skills.md`](docs/design/skills.md) | Hermes-style skills: procedural memory, `SKILL.md` format, approval gate |
 | [`docs/design/tools.md`](docs/design/tools.md) | Tool specifications and safety model |
 | [`docs/models.md`](docs/models.md) | Model quirks from acceptance runs (tool-call reliability, embeddings) |
+| [`docs/models-benchmark.md`](docs/models-benchmark.md) | Which model to run, what to expect, and recommended settings (benchmarked on an RX 6700 XT) |
 | [`config.example.yaml`](config.example.yaml) | Annotated configuration reference |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history |
 

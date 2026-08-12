@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -141,6 +142,16 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "bench":
+		fs := flag.NewFlagSet("bench", flag.ContinueOnError)
+		jsonOut := fs.Bool("json", false, "machine-readable JSON report")
+		if err := fs.Parse(args[1:]); err != nil {
+			os.Exit(2)
+		}
+		if err := runBench(cfg, *jsonOut); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "calibrate":
 		fs := flag.NewFlagSet("calibrate", flag.ContinueOnError)
 		write := fs.Bool("write", false, "write the best recipe's sampling block into the config file")
@@ -203,7 +214,7 @@ const bashCompletion = `# yagent bash completion — source with: source <(yagen
 _yagent() {
     local cur
     cur="${COMP_WORDS[COMP_CWORD]}"
-    local commands="chat sessions skills doctor completion playbook calibrate"
+    local commands="chat sessions skills doctor completion playbook calibrate bench"
     local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo"
     local skills_cmds="list import"
     local scopes="global project"
@@ -233,7 +244,7 @@ complete -F _yagent yagent
 
 const zshCompletion = `#compdef yagent
 # yagent zsh completion — add this directory to your fpath and symlink to _yagent
-_arguments '1:command:(chat sessions skills doctor completion playbook calibrate)' '*: :->args'
+_arguments '1:command:(chat sessions skills doctor completion playbook calibrate bench)' '*: :->args'
 case $words[1] in
   chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' ;;
   skills) _arguments '1:skill command:(list import)' '*: :->file' ;;
@@ -243,7 +254,7 @@ esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent playbook list | yagent calibrate [--write] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 
@@ -405,6 +416,76 @@ func copyDir(src, dst string) error {
 		}
 		return os.WriteFile(target, data, info.Mode().Perm())
 	})
+}
+
+// runBench runs the canonical small-model tasks once against the configured
+// model and reports per-task pass/fail + timing. --json emits a machine-readable
+// report so results can be collected across models (see docs/models-benchmark.md).
+func runBench(cfg *config.Config, jsonOut bool) error {
+	client := llm.NewClient(cfg.ServerURL, cfg.Model)
+	client.BearerToken = cfg.APIKey
+	client.Sampling = llm.Sampling{
+		Temperature:        cfg.Sampling.Temperature,
+		TopP:               cfg.Sampling.TopP,
+		TopK:               cfg.Sampling.TopK,
+		RepetitionPenalty:  cfg.Sampling.RepetitionPenalty,
+		MinP:               cfg.Sampling.MinP,
+		ReasoningMaxTokens: cfg.Sampling.ReasoningMaxTokens,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if _, err := client.ChatStream(ctx, []llm.Message{{Role: "user", Content: "reply with the single word ok"}}, nil, func(string) {}, nil); err != nil {
+		return fmt.Errorf("cannot reach the model at %s: %w", cfg.ServerURL, err)
+	}
+
+	type taskReport struct {
+		Name   string `json:"name"`
+		Pass   bool   `json:"pass"`
+		Detail string `json:"detail,omitempty"`
+		WallMS int64  `json:"wall_ms"`
+	}
+	tasks := bench.Tasks()
+	start := time.Now()
+	reports := make([]taskReport, 0, len(tasks))
+	for _, tk := range tasks {
+		ts := time.Now()
+		res := bench.RunTask(client, tk)
+		reports = append(reports, taskReport{tk.Name, res.Pass, res.Detail, time.Since(ts).Milliseconds()})
+	}
+	total := time.Since(start)
+	passed := 0
+	for _, r := range reports {
+		if r.Pass {
+			passed++
+		}
+	}
+
+	if jsonOut {
+		out := map[string]any{
+			"model":    cfg.Model,
+			"server":   cfg.ServerURL,
+			"pass":     passed,
+			"total":    len(tasks),
+			"wall_sec": total.Seconds(),
+			"sampling": client.Sampling,
+			"tasks":    reports,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	fmt.Printf("benchmark %q across %d canonical tasks (sampling: temp %v, top_p %v, reasoning cap %d)\n",
+		cfg.Model, len(tasks), client.Sampling.Temperature, client.Sampling.TopP, client.Sampling.ReasoningMaxTokens)
+	for _, r := range reports {
+		mark := "ok  "
+		if !r.Pass {
+			mark = "FAIL"
+		}
+		fmt.Printf("  %-12s %s  %7s  %s\n", r.Name, mark, (time.Duration(r.WallMS) * time.Millisecond).Round(100*time.Millisecond), r.Detail)
+	}
+	fmt.Printf("\n%d/%d tasks pass · total %s\n", passed, len(tasks), total.Round(time.Second))
+	return nil
 }
 
 // runCalibrate runs the canonical small-model benchmark across the sampling
