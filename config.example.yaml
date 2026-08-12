@@ -29,6 +29,29 @@ theme: tokyo
 #   top_p: 0.95
 #   top_k: 20
 #   repetition_penalty: 1.05
+#   reasoning_max_tokens: 1024   # cap thinking on reasoning models (biggest 12 GB speed lever)
+
+# Per-model sampling profiles (v0.1.9): the first profile whose `match` is a
+# substring of the resolved model name overrides the base sampling (unset
+# fields inherit). Measured recipes from docs/models-benchmark.md — per-model
+# sampling measurably matters, but verify it per model: LFM2.5-8B-A1B goes
+# 10/18 -> 13/18 with its recipe, while LFM2.5-2.6B's recipe is within noise
+# (its default is already good):
+# models:
+#   - match: LFM2.5-8B        # Liquid LFM2.5 8B-A1B (recipe helps: 10 -> 13/18)
+#     temperature: 0.2
+#     top_k: 80
+#     repetition_penalty: 1.05
+#   - match: LFM2.5-2.6B      # Liquid LFM2.5 2.6B (recipe ~ neutral on Yagent tasks)
+#     temperature: 0.1
+#     top_k: 50
+#     repetition_penalty: 1.1
+#   - match: Qwythos
+#     top_k: 20
+#     repetition_penalty: 1.05
+#   - match: Qwen3VL-8B       # recommended default on a 12 GB card (18/18)
+#     temperature: 0.6
+#     top_p: 0.95
 
 # Display preferences.
 ui:

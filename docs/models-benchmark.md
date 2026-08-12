@@ -48,7 +48,8 @@ run" predate `--repeat` and are indicative only.
 |---|---|---|---|---|
 | **Qwen3VL-8B-Instruct** | 8B | **18/18** | ~1m04s | **Best measured overall** — perfect score, fast (3–6s/task), no mandatory thinking. The vision encoder is unused by Yagent, but the Qwen3 text/tool base is excellent. |
 | **Qwen3-8B** (non-VL) | 8B | 14/18 | 4m10s | Same base but **thinks by default on llama.cpp** (~500 thinking tokens/task → ~15s each). Capable, but the VL variant is strictly better for Yagent. |
-| **LFM2.5-2.6B** | 2.6B | 13/18 | 2m21s | Impressively capable for 1.7 GB — passes tool-json/fuzzy/grep-find; but 0/3 on edit-verify (loops into max iterations) and overthinks (1000+ think on multi-turn). Good for weak hardware / simple tasks. |
+| **LFM2.5-8B-A1B-UD** (MoE) | 8B | 13/18 | ~1m12s | Decent agentic MoE; its recommended recipe helps (10 → 13/18). **code-locate 0/3** and shaky recall in both recipes — not a gemma-4-26B rival for Yagent's agent loop. |
+| **LFM2.5-2.6B** | 2.6B | 14/18 | ~1m37s | Surprisingly capable for 1.7 GB — passes tool-json/fuzzy/code-locate/grep-find; but **loops into "max iterations" on edit-verify and multi-turn** regardless of recipe. Its recommended recipe is within noise (14 → 13/18). Good for weak hardware / simple tasks. |
 | **gemma-4-12B** | 12B | 18/18 (single run) | 63.6 s | Strongest quality; slowest (heavy reasoning). Best "capable" pick if speed doesn't matter. |
 | **fable-qwen2.5-3b-agentic** | 3B | 18/18 (single run) | 12.5 s | Fast and agentic-tuned; great for simple/weak hardware. Tiny model — long or deep tasks still strain it. |
 | **gpt-oss-20b** | 20B MoE | 14/18 | 2m12s | Good; tight VRAM fit (11.6 GB) so run a reduced `n_ctx`; weaker on recall/glob. |
@@ -108,4 +109,9 @@ sampling:
 | qwen2.5-coder-7b-instruct | — (prefer Ollama, or an agent-tuned variant) | — |
 
 Use `yagent calibrate` on your own model + hardware to tune the recipe — the
-sweep compares four sampling profiles over the same six tasks.
+sweep compares four sampling profiles over the same six tasks. Per-model
+sampling **measurably matters, but verify it per model**: the LFM2.5-8B recipe
+lifted it from 10/18 to 13/18, while the LFM2.5-2.6B recipe was within noise
+(its default is already good). Wire each model's measured recipe into the
+`models:` config profiles so it's applied automatically (see
+`config.example.yaml`).

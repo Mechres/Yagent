@@ -18,7 +18,8 @@ leading system message only.
 |---|---|---|---|---|
 | `Qwen3VL-8B-Instruct-Q4_K_M` | llama.cpp :8089 | excellent | **18/18** | best measured; fast; no mandatory thinking; the vision encoder is unused by Yagent but the Qwen3 text/tool base is excellent |
 | `Qwen3-8B-Q4_K_M` (non-VL) | llama.cpp | excellent | 14/18 | same base but **thinks by default on llama.cpp** → ~4× slower than the VL variant; cap `reasoning_max_tokens` if you use it |
-| `LFM2.5-2.6B-Q4_K_M` | llama.cpp | good | 13/18 | surprisingly capable for 1.7 GB; 0/3 on edit-verify (loops) and overthinks on multi-turn |
+| `LFM2.5-8B-A1B-UD-Q4_K_M` | llama.cpp | good | 13/18 (recipe 0.2/80/1.05) | MoE; recipe helps (10→13); code-locate 0/3 both recipes |
+| `LFM2.5-2.6B-Q4_K_M` | llama.cpp | good | 14/18 (default) | capable for 1.7 GB; loops on edit-verify/multi-turn; its recipe (0.1/50/1.1) is within noise |
 | `gemma-4-12B-it-heretic-Q4_K_M` | llama.cpp | excellent | 18/18 (single run) | strongest quality; slow (heavy reasoning) |
 | `fable-qwen2.5-3b-agentic-...-Q4_K_M` | llama.cpp | good | 18/18 (single run) | tiny + fast; good for simple tasks |
 | `gpt-oss-20b-Q4_K_M` | llama.cpp | good | 14/18 | MoE, tight VRAM fit; weaker on recall/glob |

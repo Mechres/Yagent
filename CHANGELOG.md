@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.25 — 2026-08-12
+
+### Changed
+- **Model guidance refresh 3**: benchmarked `LFM2.5-8B-A1B-UD` and re-ran
+  `LFM2.5-2.6B` with their recommended recipes. Finding: per-model sampling
+  matters but isn't uniform — the 8B recipe lifted it 10 → 13/18, the 2.6B
+  recipe was within noise. Both LFM models loop into "max iterations" on
+  edit-verify/multi-turn. `config.example.yaml` gained the split `models:`
+  profiles; docs updated.
+
 ## v0.1.24 — 2026-08-12
 
 ### Changed
