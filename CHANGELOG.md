@@ -2,20 +2,23 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
-## Unreleased — 2026-08-12
+## v0.1.16 — 2026-08-12
 
 ### Fixed
 - **Truncated tool-call marshal crash**: a cut-off tool-call argument is
   sanitized into a `{"__truncated":true}` marker at the SSE layer so the
   assistant message re-serializes on the next request (previously the invalid
-  RawMessage broke the client with "unexpected end of JSON input"); the decoder
-  maps the marker to the "re-emit the full call" feedback.
+  RawMessage broke the client with "unexpected end of JSON input").
 
 ### Added
 - **Golden evals 18–22**: the new deterministic behaviors are locked into the
   harness — prose tool-call nudge, verify barrier, truncated tool-call
   recovery, structured error envelopes, and the task-state ledger. Harness
   gained `requests_contain` and `verify_writes`.
+
+## v0.1.15 — 2026-08-12
+
+### Fixed
 - **Agent-side loop guard**: `agent.Run` now watches the streamed content for a
   repeating unit and cancels + feeds back a stop-repeating nudge — previously
   the loop guard was TUI-only, so a looping *subagent* burned the whole request
@@ -24,6 +27,8 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   reusing an earlier result from history (which invited hallucinated file
   contents once pruning removed it); it states the file is unchanged and offers
   a line-range re-read.
+
+## v0.1.14 — 2026-08-12
 
 ### Added
 - **Goal-progress ledger**: the agent tracks touched files and the last tool
@@ -37,6 +42,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   turn streams.
 - **`/retry`**: re-runs the last input with a stable sampling profile
   (temp 0.3, repetition_penalty 1.05) in both UIs.
+
+## v0.1.13 — 2026-08-12
+
+### Added
 - **Verify-don't-trust barrier**: when a turn writes files without running
   `workspace_diagnostics`, the agent deterministically runs it before accepting
   a final answer and feeds the result back — "done" after an unverified write
@@ -49,6 +58,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   `[class=… retryable=… suggest=…]` markers (`missing_path`→glob,
   `old_string_not_found`→fs_read, `ambiguous_match`, `timeout`) the model can
   act on programmatically.
+
+## v0.1.12 — 2026-08-12
+
+### Added
 - **SlotLock (inference serialization)**: a process-wide per-server semaphore
   serializes chat/embed/tokenizer requests so parallel subagents, consult and
   embeddings never hit a single-slot local server concurrently (HTTP 500 / VRAM
@@ -64,6 +77,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   fs_read main.go") without emitting tool_calls and no tool has run this turn,
   the agent feeds back a nudge to emit it — never auto-executing. Past-tense
   mentions and code fences are ignored.
+
+## v0.1.11 — 2026-08-12
+
+### Added
 - **`code_slice` tool**: reads one declaration's exact source span (body + doc
   comment) via tree-sitter instead of a whole file — ~80% fewer tokens on large
   modules (`index.SliceSymbol`).
@@ -71,6 +88,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   the modified source in-memory and block the write when tree-sitter finds a
   syntax error, reporting the exact line/col — a broken edit never reaches disk
   or costs a diagnostics roundtrip. Non-source files are untouched.
+
+## v0.1.10 — 2026-08-12
+
+### Added
 - **`clarify` tool**: the model calls `clarify(question, choices[])` when a
   task is ambiguous or a choice matters; the UI renders real options (REPL
   numbered prompt, TUI modal) and the user's pick returns as tool data —
@@ -81,6 +102,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 - **Verify-don't-trust rule**: the system prompt now requires re-reading a
   touched file region (fs_read) after any code write and confirming it matches
   intent before running `workspace_diagnostics`.
+
+## v0.1.9 — 2026-08-12
+
+### Added
 - **Per-model sampling profiles**: a `models:` config section overrides
   sampling per model-name substring (unset fields inherit the base recipe) —
   docs/models.md's tuning matrix is now code.
@@ -95,6 +120,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 - **Fuzzy path pre-resolution**: `fs_read`/`fs_edit` auto-correct a dropped
   file extension when exactly one file matches (e.g. `README` → `README.md`)
   with a "resolved to" note, saving a wasted turn.
+
+## v0.1.8 — 2026-08-12
+
+### Added
 - **Local-model tuning**: the system prompt now instructs the model to run
   `workspace_diagnostics` after code edits and to ask clarifying questions on
   ambiguous tasks, plus two worked tool-use examples.
@@ -103,10 +132,20 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   explicit Esc cancels never retry.
 - **`sampling.min_p` knob**: opt-in nucleus lower-bound filter for
   llama.cpp/Ollama, editable via `/settings` and `/set`.
-- **Live small-model benchmark** (`YAGENT_LIVE_EVAL=1`): three canonical tasks
-  (tool JSON + read, two-turn recall, edit-then-verify). `YAGENT_LIVE_SWEEP=1`
-  compares sampling recipes. First Qwythos sweep: default (0.6/0.95) and
-  cold (0.3) 3/3; repetition_penalty and min_p 2/3 — the shipped recipe stands.
+- **Live small-model benchmark** (`YAGENT_LIVE_EVAL=1`): canonical tasks
+  (tool JSON + read, two-turn recall, edit-then-verify, fuzzy path, code
+  locate, grep find). `YAGENT_LIVE_SWEEP=1` compares sampling recipes.
+
+## v0.1.7 — 2026-08-12
+
+### Added
+- **`fs_refactor`**: word-boundary symbol rename across source files (build /
+  vendored dirs and binaries skipped), undo-aware and approval-gated.
+- **Declarative playbooks**: `.yagent/playbooks/<name>.yaml` define multi-stage
+  workflows — phases of `{goal, rounds, tools[], success}`. Run with
+  `yagent chat --playbook <name>` or `/playbook <name>` (bare `/playbook`
+  lists them; `yagent playbook list` too). Each phase is an autonomous goal run
+  scoped to its tool subset, snapshotted per phase.
 
 ## v0.1.6 — 2026-08-12
 

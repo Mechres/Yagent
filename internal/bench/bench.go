@@ -82,6 +82,61 @@ func Tasks() []Task {
 				return false, "no diagnostics output seen"
 			},
 		},
+		{
+			// dropped extension (README -> README.md) resolved by the fuzzy path
+			// pre-resolution, not wasted turns.
+			Name: "fuzzy-path",
+			Setup: func(ws string) error {
+				return os.WriteFile(filepath.Join(ws, "README.md"), []byte("README-CONTENT-5511\n"), 0o644)
+			},
+			Inputs: []string{"read the file README (no extension) and tell me its contents"},
+			Check: func(answer string, toolResults []string) (bool, string) {
+				if !strings.Contains(answer, "README-CONTENT-5511") {
+					return false, "answer lacks the README content"
+				}
+				return true, "resolved and read"
+			},
+		},
+		{
+			// locate a declaration: the model must use a code tool, not guess.
+			Name: "code-locate",
+			Setup: func(ws string) error {
+				if err := os.MkdirAll(filepath.Join(ws, "pkg"), 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(ws, "pkg", "a.go"),
+					[]byte("package pkg\n\nfunc helper(x int) int {\n\treturn x + 1\n}\n"), 0o644)
+			},
+			Inputs: []string{"where is the helper function defined? give the file and the exact line"},
+			Check: func(answer string, toolResults []string) (bool, string) {
+				if !strings.Contains(answer, "helper") {
+					return false, "answer did not mention helper"
+				}
+				for _, r := range toolResults {
+					if strings.Contains(r, "helper") {
+						return true, "located via a code tool"
+					}
+				}
+				return false, "no tool result carried the declaration"
+			},
+		},
+		{
+			// grep-style lookup across files.
+			Name: "grep-find",
+			Setup: func(ws string) error {
+				if err := os.WriteFile(filepath.Join(ws, "alpha.txt"), []byte("ORANGE-77\n"), 0o644); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(ws, "beta.txt"), []byte("APPLE-88\n"), 0o644)
+			},
+			Inputs: []string{"which file contains the value ORANGE-77?"},
+			Check: func(answer string, toolResults []string) (bool, string) {
+				if !strings.Contains(answer, "alpha") {
+					return false, "answer did not identify alpha.txt"
+				}
+				return true, "found the file"
+			},
+		},
 	}
 }
 

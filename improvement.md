@@ -128,29 +128,25 @@ of reality:
 A third review (2026-08-12, "agy") proposed 12 items across four domains.
 Screened against the codebase (see session notes); **skipped** items marked ⚪:
 
-- 🟡 **P1 project-instructions reader** — auto-discover `.yagent/instructions.md`
-  / `AGENTS.md` / `CLAUDE.md` / `.cursorrules` and append to the system prompt
-  (capped). `buildSystemPrompt` is currently a fixed template.
-- 🟡 **P2 preset subagent roles** — architect/auditor/test-engineer/docs-writer
-  presets (system prompt + tool subset + temperature) built on the existing
-  `tools[]` scoping.
-- 🟡 **P3 structured session exports** — `yagent sessions export <id>
-  --format html|md` (markdown exists; HTML with inline styling, no new deps).
-- 🟡 **P4 tool-output pruning in the budget** — collapse old tool results to
-  `[Output concealed; N lines hidden]` instead of summarizing user/reasoning
-  turns away. Refines `budget`, keeps user instructions alive.
-- 🟡 **P5 `workspace_diagnostics` tool** — detect project type and run
-  `go vet`/`tsc --noEmit`/`cargo check`/`ruff` as a typed read-only tool
-  (explicit call, not an auto-hook after every write).
-- 🟡 **P6 skills manager modal** — TUI overlay for `/skills pending`
-  (diff, verify, approve/reject) following the `/settings`+`/sessions` modal
-  patterns.
-- 🟡 **P7 `fs_refactor` rename** — symbol rename across call sites using
-  `index_calls`/`code_references`, applied via staged `fs_edit`s through the
-  undo buffer + approval. Highest effort; do last, carefully.
-- 🟡 **P8 declarative playbooks** — `.yagent/playbooks/*.yaml` = phases of
-  `{goal, rounds, tools[], success criteria}` run through `RunGoal` + tool
-  subsets. Effectively user-land M7 orchestration.
+- ✅ **P1 project-instructions reader** — `.yagent/instructions.md` >
+  `AGENTS.md` > `CLAUDE.md` > `.cursorrules` (first found, capped) are folded
+  into the system prompt by `repoInstructions`.
+- ✅ **P2 preset subagent roles** — `subagent.role: architect|auditor|
+  test-engineer|docs-writer` (prompt suffix + default tool subset +
+  temperature via `llm.Client.Clone`).
+- ✅ **P3 structured session exports** — `yagent sessions export <id>
+  --format html|md`.
+- ✅ **P4 tool-output pruning in the budget** — old tool results collapse to
+  `[tool output concealed; N lines hidden]` before summarization runs.
+- ✅ **P5 `workspace_diagnostics` tool** — detects the project and runs
+  `go vet`/`tsc --noEmit`/`cargo check`/`ruff` as a read-only tool.
+- ✅ **P6 skills manager modal** — bare `/skills` opens the pending-writes
+  modal (diff/verify/approve/reject).
+- ✅ **P7 `fs_refactor` rename** — word-boundary symbol rename across source
+  files, undo-aware and approval-gated.
+- ✅ **P8 declarative playbooks** — `.yagent/playbooks/*.yaml` phases of
+  `{goal, rounds, tools[], checks}` run through `RunGoal` + tool subsets, with
+  deterministic success predicates.
 - ⚪ Git worktree isolation (`--worktree`) — overlaps `internal/checkpoint`
   rollback; conflicts with the no-git-mutations constraint.
 - ⚪ Multimodal local vision — needs a multimodal message-part architecture

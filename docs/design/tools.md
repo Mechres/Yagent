@@ -64,6 +64,34 @@ The ui implements `Approver`; prompts show the tool name, args (command/diff), a
 
 No fuzzy matching in v1 — exact-match + good error feedback is more reliable with small models than fuzzy patching. Revisit only with evidence.
 
+## Tool set additions (M6 → v0.1.16)
+
+Tools added since the M2 registry above; same contract (typed args, capped
+results, errors-as-data), with two newer conventions:
+
+- **Error envelopes** — high-value failures carry `[class=… retryable=…
+  suggest=…]` markers the model can act on (`missing_path`→glob,
+  `old_string_not_found`→fs_read, `ambiguous_match`, `timeout`).
+- **Deterministic guardrails** — pre-flight tree-sitter syntax validation
+  blocks a write that would break source; the verify-don't-trust barrier runs
+  `workspace_diagnostics` before "done" when a write went unverified; the
+  fs_read dedup cache returns `[cached]` markers for unchanged re-reads.
+
+| Name | Risk | Notes |
+|---|---|---|
+| `workspace_diagnostics` | RO | detects the project (go.mod/Cargo.toml/package.json+tsconfig/py) and runs `go vet`/`cargo check`/`tsc --noEmit`/eslint/`ruff`/compileall, 120s timeout, fixed commands (no approval) |
+| `code_slice` | RO | one declaration's exact span (body + doc comment) via tree-sitter, ~80% cheaper than fs_read on large modules |
+| `code_references` | RO | call graph: who calls a symbol → `path:line` (from the index) |
+| `fs_refactor` | Write | word-boundary symbol rename across source files (build/vendored dirs + binaries skipped), undo-aware, approval-gated |
+| `clarify` | RO | asks the user a question with optional choices (REPL numbered prompt / TUI modal); the pick returns as tool data — only offered when the UI wires `SetAskUser` |
+| `plan` | RO | lightweight plan-approval gate: steps shown, user approves/revises, returned as `plan approved` / `plan rejected: <feedback>` |
+| `consult` | RO | advisor model (`consult.*` config) or terminal AI app (`consult.cmd`) |
+| `memory_save` / `memory_search` | RO | L3 semantic memory (`scope: global\|project`) |
+| `index_repo` / `index_search` | RO | build + search the tree-sitter code index (`symbol:`/`type:` exact lookups) |
+| `skill_view` / `skills_list` / `skill_manage` | RO / RO / Self-gated | procedural memory; writes gated (staged or applied per `skills.write_approval`) |
+| `scratch_write` / `scratch_read` | Write / RO | confined to `.yagent/scratch/` (the one write tool read-only subagents get) |
+| `subagent` | RO | parallel `tasks[]`, per-child `tools[]` subsets, preset `role:` profiles, shared scratchpad |
+
 ## Adding a tool (checklist)
 
 1. Implement `tools.Tool` (Schema/Risk/Execute) in `internal/tools/<name>.go`
