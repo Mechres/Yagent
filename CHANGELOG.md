@@ -2,6 +2,15 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.24 — 2026-08-12
+
+### Changed
+- **Model guidance refresh 2**: benchmarked `Qwen3-8B` (non-VL) and
+  `LFM2.5-2.6B`. Finding: the plain Qwen3-8B-Instruct **thinks by default on
+  llama.cpp** (~4× slower than the VL variant), so Qwen3VL-8B stays the
+  recommended default; LFM2.5-2.6B is a surprisingly capable 1.7 GB model
+  (13/18) but loops on the diagnostics task. Docs updated.
+
 ## v0.1.23 — 2026-08-12
 
 ### Changed

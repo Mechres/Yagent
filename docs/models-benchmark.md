@@ -46,7 +46,9 @@ run" predate `--repeat` and are indicative only.
 
 | Model | Size | Pass (×3) | Wall time | Notes |
 |---|---|---|---|---|
-| **Qwen3VL-8B-Instruct** | 8B | **18/18** | ~1m04s | **Best measured overall** — perfect score, fast (3–6s/task). The vision encoder is unused by Yagent, but the Qwen3 text/tool base is excellent. |
+| **Qwen3VL-8B-Instruct** | 8B | **18/18** | ~1m04s | **Best measured overall** — perfect score, fast (3–6s/task), no mandatory thinking. The vision encoder is unused by Yagent, but the Qwen3 text/tool base is excellent. |
+| **Qwen3-8B** (non-VL) | 8B | 14/18 | 4m10s | Same base but **thinks by default on llama.cpp** (~500 thinking tokens/task → ~15s each). Capable, but the VL variant is strictly better for Yagent. |
+| **LFM2.5-2.6B** | 2.6B | 13/18 | 2m21s | Impressively capable for 1.7 GB — passes tool-json/fuzzy/grep-find; but 0/3 on edit-verify (loops into max iterations) and overthinks (1000+ think on multi-turn). Good for weak hardware / simple tasks. |
 | **gemma-4-12B** | 12B | 18/18 (single run) | 63.6 s | Strongest quality; slowest (heavy reasoning). Best "capable" pick if speed doesn't matter. |
 | **fable-qwen2.5-3b-agentic** | 3B | 18/18 (single run) | 12.5 s | Fast and agentic-tuned; great for simple/weak hardware. Tiny model — long or deep tasks still strain it. |
 | **gpt-oss-20b** | 20B MoE | 14/18 | 2m12s | Good; tight VRAM fit (11.6 GB) so run a reduced `n_ctx`; weaker on recall/glob. |
@@ -61,6 +63,17 @@ perfectly, is fast, and leaves ample VRAM headroom for context + embeddings.
 If you want maximum quality and can take the speed hit, `gemma-4-12B`. If you
 need the largest model the card can hold, `gpt-oss-20b` (MoE) with a reduced
 context window.
+
+Note on **Qwen3-8B vs Qwen3VL-8B**: on llama.cpp the plain Qwen3-8B-Instruct
+turns on **thinking by default**, which makes it ~4× slower than the VL
+variant (which runs non-thinking). Both share the same capable Qwen3 tool base,
+so the VL is the better pick — the vision encoder costs nothing you'd notice.
+If you must use the non-VL, cap `sampling.reasoning_max_tokens` to keep it
+responsive.
+
+For very constrained hardware, **LFM2.5-2.6B** (1.7 GB) is a surprisingly
+capable small model — just don't expect it to hold together on diagnostics/
+multi-step loops.
 
 ## What to expect in practice
 
