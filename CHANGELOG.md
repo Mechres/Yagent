@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.26 — 2026-08-12
+
+### Fixed
+- **Tool-call dedup no longer skips read-only tools.** An identical re-read was
+  being skipped with `"skipped: duplicate"`, which a small model reads as "it
+  didn't run — retry" and loops on forever (observed on the edit-verify task
+  with LFM2.5). Dedup now applies only to write/destructive tools; repeated
+  reads are legitimate (verify-don't-trust) and the `fs_read` cache already
+  returns an informative `[cached]` marker for unchanged files.
+
 ## v0.1.25 — 2026-08-12
 
 ### Changed

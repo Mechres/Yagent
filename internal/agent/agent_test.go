@@ -529,9 +529,37 @@ func TestBudgetPersistsSummary(t *testing.T) {
 	}
 }
 
-func TestDedupIdenticalToolCalls(t *testing.T) {
-	// Model calls the SAME tool+args twice in a row; the second must be
-	// skipped, not executed twice.
+func TestDedupIdenticalWrite(t *testing.T) {
+	// Model calls the SAME write tool+args twice in a row; the second must be
+	// skipped, not applied twice.
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_edit", `{"path":"a.txt","old_string":"data","new_string":"dat2"}`),
+		toolCall("c2", "fs_edit", `{"path":"a.txt","old_string":"data","new_string":"dat2"}`),
+		finalContent("done"),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "data")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 10}, ws)
+
+	if _, err := a.Run(context.Background(), "edit a.txt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// the second identical fs_edit must be skipped, not re-applied
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	last := string(s.requests[len(s.requests)-1])
+	if !strings.Contains(last, "duplicate of the previous tool call") {
+		t.Errorf("skip notice not fed back to the model: %q", last[:400])
+	}
+}
+
+func TestRepeatedReadNotSkipped(t *testing.T) {
+	// A re-read of the same file must NOT be agent-deduped (verify-don't-trust
+	// makes re-reads legitimate; a "skipped" notice makes the model retry
+	// forever — observed loop on the edit-verify task). The fs_read tool's own
+	// cache returns an informative [cached] marker instead.
 	s := newScriptedLLM(t, [][]string{
 		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
 		toolCall("c2", "fs_read", `{"path": "a.txt"}`),
@@ -543,22 +571,19 @@ func TestDedupIdenticalToolCalls(t *testing.T) {
 	client := llm.NewClient(s.ts.URL, "test-model")
 	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 10}, ws)
 
-	answer, err := a.Run(context.Background(), "read a.txt twice")
-	if err != nil {
+	if _, err := a.Run(context.Background(), "read a.txt twice"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	_ = answer
-	// the model's final request must show the dedup-skip notice for the
-	// second identical call (proving it was skipped, not re-executed)
+	// no "duplicate" skip was injected; the second read yielded the [cached]
+	// marker from the fs_read tool cache
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	last := string(s.requests[len(s.requests)-1])
-	if !strings.Contains(last, "duplicate of the previous tool call") {
-		t.Errorf("skip notice not fed back to the model: %q", last[:400])
+	if strings.Contains(last, "duplicate of the previous tool call") {
+		t.Error("a repeated read should not be agent-deduped")
 	}
-	// and the file content must appear only once as a tool result
-	if n := strings.Count(last, "data"); n != 1 {
-		t.Errorf("fs_read appears %d times in the final context, want 1", n)
+	if !strings.Contains(last, "[cached]") {
+		t.Errorf("expected the fs_read [cached] marker on the repeat read: %q", last[:400])
 	}
 }
 

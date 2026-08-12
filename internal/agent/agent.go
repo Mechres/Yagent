@@ -1423,17 +1423,20 @@ func (a *Agent) allReadOnly(calls []llm.ToolCall) bool {
 func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[string]int, blocked map[string]bool) string {
 	name := call.Function.Name
 
-	// Dedup: small models occasionally repeat an identical tool call back to
-	// back; skip it instead of running the same side effect twice. Only
-	// successful calls arm the dedup — repeated *failing* calls still count
-	// toward the validation block.
-	sig := name + " " + string(call.Function.Arguments)
-	a.dedupMu.Lock()
-	dup := a.lastCallSig != "" && sig == a.lastCallSig
-	a.dedupMu.Unlock()
-	if dup {
-		return "skipped: duplicate of the previous tool call (same tool and arguments); do not repeat it"
+	tool, ok := a.registry.Get(name)
+	if !ok {
+		return fmt.Sprintf("error: unknown tool %q, available: %s", name, strings.Join(a.registry.Names(), ", "))
 	}
+	if blocked[name] {
+		return fmt.Sprintf("error: tool %q is blocked for this turn (repeated validation failures)", name)
+	}
+
+	// Dedup: small models occasionally repeat an identical *write/destructive*
+	// tool call back to back; skip the repeat instead of applying the side
+	// effect twice. Read-only calls are NOT deduped: a re-read is legitimate
+	// (verify-don't-trust) and a "skipped: duplicate" on a read makes the model
+	// retry it forever (observed loop on the edit-verify task).
+	sig := name + " " + string(call.Function.Arguments)
 	armed := false
 	defer func() {
 		if armed {
@@ -1442,13 +1445,13 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 			a.dedupMu.Unlock()
 		}
 	}()
-
-	tool, ok := a.registry.Get(name)
-	if !ok {
-		return fmt.Sprintf("error: unknown tool %q, available: %s", name, strings.Join(a.registry.Names(), ", "))
-	}
-	if blocked[name] {
-		return fmt.Sprintf("error: tool %q is blocked for this turn (repeated validation failures)", name)
+	if tool.Risk() != tools.RiskReadOnly {
+		a.dedupMu.Lock()
+		dup := a.lastCallSig != "" && sig == a.lastCallSig
+		a.dedupMu.Unlock()
+		if dup {
+			return "skipped: duplicate of the previous tool call (same tool and arguments); do not repeat it"
+		}
 	}
 
 	// Self-gated tools (skill_manage) run their own approval: writes are
