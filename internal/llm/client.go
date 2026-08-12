@@ -101,6 +101,11 @@ type Sampling struct {
 	TopK              int     `json:"top_k,omitempty"`
 	RepetitionPenalty float64 `json:"repetition_penalty,omitempty"`
 	MinP              float64 `json:"min_p,omitempty"`
+	// ReasoningMaxTokens caps the model's reasoning (thinking) span per request
+	// (llama.cpp/Ollama reasoning models). 0 = uncapped. Capping dramatically
+	// speeds up long turns on a 12 GB card — each round-trip stops thinking and
+	// answers.
+	ReasoningMaxTokens int `json:"reasoning_max_tokens,omitempty"`
 }
 
 // maxRetries and backoff schedule for transport errors. HTTP error statuses

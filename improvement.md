@@ -335,6 +335,29 @@ Skill/playbook auto-distillation (2026-08-12) — the last deferred idea from th
   or declines with "no playbook"). Complements the existing end-of-turn skill-
   creation opportunity. Live-verified on Qwythos (:8089).
 
+Loop/stall hardening + reasoning budget (2026-08-12, from a real "it loops with
+no output" report on a long reviewer prompt):
+
+- ✅ **`sampling.reasoning_max_tokens`** — opt-in cap on the model's thinking
+  span per request (llama.cpp/Ollama; confirmed accepted by Qwythos on :8089).
+  The single biggest speed lever for a 12 GB card: each round-trip drops from
+  ~25s to ~5s, so long turns stop churning and actually deliver.
+- ✅ **Stall nudge** — a final answer that stops with a prose permission-ask
+  ("should I...", "need to ask you...") is nudged to call clarify or just
+  deliver the answer (fires regardless of prior tool use).
+- ✅ **Tool-loop breaker** — the same exploration tool (glob/grep/shell_exec/
+  index) called 6+ times in a turn nudges the model to converge (text loops
+  were already caught by the loop guard; this catches tool-call loops).
+- ✅ **Convergence nudge** — 12+ read-only calls with no write and no answer
+  nudges the model to deliver based on what it has.
+- Golden evals 23–25 lock in the stall nudge, tool-loop breaker, and
+  convergence nudge.
+
+Honest limit found: a single 15-item meta-review prompt is near the ceiling of
+a 9B Q4 in one autonomous turn — with the reasoning cap it reaches the
+deliverable but still takes minutes. Use `sampling.reasoning_max_tokens`,
+smaller task slices, or `--goal` rounds for such prompts.
+
 Making the small local model work better is now a measurable loop, not folklore. A Hermes review (2026-08-12) — "push correctness into tools, treat the model as proposer not executor" — transferred next:
 
 - ✅ **`clarify` tool** (Hermes #1/#5) — the model calls `clarify(question, choices[])` when a task is ambiguous or a decision matters; the UI renders the question as real options (REPL numbered prompt, TUI modal) and the user's pick returns to the agent as tool data (`user answered: X`). Ambiguity is now a hard stop with a structured handoff, not a prose guess. Live-verified on Qwythos (:8089): model asked via clarify, piped pick flowed back as data.

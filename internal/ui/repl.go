@@ -1119,6 +1119,12 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 			return err
 		}
 		c.Sampling.MinP = f
+	case "sampling.reasoning_max_tokens":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		c.Sampling.ReasoningMaxTokens = n
 	case "ui.show_reasoning":
 		b, err := strconv.ParseBool(value)
 		if err != nil {

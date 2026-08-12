@@ -114,6 +114,10 @@ type SamplingConfig struct {
 	// MinP is the nucleus lower-bound filter (0 = off; llama.cpp/Ollama only —
 	// often tightens up small local models).
 	MinP float64 `yaml:"min_p"`
+	// ReasoningMaxTokens caps the model's thinking span per request (0 = off).
+	// On a 12 GB card this is the single biggest speed lever for reasoning
+	// models — each round-trip stops thinking sooner and answers.
+	ReasoningMaxTokens int `yaml:"reasoning_max_tokens"`
 }
 
 // ModelProfile overrides the base sampling for a model whose name contains
@@ -404,6 +408,7 @@ func Settings() []SettingKey {
 		{Key: "sampling.top_k", Label: "Sampling top_k (0 = off)"},
 		{Key: "sampling.repetition_penalty", Label: "Sampling repetition penalty (0 = off)"},
 		{Key: "sampling.min_p", Label: "Sampling min_p (0 = off; llama.cpp/Ollama)"},
+		{Key: "sampling.reasoning_max_tokens", Label: "Reasoning cap per request (0 = off; speeds up reasoning models)"},
 		{Key: "ui.show_reasoning", Label: "Show thinking block", Options: []string{"true", "false"}},
 		{Key: "ui.loop_guard", Label: "Stop repeating-generation loops", Options: []string{"true", "false"}},
 		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng"}},
@@ -448,6 +453,8 @@ func (c *Config) Get(key string) string {
 		return strconv.FormatFloat(c.Sampling.RepetitionPenalty, 'f', -1, 64)
 	case "sampling.min_p":
 		return strconv.FormatFloat(c.Sampling.MinP, 'f', -1, 64)
+	case "sampling.reasoning_max_tokens":
+		return strconv.Itoa(c.Sampling.ReasoningMaxTokens)
 	case "ui.show_reasoning":
 		return strconv.FormatBool(c.UI.ShowReasoning)
 	case "ui.loop_guard":
@@ -546,7 +553,7 @@ func validateKey(parts []string, value string) error {
 		"theme":                true,
 		"sampling.temperature": true, "sampling.top_p": true,
 		"sampling.top_k": true, "sampling.repetition_penalty": true,
-		"sampling.min_p":      true,
+		"sampling.min_p": true, "sampling.reasoning_max_tokens": true,
 		"ui.show_reasoning":   true,
 		"ui.loop_guard":       true,
 		"web_search.provider": true, "web_search.searxng_url": true,
@@ -594,6 +601,11 @@ func validateKey(parts []string, value string) error {
 		if err != nil || f < 0 || f > 1 {
 			return &ValidationError{msg: "sampling.min_p must be a number between 0 and 1 (0 = off)"}
 		}
+	case "sampling.reasoning_max_tokens":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return &ValidationError{msg: "sampling.reasoning_max_tokens must be a non-negative integer (0 = off)"}
+		}
 	case "ui.show_reasoning", "ui.loop_guard":
 		if value != "true" && value != "false" {
 			return &ValidationError{msg: key + " must be true or false"}
@@ -617,7 +629,7 @@ func typedScalar(key, value string) *yaml.Node {
 	switch key {
 	case "write_approval", "show_reasoning", "loop_guard":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
-	case "context_window", "top_k":
+	case "context_window", "top_k", "reasoning_max_tokens":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
 	case "temperature", "top_p", "repetition_penalty", "min_p":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: value}

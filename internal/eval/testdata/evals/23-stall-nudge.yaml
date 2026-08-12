@@ -1,0 +1,9 @@
+name: stall-nudge
+description: a prose permission-ask is nudged into completing the task (no clarify call, no tools)
+input: review the code and list improvements
+steps:
+  - answer: "Should I review the code first?"
+  - answer: "Here is the review."
+assert:
+  requests_contain: ["asking for permission"]
+  final_answer_contains: "review"

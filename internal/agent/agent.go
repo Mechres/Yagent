@@ -44,6 +44,17 @@ const (
 // are tolerated before the loop blocks that tool for the rest of the turn.
 const maxValidationFails = 3
 
+// toolLoopThreshold is how many successful calls of the same exploration tool
+// in one turn trigger the tool-loop breaker nudge.
+const toolLoopThreshold = 6
+
+// toolLoopTools are the exploration tools whose repeated use signals a stuck
+// model (fs_read is excluded — a legit audit reads many files).
+var toolLoopTools = map[string]bool{
+	"glob": true, "grep": true, "index_search": true, "code_slice": true,
+	"code_references": true, "shell_exec": true, "web_search": true, "web_fetch": true,
+}
+
 // summaryPrompt condenses old history into the running summary (memory.md L1).
 const summaryPrompt = `Condense this conversation segment into at most 400 words. Preserve: decisions made, file paths touched, errors encountered, user preferences, open tasks. Drop: pleasantries, repeated code, verbose tool output.`
 
@@ -224,6 +235,18 @@ type Agent struct {
 	touchedPaths  []string
 	lastToolError string
 
+	// Tool-loop breaker: counts successful exploration-tool calls per turn and
+	// flags when one dominates, so a model stuck re-running glob/shell_exec
+	// instead of converging is nudged to answer (text-repetition loops are
+	// caught by the loop guard; this catches tool-call loops).
+	turnToolCalls map[string]int
+	toolLooped    bool
+	toolLoopName  string
+	// Convergence nudge: total read-only calls per turn and whether anything
+	// was written — a long read-only grind with no result gets nudged to answer.
+	turnReadCalls int
+	turnWrote     bool
+
 	// Cached accurate token estimates (C1). sysTokens/summaryTokens/
 	// injectedTokens are counted at the point each piece is set; lastCtx holds
 	// the token-only section summary of the most recent assembled context, so
@@ -361,8 +384,16 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	blocked := make(map[string]bool)
 	turnCalls := 0
 	nudged := false
+	toolLoopNudged := false
 	used := make(map[string]bool)
 	a.lastCallSig = ""
+	a.mu.Lock()
+	a.turnToolCalls = map[string]int{}
+	a.toolLooped = false
+	a.toolLoopName = ""
+	a.turnReadCalls = 0
+	a.turnWrote = false
+	a.mu.Unlock()
 
 	for i := 0; i < a.cfg.MaxIterations; i++ {
 		// Budget before every request: plain chat turns (no tool calls)
@@ -427,6 +458,18 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 					continue
 				}
 			}
+			// Stall nudge: the model ended with a prose permission-ask instead of
+			// a deliverable (fires regardless of prior tool use — a model that
+			// did work then stalled is exactly the case to catch).
+			if !nudged {
+				if nudge := prosePermissionNudge(resp.Message.Content); nudge != "" {
+					nudged = true
+					if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: nudge}); err != nil {
+						return "", err
+					}
+					continue
+				}
+			}
 			// Verify-don't-trust barrier (Luna #3): the model wrote files this
 			// turn but never ran diagnostics — run it deterministically before
 			// accepting "done" and feed the result back.
@@ -465,6 +508,28 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 				ToolCallID: call.ID,
 			}); err != nil {
 				return "", err
+			}
+		}
+		// Tool-loop / convergence breaker: the model keeps re-running one
+		// exploration tool (or grinds through reads without ever writing or
+		// answering) — nudge it to converge (once per turn).
+		if !toolLoopNudged {
+			a.mu.Lock()
+			looped, name := a.toolLooped, a.toolLoopName
+			reads, wrote := a.turnReadCalls, a.turnWrote
+			a.mu.Unlock()
+			var nudge string
+			switch {
+			case looped:
+				nudge = fmt.Sprintf("You've called %s many times this turn without converging. Stop exploring — use what you already have and give your final answer now (at most one more targeted call).", name)
+			case reads >= 12 && !wrote:
+				nudge = "You've done extensive exploration this turn without producing a result. Deliver your final answer now based on what you've already gathered."
+			}
+			if nudge != "" {
+				toolLoopNudged = true
+				if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: nudge}); err != nil {
+					return "", err
+				}
 			}
 		}
 	}
@@ -715,6 +780,21 @@ var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_
 // intentWord marks a line as the model *planning* a tool call in prose rather
 // than reporting one it already made.
 var intentWord = regexp.MustCompile(`(?i)\b(will|let me|i'll|going to|use|should|need to)\b`)
+
+// permissionAsk marks a final answer that stops to ask the user for
+// permission/confirmation in prose instead of completing the task or calling
+// clarify. Small models stall this way on long, demanding prompts.
+var permissionAsk = regexp.MustCompile(`(?i)\b(do you want me to|should i|may i|can i|would you like me to|need to ask you?|let me know if you|shall i)\b`)
+
+// prosePermissionNudge returns a nudge when the final-answer draft is a prose
+// permission-ask (stall) rather than a deliverable. The model is nudged to use
+// clarify or just complete the task — never auto-executed.
+func prosePermissionNudge(content string) string {
+	if !permissionAsk.MatchString(content) {
+		return ""
+	}
+	return "You ended your turn asking for permission/confirmation in prose. If you genuinely need user input, call the clarify tool with concrete options. Otherwise, complete the requested task and give your final answer — do not stop to ask."
+}
 
 // proseToolNudge scans a final-answer draft for a tool call the model narrated
 // but did not emit (Gemini review #2). Returns a short instruction, or "" when
@@ -1428,6 +1508,18 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	}
 	if strings.HasPrefix(result, "error:") {
 		a.lastToolError = result
+	}
+	if toolLoopTools[name] {
+		a.turnToolCalls[name]++
+		if a.turnToolCalls[name] >= toolLoopThreshold {
+			a.toolLooped = true
+			a.toolLoopName = name
+		}
+	}
+	if tool.Risk() == tools.RiskReadOnly {
+		a.turnReadCalls++
+	} else {
+		a.turnWrote = true
 	}
 	a.mu.Unlock()
 	slog.Debug("tool executed", "tool", name)

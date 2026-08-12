@@ -1,0 +1,14 @@
+name: tool-loop-breaker
+description: repeated exploration-tool calls (varying args) nudge the model to converge
+input: explore the repo and report what you found
+steps:
+  - tool_call: {name: glob, args: '{"pattern":"**/1*.go"}'}
+  - tool_call: {name: glob, args: '{"pattern":"**/2*.go"}'}
+  - tool_call: {name: glob, args: '{"pattern":"**/3*.go"}'}
+  - tool_call: {name: glob, args: '{"pattern":"**/4*.go"}'}
+  - tool_call: {name: glob, args: '{"pattern":"**/5*.go"}'}
+  - tool_call: {name: glob, args: '{"pattern":"**/6*.go"}'}
+  - answer: here is my report
+assert:
+  requests_contain: ["without converging"]
+  final_answer_contains: "report"

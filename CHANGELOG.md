@@ -2,6 +2,23 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.20 — 2026-08-12
+
+### Added
+- **`sampling.reasoning_max_tokens`**: opt-in cap on the model's thinking span
+  per request (llama.cpp/Ollama). The single biggest speed lever on a 12 GB
+  card — each round-trip drops from ~25s to ~5s on Qwythos, so long turns stop
+  churning and actually deliver.
+- **Stall nudge**: a final answer that stops with a prose permission-ask
+  ("should I...", "need to ask you...") is nudged to call clarify or just
+  deliver — fires regardless of prior tool use.
+- **Tool-loop breaker**: the same exploration tool called 6+ times in a turn
+  nudges the model to converge (catches tool-call loops, which the text loop
+  guard can't).
+- **Convergence nudge**: 12+ read-only calls with no write and no answer nudge
+  the model to deliver based on what it has.
+- **Golden evals 23–25** lock in the three nudges.
+
 ## v0.1.19 — 2026-08-12
 
 ### Fixed

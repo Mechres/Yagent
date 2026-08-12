@@ -1117,6 +1117,113 @@ func TestAgentLoopGuardStopsRepetition(t *testing.T) {
 	}
 }
 
+func TestProsePermissionNudge(t *testing.T) {
+	if n := prosePermissionNudge("Should I review the code first?"); !strings.Contains(n, "clarify") {
+		t.Errorf("should-I nudge missing: %q", n)
+	}
+	if n := prosePermissionNudge("I need to ask you whether you want me to implement it."); n == "" {
+		t.Error("need-to-ask nudge missing")
+	}
+	if n := prosePermissionNudge("Here is the complete report."); n != "" {
+		t.Errorf("plain answer should not nudge: %q", n)
+	}
+}
+
+func TestRunNudgesProsePermissionAsk(t *testing.T) {
+	// the model stalls asking permission in prose; the nudge makes it finish.
+	s := newScriptedLLM(t, [][]string{
+		finalContent("Should I review the code first?"),
+		finalContent("Here is the review."),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.go", "package demo\n")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 8}, ws)
+
+	answer, err := a.Run(context.Background(), "review the code and list improvements")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "Here is the review." {
+		t.Errorf("final answer = %q", answer)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "asking for permission") {
+		t.Error("stall nudge not injected")
+	}
+}
+
+func TestToolLoopBreaker(t *testing.T) {
+	// the model re-runs glob 6+ times instead of converging; the breaker nudges
+	// it to answer.
+	// varying args so tool-call dedup doesn't swallow them (a real stuck model
+	// varies glob patterns too).
+	steps := [][]string{}
+	for i := 0; i < 6; i++ {
+		steps = append(steps, toolCall(fmt.Sprintf("g%d", i), "glob", fmt.Sprintf(`{"pattern":"**/%d*.go"}`, i)))
+	}
+	steps = append(steps, finalContent("done"))
+	s := newScriptedLLM(t, steps)
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 15}, ws)
+
+	answer, err := a.Run(context.Background(), "explore the repo")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("final answer = %q", answer)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "without converging") {
+		t.Error("tool-loop nudge not injected")
+	}
+}
+
+func TestConvergenceNudge(t *testing.T) {
+	// 12+ read-only calls with no write and no answer -> convergence nudge.
+	steps := [][]string{}
+	for i := 0; i < 12; i++ {
+		steps = append(steps, toolCall(fmt.Sprintf("r%d", i), "fs_read", fmt.Sprintf(`{"path":"file%d.txt"}`, i)))
+	}
+	steps = append(steps, finalContent("done"))
+	s := newScriptedLLM(t, steps)
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 20}, ws)
+
+	answer, err := a.Run(context.Background(), "review everything")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("final answer = %q", answer)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "extensive exploration") {
+		t.Error("convergence nudge not injected")
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",

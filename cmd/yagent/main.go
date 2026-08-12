@@ -69,11 +69,12 @@ func main() {
 		client := llm.NewClient(cfg.ServerURL, cfg.Model)
 		client.BearerToken = cfg.APIKey
 		client.Sampling = llm.Sampling{
-			Temperature:       cfg.Sampling.Temperature,
-			TopP:              cfg.Sampling.TopP,
-			TopK:              cfg.Sampling.TopK,
-			RepetitionPenalty: cfg.Sampling.RepetitionPenalty,
-			MinP:              cfg.Sampling.MinP,
+			Temperature:        cfg.Sampling.Temperature,
+			TopP:               cfg.Sampling.TopP,
+			TopK:               cfg.Sampling.TopK,
+			RepetitionPenalty:  cfg.Sampling.RepetitionPenalty,
+			MinP:               cfg.Sampling.MinP,
+			ReasoningMaxTokens: cfg.Sampling.ReasoningMaxTokens,
 		}
 		// P2 — cap the context budget at the server's real window so the
 		// agent can never push a request past n_ctx (over-length 400s), and

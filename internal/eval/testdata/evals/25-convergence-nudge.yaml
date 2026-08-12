@@ -1,0 +1,20 @@
+name: convergence-nudge
+description: a long read-only grind with no result is nudged to answer
+input: review the whole codebase
+steps:
+  - tool_call: {name: fs_read, args: '{"path":"file0.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file1.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file2.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file3.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file4.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file5.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file6.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file7.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file8.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file9.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file10.txt"}'}
+  - tool_call: {name: fs_read, args: '{"path":"file11.txt"}'}
+  - answer: here is my review
+assert:
+  requests_contain: ["extensive exploration"]
+  final_answer_contains: "review"
