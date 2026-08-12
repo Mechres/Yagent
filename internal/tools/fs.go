@@ -175,6 +175,9 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 			t.undo.Record(path, nil)
 		}
 	}
+	if msg := preflightSyntax(a.Path, a.Content); msg != "" {
+		return "error: " + msg, nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Sprintf("error: create parent dirs: %v", err), nil
 	}
@@ -245,6 +248,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 		return fmt.Sprintf("error: old_string matches %d times in %s; include more surrounding context", n, a.Path), nil
 	}
 	newContent := strings.Replace(old, a.OldString, a.NewString, 1)
+	if msg := preflightSyntax(a.Path, newContent); msg != "" {
+		return "error: " + msg, nil
+	}
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}

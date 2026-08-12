@@ -5,6 +5,13 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased — 2026-08-12
 
 ### Added
+- **`code_slice` tool**: reads one declaration's exact source span (body + doc
+  comment) via tree-sitter instead of a whole file — ~80% fewer tokens on large
+  modules (`index.SliceSymbol`).
+- **Pre-flight syntax validation**: `fs_edit`, `fs_write` and `fs_patch` parse
+  the modified source in-memory and block the write when tree-sitter finds a
+  syntax error, reporting the exact line/col — a broken edit never reaches disk
+  or costs a diagnostics roundtrip. Non-source files are untouched.
 - **`clarify` tool**: the model calls `clarify(question, choices[])` when a
   task is ambiguous or a choice matters; the UI renders real options (REPL
   numbered prompt, TUI modal) and the user's pick returns as tool data —

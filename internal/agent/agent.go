@@ -660,7 +660,7 @@ var (
 		"skills_list", "skill_view", "consult",
 	}
 	webToolNames    = []string{"web_search", "web_fetch"}
-	indexToolNames  = []string{"index_search", "index_repo"}
+	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline"}
 	skillManageName = []string{"skill_manage"}
 )
 

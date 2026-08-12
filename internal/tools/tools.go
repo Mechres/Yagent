@@ -124,6 +124,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"fs_patch":              &fsPatchTool{ws: r.workspace, undo: opts.Undo},
 		"fs_refactor":           &refactorTool{ws: r.workspace, undo: opts.Undo},
 		"code_outline":          &codeOutlineTool{ws: r.workspace},
+		"code_slice":            &codeSliceTool{ws: r.workspace},
 		"glob":                  &globTool{ws: r.workspace},
 		"grep":                  &grepTool{ws: r.workspace},
 		"workspace_diagnostics": &diagnosticsTool{ws: r.workspace},

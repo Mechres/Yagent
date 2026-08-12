@@ -210,6 +210,28 @@ C3 (structured subagent returns, gated on evidence) and the M7 gated items.
 
 ## Local-model tuning (2026-08-12)
 
+A second "6 ideas" review (2026-08-12) — deterministic guardrails over prompt
+hope, token frugality — implemented here:
+
+- ✅ **`code_slice`** (#1 surgical slicing) — `code_slice(path, symbol)`
+  returns exactly one declaration's source span (body + doc comment) via the
+  tree-sitter parser (`index.SliceSymbol`), a surgical read far cheaper than
+  fs_read on large modules. ~80% fewer tokens than a whole-file read.
+- ✅ **Pre-flight tree-sitter syntax validation** (#2) — `fs_edit`, `fs_write`
+  and `fs_patch` parse the modified source in-memory (`index.SyntaxErrors`); if
+  tree-sitter finds ERROR/MISSING nodes the tool returns the exact
+  line/col/preview and the file is NOT written — a broken edit never hits disk
+  or wastes the diagnostics roundtrip. Non-source files are never touched.
+- #3 BM25/keyword search — the hybrid index already has an FTS5 (BM25) keyword
+  pool, and `symbol:`/`type:` lookups use a dedicated no-embed path; a full
+  zero-embed rerank for plain queries changes ranking semantics and was
+  deferred.
+- #4 skill/playbook distillation — the end-of-turn skill-creation harness
+  (5+ tool calls) already covers the distillation case; playbook-drafting from
+  a session is a small future add-on.
+- #5 TUI side drawer, #6 shadow speculative execution — deferred (big TUI lift
+  / single-GPU contention; same call as the earlier dual-viewport skip).
+
 Making the small local model work better is now a measurable loop, not folklore. A Hermes review (2026-08-12) — "push correctness into tools, treat the model as proposer not executor" — transferred next:
 
 - ✅ **`clarify` tool** (Hermes #1/#5) — the model calls `clarify(question, choices[])` when a task is ambiguous or a decision matters; the UI renders the question as real options (REPL numbered prompt, TUI modal) and the user's pick returns to the agent as tool data (`user answered: X`). Ambiguity is now a hard stop with a structured handoff, not a prose guess. Live-verified on Qwythos (:8089): model asked via clarify, piped pick flowed back as data.
