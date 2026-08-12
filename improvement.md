@@ -208,6 +208,28 @@ Phase C status:
 With this, the agy roadmap (all non-⚪ items) is complete. Remaining backlog:
 C3 (structured subagent returns, gated on evidence) and the M7 gated items.
 
+## Local-model tuning (2026-08-12)
+
+Making the small local model work better is now a measurable loop, not folklore:
+
+- ✅ **Prompt rules** — `buildSystemPrompt` now tells the model to run
+  `workspace_diagnostics` after code edits, ask clarifying questions when a task
+  is ambiguous, and follow two worked examples (locate-then-read, retry-edit
+  with the exact text).
+- ✅ **Loop-guard auto-retry** — when a repetition loop is auto-cancelled, the
+  same input is retried once with `sampling.repetition_penalty 1.05` applied
+  (persisted for the session). Esc-cancel never retries.
+- ✅ **`sampling.min_p` knob** — opt-in nucleus lower-bound filter for
+  llama.cpp/Ollama (0 = off; `/settings` + `/set`), matching `top_k`/rep_penalty
+  semantics so cloud endpoints aren't broken.
+- ✅ **Live small-model benchmark** (`internal/eval/live_test.go`,
+  `YAGENT_LIVE_EVAL=1`) — three canonical tasks: correct tool JSON + read,
+  two-turn recall, edit-then-verify (diagnostics surfaces a planted compile
+  error). `YAGENT_LIVE_SWEEP=1` runs the same tasks across sampling recipes.
+  **First sweep on Qwythos (:8089): default (0.6/0.95) and cold (0.3) both
+  3/3; repetition_penalty 1.05 and min_p 0.05 each 2/3** — the shipped recipe
+  is already good; penalties are remedial toggles, not defaults.
+
 A second external agent's plan (2026-08-11). Its section A (fs_patch modal v2)
 was superseded mid-inspection — that work is already shipped (per-hunk walker
 + `RebuildPatch`). Sections B/C/D recorded for evaluation:

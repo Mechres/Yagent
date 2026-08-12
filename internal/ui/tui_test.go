@@ -755,6 +755,56 @@ func TestEscCancelsRunningTurn(t *testing.T) {
 	}
 }
 
+func TestLoopGuardRetriesWithRepetitionPenalty(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.client = llm.NewClient("http://x", "m")
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 24
+	m.inputCh = make(chan turnRequest, 4)
+	m.busy = true
+	m.lastTurnText = "the original input"
+	m.turnCancelled = true
+	m.cancelReason = "stopped: the model was repeating itself (thinking loop)"
+	_, cancel := context.WithCancel(context.Background())
+	m.turnCancel = cancel
+	m.turnSeq = 1
+
+	m.handleIncomingForTest(turnDoneMsg{seq: 1, err: context.Canceled})
+	select {
+	case req := <-m.inputCh:
+		if req.text != "the original input" {
+			t.Errorf("retry text = %q", req.text)
+		}
+	default:
+		t.Fatal("loop guard did not resubmit a retry")
+	}
+	if m.client.Sampling.RepetitionPenalty != 1.05 {
+		t.Errorf("repetition penalty = %v, want 1.05", m.client.Sampling.RepetitionPenalty)
+	}
+	if m.retriedLoop != true {
+		t.Error("retriedLoop not set")
+	}
+
+	// an explicit esc cancel must NOT auto-retry
+	m2 := testModel(t)
+	m2.client = llm.NewClient("http://x", "m")
+	m2.inputCh = make(chan turnRequest, 4)
+	m2.busy = true
+	m2.lastTurnText = "x"
+	m2.turnCancelled = true
+	m2.cancelReason = "turn cancelled (esc) — send another message"
+	_, cancel2 := context.WithCancel(context.Background())
+	m2.turnCancel = cancel2
+	m2.turnSeq = 1
+	m2.handleIncomingForTest(turnDoneMsg{seq: 1, err: context.Canceled})
+	select {
+	case <-m2.inputCh:
+		t.Error("esc cancel should not auto-retry")
+	default:
+	}
+}
+
 func TestLoopGuardCancelsRepeatingTurn(t *testing.T) {
 	rep := strings.Repeat("I need to check the file. ", 3)
 

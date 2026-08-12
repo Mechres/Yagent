@@ -206,6 +206,11 @@ type tuiModel struct {
 	cancelReason  string
 	turnSeq       int
 
+	// Loop-guard self-heal: when a repetition loop is auto-cancelled, the same
+	// input is retried once with repetition_penalty applied.
+	lastTurnText string
+	retriedLoop  bool
+
 	input    textinput.Model
 	viewport viewport.Model
 	spinner  spinner.Model
@@ -842,7 +847,21 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = false
 			m.turnCancelled = false
 			m.turnCancel = nil
-			m.append("  " + m.cancelReason)
+			reason := m.cancelReason
+			if strings.Contains(reason, "repeating") && !m.retriedLoop && m.lastTurnText != "" {
+				// Self-heal: a repetition loop is retried once with the
+				// repetition penalty applied (persisted for the session).
+				m.retriedLoop = true
+				if m.client != nil && m.client.Sampling.RepetitionPenalty == 0 {
+					m.client.Sampling.RepetitionPenalty = 1.05
+				}
+				m.append("  " + reason)
+				m.append("  retrying with sampling.repetition_penalty 1.05")
+				m.busy = true
+				m.submitTurn(m.lastTurnText)
+				return m, nil
+			}
+			m.append("  " + reason)
 			return m, m.nextCmd()
 		}
 		m.flushStream()
@@ -936,9 +955,16 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.toolCalls = 0
 	m.turnCancelled = false
 	m.cancelReason = ""
+	m.lastTurnText = text
+	m.retriedLoop = false
 	m.follow = true // new input snaps back to the bottom
-	// Each turn gets its own cancelable context, so Esc / the loop guard stop
-	// just this turn while the session (and the runner) stay alive.
+	m.submitTurn(text)
+	return m, nil
+}
+
+// submitTurn launches a turn under a fresh cancelable context (so Esc / the
+// loop guard stop just this turn while the session stays alive).
+func (m *tuiModel) submitTurn(text string) {
 	parent := m.runnerCtx
 	if parent == nil {
 		parent = context.Background() // e.g. in tests that drive the model directly
@@ -947,7 +973,6 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.turnCancel = turnCancel
 	m.turnSeq++
 	m.inputCh <- turnRequest{text: text, ctx: turnCtx, seq: m.turnSeq}
-	return m, nil
 }
 
 // fsApprovalDiff renders a colorized before/after preview for fs_edit,

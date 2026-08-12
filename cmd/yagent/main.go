@@ -71,6 +71,7 @@ func main() {
 			TopP:              cfg.Sampling.TopP,
 			TopK:              cfg.Sampling.TopK,
 			RepetitionPenalty: cfg.Sampling.RepetitionPenalty,
+			MinP:              cfg.Sampling.MinP,
 		}
 		var trace io.Writer
 		if *traceFile != "" {

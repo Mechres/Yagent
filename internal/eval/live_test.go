@@ -134,6 +134,152 @@ func TestLiveTurnCancellation(t *testing.T) {
 	}
 }
 
+// liveBenchTask is one canonical small-model benchmark: set up a workspace, run
+// one or more turns against the real model, and check an observable outcome.
+type liveBenchTask struct {
+	name   string
+	setup  func(ws string)
+	inputs []string
+	check  func(t *testing.T, answer string, toolResults []string) (bool, string)
+}
+
+// liveBenchTasks are the canonical "does the small local model actually work"
+// checks: emit a correct tool call, follow a two-turn instruction, and run the
+// diagnostics tool after being asked to verify the code.
+func liveBenchTasks() []liveBenchTask {
+	return []liveBenchTask{
+		{
+			name: "tool-json",
+			setup: func(ws string) {
+				os.WriteFile(filepath.Join(ws, "data.txt"), []byte("UNIQUE-FACT-8371\n"), 0o644)
+			},
+			inputs: []string{"read the file data.txt and tell me what it contains"},
+			check: func(t *testing.T, answer string, toolResults []string) (bool, string) {
+				if !strings.Contains(answer, "UNIQUE-FACT-8371") {
+					return false, "final answer lacks the fact"
+				}
+				for _, r := range toolResults {
+					if strings.Contains(r, "UNIQUE-FACT-8371") {
+						return true, "read via a tool"
+					}
+				}
+				return false, "no tool result carried the fact (tool JSON failed?)"
+			},
+		},
+		{
+			name:  "multi-turn",
+			setup: func(ws string) {},
+			inputs: []string{
+				"remember this code word for later: zebra-42",
+				"what was the code word I told you a moment ago?",
+			},
+			check: func(t *testing.T, answer string, toolResults []string) (bool, string) {
+				if !strings.Contains(answer, "zebra-42") {
+					return false, "second turn did not recall zebra-42"
+				}
+				return true, "recalled across turns"
+			},
+		},
+		{
+			name: "edit-verify",
+			setup: func(ws string) {
+				// fmt is used but never imported -> go vet fails with
+				// "undefined: fmt", a solid marker that diagnostics ran.
+				os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module bench\n\ngo 1.22\n"), 0o644)
+				os.WriteFile(filepath.Join(ws, "main.go"), []byte("package main\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"), 0o644)
+			},
+			inputs: []string{"run the workspace diagnostics to check the code for errors, then report what it found"},
+			check: func(t *testing.T, answer string, toolResults []string) (bool, string) {
+				for _, r := range toolResults {
+					if strings.Contains(r, "undefined") {
+						return true, "workspace_diagnostics surfaced the compile error"
+					}
+				}
+				return false, "no diagnostics output seen"
+			},
+		},
+	}
+}
+
+// runLiveBenchTask executes one task and returns pass + a short detail.
+func runLiveBenchTask(t *testing.T, client *llm.Client, task liveBenchTask) (bool, string) {
+	ws := t.TempDir()
+	task.setup(ws)
+	reg := tools.NewRegistry(ws, tools.Options{ReadOnly: true})
+	a := agent.New(client, reg, nil, agent.Config{MaxIterations: 8, Window: 8192}, ws)
+	var answer string
+	var err error
+	for _, in := range task.inputs {
+		answer, err = a.Run(context.Background(), in)
+		if err != nil {
+			return false, "run error: " + err.Error()
+		}
+	}
+	var toolResults []string
+	for _, m := range a.History() {
+		if m.Role == "tool" {
+			toolResults = append(toolResults, m.Content)
+		}
+	}
+	return task.check(t, answer, toolResults)
+}
+
+// TestLiveSmallModelBenchmark runs the canonical tasks under the default
+// sampling and reports pass/fail — the baseline for tuning a local model.
+func TestLiveSmallModelBenchmark(t *testing.T) {
+	if os.Getenv("YAGENT_LIVE_EVAL") == "" {
+		t.Skip("set YAGENT_LIVE_EVAL=1 to run the real-hardware small-model benchmark")
+	}
+	client := liveClient(t)
+	t.Logf("%-14s %-8s %s", "task", "result", "detail")
+	for _, tk := range liveBenchTasks() {
+		ok, detail := runLiveBenchTask(t, client, tk)
+		t.Logf("%-14s %-8s %s", tk.name, passWord(ok), detail)
+	}
+}
+
+// TestLiveSamplingSweep runs the same benchmark across a few sampling recipes
+// so the model's generation config is tuned on evidence, not folklore. Opt-in
+// (YAGENT_LIVE_SWEEP=1) because it is 4× the benchmark cost.
+func TestLiveSamplingSweep(t *testing.T) {
+	if os.Getenv("YAGENT_LIVE_EVAL") == "" {
+		t.Skip("set YAGENT_LIVE_EVAL=1 to run the real-hardware sampling sweep")
+	}
+	if os.Getenv("YAGENT_LIVE_SWEEP") == "" {
+		t.Skip("set YAGENT_LIVE_SWEEP=1 to run the full sampling sweep (4x benchmark cost)")
+	}
+	client := liveClient(t)
+	configs := []struct {
+		name string
+		s    llm.Sampling
+	}{
+		{"default", llm.Sampling{Temperature: 0.6, TopP: 0.95}},
+		{"rep1.05", llm.Sampling{Temperature: 0.6, TopP: 0.95, RepetitionPenalty: 1.05}},
+		{"minp0.05", llm.Sampling{Temperature: 0.6, TopP: 0.95, MinP: 0.05}},
+		{"cold0.3", llm.Sampling{Temperature: 0.3, TopP: 0.95}},
+	}
+	tasks := liveBenchTasks()
+	t.Logf("sampling-recipe sweep over %d tasks", len(tasks))
+	for _, c := range configs {
+		client.Sampling = c.s
+		pass := 0
+		for _, tk := range tasks {
+			ok, _ := runLiveBenchTask(t, client, tk)
+			if ok {
+				pass++
+			}
+		}
+		t.Logf("%-12s %d/%d pass", c.name, pass, len(tasks))
+	}
+}
+
+func passWord(ok bool) string {
+	if ok {
+		return "PASS"
+	}
+	return "FAIL"
+}
+
 // jsonFindingsNote validates a JSON-array findings report, returning a short
 // verdict note (or "" when not requested).
 func jsonFindingsNote(summary string) string {

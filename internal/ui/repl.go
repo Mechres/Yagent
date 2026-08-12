@@ -983,6 +983,12 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 			return err
 		}
 		c.Sampling.RepetitionPenalty = f
+	case "sampling.min_p":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		c.Sampling.MinP = f
 	case "ui.show_reasoning":
 		b, err := strconv.ParseBool(value)
 		if err != nil {

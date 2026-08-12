@@ -506,14 +506,21 @@ func TestLoadConfigSampling(t *testing.T) {
 	if err := Set(path, "sampling.repetition_penalty", "1.05"); err != nil {
 		t.Fatalf("set rep_penalty: %v", err)
 	}
+	if err := Set(path, "sampling.min_p", "0.05"); err != nil {
+		t.Fatalf("set min_p: %v", err)
+	}
 	if err := Set(path, "sampling.temperature", "0.6"); err != nil {
 		t.Fatalf("set temperature: %v", err)
+	}
+	if err := Set(path, "sampling.min_p", "1.5"); err == nil {
+		t.Error("min_p > 1 should be rejected")
 	}
 	reloaded, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("reload after Set: %v", err)
 	}
-	if reloaded.Sampling.TopK != 20 || reloaded.Sampling.RepetitionPenalty != 1.05 || reloaded.Sampling.Temperature != 0.6 {
+	if reloaded.Sampling.TopK != 20 || reloaded.Sampling.RepetitionPenalty != 1.05 ||
+		reloaded.Sampling.Temperature != 0.6 || reloaded.Sampling.MinP != 0.05 {
 		t.Errorf("round-trip sampling = %+v", reloaded.Sampling)
 	}
 }

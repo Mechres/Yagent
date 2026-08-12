@@ -1239,8 +1239,14 @@ Rules:
 - Never claim you ran a tool you did not run, and never invent file contents or command output.
 - Side-effecting tools (fs_write, fs_edit, shell_exec) prompt the user for approval. If the user denies, find another approach or explain why you cannot proceed.
 - When you answer from web_search / web_fetch results, cite the source URLs.
+- After editing code (fs_write, fs_edit, fs_patch, fs_refactor), call workspace_diagnostics before finishing the turn — unless the change was non-code or trivial.
+- If a task is ambiguous, incomplete, or risky, ask a brief clarifying question before acting instead of guessing.
 - When stuck, unsure, or before a risky change, you may use the consult tool to ask a second AI advisor model for a second opinion.
-- When you have the final answer, reply with plain text and no tool calls.`, workspace) +
+- When you have the final answer, reply with plain text and no tool calls.
+
+Worked examples:
+- Find what a function does: use code_references (or index_search) to locate it, fs_read the file, then answer with a path:line reference.
+- An fs_edit fails with "old_string not found": re-read the file, copy the exact text, and retry — never guess the old text.`, workspace) +
 		repoInstructions(workspace)
 }
 

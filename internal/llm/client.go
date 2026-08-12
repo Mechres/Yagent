@@ -93,13 +93,14 @@ func (c *Client) Clone() *Client {
 
 // Sampling holds generation parameters forwarded to the server on every chat
 // request. Zero values are omitted, so servers that don't understand a field
-// (some OpenAI-compatible cloud endpoints reject repetition_penalty/top_k)
-// only receive what the user explicitly configured.
+// (some OpenAI-compatible cloud endpoints reject repetition_penalty/top_k/
+// min_p) only receive what the user explicitly configured.
 type Sampling struct {
 	Temperature       float64 `json:"temperature,omitempty"`
 	TopP              float64 `json:"top_p,omitempty"`
 	TopK              int     `json:"top_k,omitempty"`
 	RepetitionPenalty float64 `json:"repetition_penalty,omitempty"`
+	MinP              float64 `json:"min_p,omitempty"`
 }
 
 // maxRetries and backoff schedule for transport errors. HTTP error statuses

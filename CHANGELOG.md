@@ -2,6 +2,22 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## Unreleased — 2026-08-12
+
+### Added
+- **Local-model tuning**: the system prompt now instructs the model to run
+  `workspace_diagnostics` after code edits and to ask clarifying questions on
+  ambiguous tasks, plus two worked tool-use examples.
+- **Loop-guard auto-retry**: a repetition-loop cancellation now retries the
+  same input once with `sampling.repetition_penalty 1.05` applied (persisted);
+  explicit Esc cancels never retry.
+- **`sampling.min_p` knob**: opt-in nucleus lower-bound filter for
+  llama.cpp/Ollama, editable via `/settings` and `/set`.
+- **Live small-model benchmark** (`YAGENT_LIVE_EVAL=1`): three canonical tasks
+  (tool JSON + read, two-turn recall, edit-then-verify). `YAGENT_LIVE_SWEEP=1`
+  compares sampling recipes. First Qwythos sweep: default (0.6/0.95) and
+  cold (0.3) 3/3; repetition_penalty and min_p 2/3 — the shipped recipe stands.
+
 ## v0.1.6 — 2026-08-12
 
 ### Added
