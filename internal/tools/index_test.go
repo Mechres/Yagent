@@ -159,6 +159,50 @@ func helper(x int) int { return x }
 	}
 }
 
+func TestCodeImpact(t *testing.T) {
+	ts := indexEmbedServer(t)
+	defer ts.Close()
+	ws := t.TempDir()
+	writeFile(t, ws, "pkg/a.go", `package pkg
+
+func caller() {
+	helper(1)
+	_ = helper
+}
+`)
+	writeFile(t, ws, "pkg/helper.go", `package pkg
+
+func helper(x int) int { return x }
+`)
+	writeFile(t, ws, "pkg/helper_test.go", `package pkg
+
+func TestHelper(t *testing.T) { _ = helper(1) }
+`)
+	idx, err := index.Open(ws, t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(ws, Options{Index: idx})
+	if got := skillExec(t, reg, "index_repo", map[string]any{}); !strings.Contains(got, "indexed 3 files") {
+		t.Fatalf("index_repo = %q", got)
+	}
+
+	// symbol-scoped: caller file + the package's test file
+	got := skillExec(t, reg, "code_impact", map[string]any{"path": "pkg/helper.go", "symbol": "helper"})
+	if !strings.Contains(got, "pkg/a.go") || !strings.Contains(got, "helper_test.go") {
+		t.Errorf("code_impact symbol = %q", got)
+	}
+	// whole-file: caller via the exported symbol surface
+	got = skillExec(t, reg, "code_impact", map[string]any{"path": "pkg/helper.go"})
+	if !strings.Contains(got, "pkg/a.go") {
+		t.Errorf("code_impact whole file = %q", got)
+	}
+	// validation: missing path
+	if got := skillExec(t, reg, "code_impact", map[string]any{}); !strings.Contains(got, "validation-error") {
+		t.Errorf("code_impact no path = %q", got)
+	}
+}
+
 func TestCodeOutline(t *testing.T) {
 	ws := t.TempDir()
 	writeFile(t, ws, "pkg/one.go", `package pkg

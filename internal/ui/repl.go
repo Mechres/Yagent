@@ -281,8 +281,16 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			ag.Reset()
 			fmt.Fprintln(w, "history cleared")
 			continue
+		case "/compact":
+			note, err := ag.Compact(context.Background())
+			if err != nil {
+				fmt.Fprintf(w, "error: %v\n", err)
+			} else {
+				fmt.Fprintln(w, note)
+			}
+			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /help /yolo /retry /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		case "/retry":
 			if lastLine == "" {

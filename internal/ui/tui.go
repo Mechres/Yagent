@@ -997,6 +997,19 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		m.append("history cleared")
 		return m, m.nextCmd()
+	case "/compact":
+		m.msgInput.Reset()
+		if m.busy {
+			return m, m.nextCmd()
+		}
+		m.append("compacting conversation…")
+		note, err := m.ag.Compact(context.Background())
+		if err != nil {
+			m.append("error: " + err.Error())
+		} else {
+			m.append(note)
+		}
+		return m, m.nextCmd()
 	}
 	if strings.HasPrefix(text, "/") {
 		m.msgInput.Reset()
@@ -1890,7 +1903,7 @@ func (m *tuiModel) thinkingBlock() string {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/undo", "/sessions",
+		"/exit", "/clear", "/compact", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/undo", "/sessions",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}

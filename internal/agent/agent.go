@@ -52,7 +52,7 @@ const toolLoopThreshold = 6
 // model (fs_read is excluded — a legit audit reads many files).
 var toolLoopTools = map[string]bool{
 	"glob": true, "grep": true, "index_search": true, "code_slice": true,
-	"code_references": true, "shell_exec": true, "web_search": true, "web_fetch": true,
+	"code_references": true, "code_impact": true, "shell_exec": true, "web_search": true, "web_fetch": true,
 }
 
 // summaryPrompt condenses old history into the running summary (memory.md L1).
@@ -800,7 +800,7 @@ func RepeatLoop(s string) bool {
 }
 
 // proseToolName matches a known tool name on a line.
-var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|index_search|index_repo|code_references|code_slice|code_topology|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
+var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|test_runner|index_search|index_repo|code_references|code_slice|code_topology|code_impact|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
 
 // intentWord marks a line as the model *planning* a tool call in prose rather
 // than reporting one it already made.
@@ -948,7 +948,7 @@ var (
 		"skills_list", "skill_view", "consult",
 	}
 	webToolNames    = []string{"web_search", "web_fetch"}
-	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline", "code_topology"}
+	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline", "code_topology", "code_impact"}
 	skillManageName = []string{"skill_manage"}
 )
 
@@ -1378,6 +1378,62 @@ func (a *Agent) budget(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// Compact distills the ENTIRE conversation (everything before the current user
+// turn) into a compact session knowledge ledger and replaces it in context —
+// the manual, on-demand counterpart to budget()'s automatic pressure-driven
+// summarization (`/compact`). Unlike budget() it collapses all historical turns
+// at once into a structured ledger, freeing most of the context window.
+func (a *Agent) Compact(ctx context.Context) (string, error) {
+	a.mu.Lock()
+	cutoff := len(a.history)
+	for i := len(a.history) - 1; i >= 0; i-- {
+		if a.history[i].msg.Role == "user" {
+			cutoff = i
+			break
+		}
+	}
+	if cutoff == 0 {
+		a.mu.Unlock()
+		return "nothing to compact (no history before the current turn)", nil
+	}
+	segCopy := append([]historyEntry(nil), a.history[:cutoff]...)
+	previousSummary := a.runningSummary
+	a.mu.Unlock()
+
+	var b strings.Builder
+	if previousSummary != "" {
+		fmt.Fprintf(&b, "Previous summary:\n%s\n\n", previousSummary)
+	}
+	for _, h := range segCopy {
+		fmt.Fprintf(&b, "%s: %s\n", h.msg.Role, h.msg.Content)
+	}
+	prompt := []llm.Message{
+		{Role: "system", Content: "You are a conversation distiller. Produce a tight SESSION LEDGER in exactly this structure, at most 400 words:\n[SESSION LEDGER]\n- Validated facts & file locations: ...\n- Decisions made: ...\n- Failed approaches (do not retry): ...\n- Active task & next step: ..."},
+		{Role: "user", Content: b.String()},
+	}
+	resp, err := a.summ.ChatStream(ctx, prompt, nil, func(string) {}, nil)
+	if err != nil {
+		return "", fmt.Errorf("compact history: %w", err)
+	}
+	ledger := strings.TrimSpace(resp.Message.Content)
+
+	summaryTokens := a.tokensFor(ctx, ledger)
+	a.mu.Lock()
+	a.runningSummary = ledger
+	a.summaryTokens = summaryTokens
+	a.history = append([]historyEntry{}, a.history[cutoff:]...)
+	a.mu.Unlock()
+	slog.Info("compacted history", "covered_messages", len(segCopy), "ledger_len", len(ledger))
+
+	if a.cfg.Store != nil && a.cfg.SessionID != "" && len(segCopy) > 0 {
+		until := segCopy[len(segCopy)-1].id
+		if err := a.cfg.Store.SetSummary(ctx, a.cfg.SessionID, ledger, until); err != nil {
+			return "", fmt.Errorf("persist compact summary: %w", err)
+		}
+	}
+	return fmt.Sprintf("compacted %d historical message(s) into a session ledger (~%d tokens freed)", len(segCopy), summaryTokens), nil
 }
 
 // pruneToolOutputs collapses tool-result messages before the current user turn

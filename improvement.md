@@ -571,3 +571,48 @@ re-propose them without new evidence.**
   textarea cursor-to-line-end. Remapping them would break existing UX for
   marginal gain; `/yolo`, `clarify`/`plan`, `/retry` and the approval prompts
   already cover developer steering.
+
+## Review batch 2026-08-13 (third agy review — 6 proposals: 3 shipped, 3 rejected)
+
+A third agy review (2026-08-13) screened against improvement.md — none of its
+proposals repeat closed/rejected items. Three implemented (all tested), three
+rejected/covered with reasons.
+
+### Shipped
+
+- ✅ **`code_impact` change-radius tool** (#1) — given a file (or symbol), it
+  computes the downstream change radius *before* an edit: every direct caller
+  file with its call-site lines (from `index_calls`), every package that
+  imports the touched package (from the import DAG), and the test files
+  covering the touched + caller packages. Deterministic — zero LLM calls,
+  ~150 tokens. Requires `index_repo` first. Covered by `TestCodeImpact`.
+- ✅ **`test_runner` targeted tests** (#2) — runs the unit tests affected by a
+  change, scoped to `package | file | symbol` (Go `go test -run`, pytest, or
+  vitest/jest), and prunes output to failures + a summary (passing tests and
+  per-test RUN/PASS lines collapse). Complements `workspace_diagnostics`
+  (compile-only) with the semantic "did the logic break" loop. Fixed commands
+  → no approval gate; 120s timeout; process-group kill. Covered by
+  `TestTestRunner*`.
+- ✅ **`/compact` session ledger** (#4) — `agent.Compact` distills the *entire*
+  conversation (all history before the current turn) into a structured
+  `[SESSION LEDGER]` (validated facts, decisions, failed approaches, active
+  task) in one pass, replacing the historical turns and persisting the ledger
+  as the running summary. The manual counterpart to `budget()`'s automatic
+  pressure-driven summarization. Available in both UIs (`/compact`); REPL help
+  and TUI `/` menu updated. Covered by `TestCompactDistillsWholeHistory`.
+
+### Rejected / covered (do not re-propose)
+
+- ⚪ **KV-cache prefix alignment** (#3) — **already effectively optimal.**
+  `assembleContext` already leads with the static system prompt and skills L0,
+  then appends the dynamic sections (summary, recall, code, injected, ledger)
+  in stable order. The cacheable prefix is already at the strict top;
+  reordering the dynamic tail cannot extend the llama.cpp prompt-cache hit.
+- ⚪ **Native `git_status`/`git_diff`** (#5) — **already exists** as core
+  read-only tools (`internal/tools/git.go`) with `staged`/`path` support; they
+  already avoid shell-exec approval prompts.
+- ⚪ **`yagent-lint` dynamic failure nudges** (#6) — **mostly covered** by the
+  per-failure recovery nudges: prose tool-call nudge, truncated-JSON recovery,
+  tool-loop breaker, convergence nudge, agent loop guard, and structured error
+  envelopes. A persistent aggregate hint in the system prompt adds marginal
+  value over the existing immediate per-failure feedback.

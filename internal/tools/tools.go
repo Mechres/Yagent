@@ -145,6 +145,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"glob":                  &globTool{ws: r.workspace},
 		"grep":                  &grepTool{ws: r.workspace},
 		"workspace_diagnostics": &diagnosticsTool{ws: r.workspace},
+		"test_runner":           &testRunnerTool{ws: r.workspace},
 		"shell_exec":            &shellExecTool{ws: r.workspace, sandbox: opts.ShellSandbox},
 		"git_status":            &gitStatusTool{ws: r.workspace},
 		"git_diff":              &gitDiffTool{ws: r.workspace},
@@ -161,6 +162,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		reg["index_repo"] = &indexRepoTool{store: opts.Index, onProgress: opts.IndexProgress}
 		reg["index_search"] = &indexSearchTool{store: opts.Index}
 		reg["code_references"] = &codeReferencesTool{store: opts.Index}
+		reg["code_impact"] = &codeImpactTool{store: opts.Index, ws: r.workspace}
 	}
 	if opts.Web != nil {
 		reg["web_search"] = &webSearchTool{client: opts.Web}

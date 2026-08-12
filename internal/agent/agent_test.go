@@ -1003,6 +1003,48 @@ func TestVramPressureDetectAndPrune(t *testing.T) {
 	}
 }
 
+func TestCompactDistillsWholeHistory(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	summ := &fixedSummaryLLM{summary: "[SESSION LEDGER]\n- fact: tabs preferred\n- active: fixing bug"}
+	a := New(summ, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 3, Window: 8000, Reserve: 1000, Summarizer: summ}, ws)
+
+	a.mu.Lock()
+	a.history = []historyEntry{
+		{msg: llm.Message{Role: "user", Content: "turn 1: remember I prefer tabs"}},
+		{msg: llm.Message{Role: "assistant", Content: "ok, tabs noted"}},
+		{msg: llm.Message{Role: "tool", Content: strings.Repeat("big tool output\n", 200), ToolCallID: "c1"}},
+		{msg: llm.Message{Role: "user", Content: "turn 2: now fix the bug in parse()"}},
+		{msg: llm.Message{Role: "assistant", Content: "working on it"}},
+		{msg: llm.Message{Role: "user", Content: "current turn: please report"}},
+	}
+	for i := range a.history {
+		a.history[i].tokens = len(a.history[i].msg.Content)/4 + len(a.history[i].msg.ToolCallID)/4
+	}
+	a.mu.Unlock()
+
+	note, err := a.Compact(context.Background())
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if summ.calls != 1 {
+		t.Errorf("summarizer called %d times, want 1", summ.calls)
+	}
+	if !strings.Contains(note, "compacted 5 historical message") {
+		t.Errorf("note = %q", note)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	// only the current user turn remains in history
+	if len(a.history) != 1 || a.history[0].msg.Role != "user" || a.history[0].msg.Content != "current turn: please report" {
+		t.Errorf("history after compact = %+v", a.history)
+	}
+	if a.runningSummary != summ.summary {
+		t.Errorf("running summary = %q", a.runningSummary)
+	}
+}
+
 func TestVerifySkillPass(t *testing.T) {
 	s := newScriptedLLM(t, [][]string{
 		toolCall("c1", "fs_read", `{"path": "a.txt"}`),

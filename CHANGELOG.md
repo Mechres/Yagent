@@ -2,6 +2,22 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.29 — 2026-08-13
+
+### Added
+- **`code_impact` change-radius tool.** Given a file or symbol, computes the
+  downstream blast radius *before* an edit: every direct caller file with its
+  call-site lines (call-graph), every package that imports the touched package
+  (import DAG), and the covering test files. Deterministic — zero LLM calls.
+- **`test_runner` targeted tests.** Runs the unit tests affected by a change,
+  scoped to `package | file | symbol` (Go `go test -run`, pytest, vitest/jest),
+  with output pruned to failures plus a summary. Complements
+  `workspace_diagnostics` (compile-only) with a semantic verification loop.
+- **`/compact` session ledger.** `agent.Compact` distills the entire
+  conversation into a structured `[SESSION LEDGER]` (facts, decisions, failed
+  approaches, next step) in one pass, replacing the historical turns. The
+  manual counterpart to the automatic budget summarizer; available in both UIs.
+
 ## v0.1.28 — 2026-08-13
 
 ### Added
