@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -217,6 +218,12 @@ type Agent struct {
 	// and cleared when workspace_diagnostics runs (verify-don't-trust barrier).
 	unverifiedWrite bool
 
+	// Machine-generated progress ledger (goal state anchor): touchedPaths and
+	// lastToolError are injected as a compact TASK STATE block each request so
+	// the model doesn't have to reconstruct progress from history/summary.
+	touchedPaths  []string
+	lastToolError string
+
 	// Cached accurate token estimates (C1). sysTokens/summaryTokens/
 	// injectedTokens are counted at the point each piece is set; lastCtx holds
 	// the token-only section summary of the most recent assembled context, so
@@ -286,6 +293,8 @@ func (a *Agent) Reset() {
 	a.injected = nil
 	a.injectedTokens = nil
 	a.lastCtx = nil
+	a.touchedPaths = nil
+	a.lastToolError = ""
 	a.mu.Unlock()
 }
 
@@ -603,6 +612,32 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 	return last, fmt.Errorf("goal not achieved after %d rounds", maxRounds)
 }
 
+// taskLedger renders the compact machine-generated progress anchor (goal =
+// last user message, changed files, last tool failure). Empty when there is
+// nothing worth stating, so it adds ~30-50 tokens only when work happened.
+func (a *Agent) taskLedger() string {
+	a.mu.RLock()
+	touched := append([]string(nil), a.touchedPaths...)
+	lastErr := a.lastToolError
+	a.mu.RUnlock()
+	if len(touched) == 0 && lastErr == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("TASK STATE:")
+	if len(touched) > 0 {
+		fmt.Fprintf(&b, "\n- changed: %s", strings.Join(touched, ", "))
+	}
+	if lastErr != "" {
+		e := strings.TrimSpace(lastErr)
+		if len(e) > 140 {
+			e = e[:140] + "…"
+		}
+		fmt.Fprintf(&b, "\n- last failure: %s", e)
+	}
+	return b.String()
+}
+
 // verifyBarrier runs workspace_diagnostics deterministically and returns a user
 // message carrying the result, or "" when there is nothing to verify (no tool,
 // no project detected).
@@ -861,6 +896,13 @@ func (a *Agent) assembleContext(recall, code string) []llm.Message {
 		}
 		sections = append(sections, traceSection{Name: "injected", Content: chunk, Tokens: tk})
 		sys.WriteString("\n\n" + chunk)
+	}
+
+	// machine-generated progress ledger (goal state anchor): keeps the model
+	// oriented across long multi-turn runs without re-reading history.
+	if ledger := a.taskLedger(); ledger != "" {
+		sections = append(sections, traceSection{Name: "task state", Content: ledger, Tokens: len(ledger) / 4})
+		sys.WriteString("\n\n" + ledger)
 	}
 
 	// history
@@ -1312,13 +1354,26 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		}
 		return "error: " + err.Error()
 	}
-	// Track write/verify state for the deterministic "done" barrier: any write
-	// marks the turn unverified; running workspace_diagnostics clears it.
+	// Track write/verify state for the deterministic "done" barrier (any write
+	// marks the turn unverified; running workspace_diagnostics clears it) and
+	// feed the machine-generated progress ledger (touched paths, last failure).
 	a.mu.Lock()
 	if name == "workspace_diagnostics" {
 		a.unverifiedWrite = false
 	} else if tool.Risk() != tools.RiskReadOnly {
 		a.unverifiedWrite = true
+		var pa struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(call.Function.Arguments, &pa) == nil && pa.Path != "" && !slices.Contains(a.touchedPaths, pa.Path) {
+			a.touchedPaths = append(a.touchedPaths, pa.Path)
+			if len(a.touchedPaths) > 5 {
+				a.touchedPaths = a.touchedPaths[len(a.touchedPaths)-5:]
+			}
+		}
+	}
+	if strings.HasPrefix(result, "error:") {
+		a.lastToolError = result
 	}
 	a.mu.Unlock()
 	slog.Debug("tool executed", "tool", name)

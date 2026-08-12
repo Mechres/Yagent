@@ -1057,6 +1057,34 @@ func TestVerifyBarrierRunsDiagnostics(t *testing.T) {
 	}
 }
 
+func TestTaskLedgerTracksProgress(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "x")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	a.mu.Lock()
+	a.touchedPaths = []string{"a.txt"}
+	a.lastToolError = "error: old_string not found [class=old_string_not_found]"
+	a.mu.Unlock()
+
+	ledger := a.taskLedger()
+	if !strings.Contains(ledger, "changed: a.txt") || !strings.Contains(ledger, "old_string_not_found") {
+		t.Errorf("ledger = %q", ledger)
+	}
+	joined := ""
+	for _, m := range a.assembleContext("", "") {
+		joined += m.Content
+	}
+	if !strings.Contains(joined, "TASK STATE") || !strings.Contains(joined, "changed: a.txt") {
+		t.Errorf("ledger not injected into the context: %q", joined[:min(len(joined), 300)])
+	}
+	// a fresh agent with no work has no ledger
+	a2 := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	if l := a2.taskLedger(); l != "" {
+		t.Errorf("empty agent should have no ledger: %q", l)
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",

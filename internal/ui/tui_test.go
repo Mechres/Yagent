@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -933,6 +934,52 @@ func TestClarifyModal(t *testing.T) {
 		}
 	default:
 		t.Fatal("no cancel answer delivered")
+	}
+}
+
+func TestRetryCommand(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.client = llm.NewClient("http://x", "m")
+	m.inputCh = make(chan turnRequest, 4)
+	m.lastTurnText = "the failing input"
+	m.width, m.height = 80, 24
+
+	m.input.SetValue("/retry")
+	m.submitLine()
+	select {
+	case req := <-m.inputCh:
+		if req.text != "the failing input" {
+			t.Errorf("retry text = %q", req.text)
+		}
+	default:
+		t.Fatal("retry did not resubmit")
+	}
+	if m.client.Sampling.Temperature != 0.3 || m.client.Sampling.RepetitionPenalty != 1.05 {
+		t.Errorf("retry sampling = %+v", m.client.Sampling)
+	}
+
+	// nothing to retry -> no turn starts
+	m2 := testModel(t)
+	m2.cfg = &config.Config{Model: "m"}
+	m2.width, m2.height = 80, 24
+	m2.input.SetValue("/retry")
+	m2.submitLine()
+	if m2.busy {
+		t.Error("retry with nothing should not start a turn")
+	}
+}
+
+func TestStatusTokensPerSecond(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.busy = true
+	m.turnTokens = 300
+	m.turnStart = time.Now().Add(-10 * time.Second)
+	state, _ := m.statusText()
+	if !strings.Contains(state, "30.0 t/s") {
+		t.Errorf("status = %q, want a 30.0 t/s reading", state)
 	}
 }
 

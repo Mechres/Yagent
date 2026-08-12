@@ -5,6 +5,17 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased — 2026-08-12
 
 ### Added
+- **Goal-progress ledger**: the agent tracks touched files and the last tool
+  failure and injects a compact `TASK STATE` block into the system message each
+  request — the model stays oriented across long multi-turn runs without
+  re-reading history.
+- **fs_read dedup cache**: a repeated full read of an unchanged file returns a
+  `[cached]` marker instead of re-injecting the whole content (per-session hash;
+  line-range reads and changed files bypass it).
+- **t/s meter**: the TUI status line shows a live tokens/second reading while a
+  turn streams.
+- **`/retry`**: re-runs the last input with a stable sampling profile
+  (temp 0.3, repetition_penalty 1.05) in both UIs.
 - **Verify-don't-trust barrier**: when a turn writes files without running
   `workspace_diagnostics`, the agent deterministically runs it before accepting
   a final answer and feeds the result back — "done" after an unverified write

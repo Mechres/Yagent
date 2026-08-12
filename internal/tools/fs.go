@@ -3,6 +3,7 @@ package tools
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/undo"
@@ -35,7 +37,14 @@ var (
 
 // ---------- fs_read ----------
 
-type fsReadTool struct{ ws string }
+type fsReadTool struct {
+	ws string
+	// cache dedups repeated full reads of an unchanged file: the hash of the
+	// last read is kept so a second read of the same content returns a marker
+	// instead of re-injecting the whole file into context (Gemini review #6).
+	mu    sync.Mutex
+	cache map[string]string
+}
 
 type fsReadArgs struct {
 	Path   string `json:"path"`
@@ -75,6 +84,13 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	if isBinary(data) {
 		return fmt.Sprintf("error: %s is a binary file; use grep or shell tools instead", a.Path), nil
 	}
+	// Dedup: a repeated full read of an unchanged file returns a marker instead
+	// of the whole content (small models re-read files they already have).
+	if a.Offset == 0 && a.Limit == 0 {
+		if marker, ok := t.dedupMarker(path, data); ok {
+			return marker, nil
+		}
+	}
 	lines := strings.Split(string(data), "\n")
 	if a.Offset > 0 {
 		if a.Offset > len(lines) {
@@ -100,6 +116,26 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 		fmt.Fprintf(&b, "%6d: %s\n", start+i, line)
 	}
 	return capResult(b.String(), maxResultBytes), nil
+}
+
+// dedupMarker returns a cached marker when the file's content matches the last
+// full read this session (Gemini review #6 — token saver). It records the hash
+// on first read; a repeat full read of unchanged content yields the marker.
+// The marker is honest about pruning: if the earlier result was summarized
+// away, the model can still re-read via a line range.
+func (t *fsReadTool) dedupMarker(path string, data []byte) (string, bool) {
+	h := fmt.Sprintf("%x", sha256.Sum256(data))
+	t.mu.Lock()
+	if t.cache == nil {
+		t.cache = map[string]string{}
+	}
+	prev, seen := t.cache[path]
+	t.cache[path] = h
+	t.mu.Unlock()
+	if !seen || prev != h {
+		return "", false
+	}
+	return fmt.Sprintf("[cached] %s is unchanged since the earlier read this session (%d bytes) — reuse the earlier result if it is still in the conversation history; if it was summarized away, re-read with fs_read {path, offset, limit}.", filepath.Base(path), len(data)), true
 }
 
 // fuzzyResolve corrects a small-model path slip like "README" when the real

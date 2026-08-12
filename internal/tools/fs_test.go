@@ -162,6 +162,34 @@ func TestFuzzyResolve(t *testing.T) {
 	}
 }
 
+func TestFSReadDedupCache(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "big.txt", strings.Repeat("line of content\n", 100))
+	reg := NewRegistry(ws, Options{})
+
+	// first read: full content
+	first := execTool(t, reg, "fs_read", map[string]any{"path": "big.txt"})
+	if !strings.Contains(first, "line of content") {
+		t.Fatalf("first read = %q", first)
+	}
+	// second full read of the unchanged file: a cached marker, not the content
+	second := execTool(t, reg, "fs_read", map[string]any{"path": "big.txt"})
+	if !strings.Contains(second, "[cached]") || strings.Contains(second, "line of content") {
+		t.Errorf("second read should be a cached marker: %q", second)
+	}
+	// a line-range read bypasses the cache
+	partial := execTool(t, reg, "fs_read", map[string]any{"path": "big.txt", "limit": 3})
+	if !strings.Contains(partial, "line of content") || strings.Contains(partial, "[cached]") {
+		t.Errorf("limited read should return content: %q", partial)
+	}
+	// after the file changes, a read returns the new content
+	writeFile(t, ws, "big.txt", "new content\n")
+	changed := execTool(t, reg, "fs_read", map[string]any{"path": "big.txt"})
+	if !strings.Contains(changed, "new content") {
+		t.Errorf("changed file read = %q", changed)
+	}
+}
+
 func TestGlob(t *testing.T) {
 	ws, reg := fakeWorkspace(t)
 	writeFile(t, ws, "a/main.go", "")
@@ -257,8 +285,10 @@ func TestWorkspaceScoping(t *testing.T) {
 		t.Errorf("fs_read in-workspace symlink = %q", got)
 	}
 	// absolute paths inside the workspace are accepted (models habitually emit
-	// them); absolute paths outside are still rejected
-	if got := execTool(t, reg, "fs_read", map[string]any{"path": filepath.Join(ws, "real.txt")}); !strings.Contains(got, "ok") {
+	// them); absolute paths outside are still rejected. (A fresh file so the
+	// read-dedup cache doesn't return a marker.)
+	writeFile(t, ws, "abs.txt", "abs")
+	if got := execTool(t, reg, "fs_read", map[string]any{"path": filepath.Join(ws, "abs.txt")}); !strings.Contains(got, "abs") {
 		t.Errorf("fs_read absolute in-workspace = %q", got)
 	}
 	if got := execTool(t, reg, "fs_write", map[string]any{"path": "/tmp/evil.txt", "content": "x"}); !strings.Contains(got, "escapes") {

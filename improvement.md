@@ -278,6 +278,23 @@ prompt hope:
   thresholds, crash-safe undo journal, TUI arg editor, /retry, dedup read
   buffer, t/s meter.
 
+Lighter-wins batch (2026-08-12) — the smaller deferred items:
+
+- ✅ **Goal-progress ledger** (gemini #7 / luna #5) — the agent tracks touched
+  files and the last tool failure and injects a compact `TASK STATE` block
+  (changed / last failure) into the system message each request, so the model
+  stays oriented across long multi-turn runs without re-reading history.
+- ✅ **fs_read dedup cache** (gemini #6) — a repeated full read of an unchanged
+  file returns a `[cached]` marker instead of re-injecting the whole content
+  (hash-keyed per session; line-range reads and changed files bypass it).
+- ✅ **t/s meter** (gemini #10) — the TUI status line shows a live
+  tokens/second reading while a turn streams (spot VRAM thrashing vs a freeze).
+- ✅ **`/retry`** (luna #10) — re-runs the last input with a stable sampling
+  profile (temp 0.3, repetition_penalty 1.05) in both UIs, so a one-off loop or
+  malformed call recovers without retyping.
+- Still deferred: crash-safe undo journal, TUI arg editor on approval,
+  retrieval confidence thresholds, structured tool-failure session memory.
+
 Making the small local model work better is now a measurable loop, not folklore. A Hermes review (2026-08-12) — "push correctness into tools, treat the model as proposer not executor" — transferred next:
 
 - ✅ **`clarify` tool** (Hermes #1/#5) — the model calls `clarify(question, choices[])` when a task is ambiguous or a decision matters; the UI renders the question as real options (REPL numbered prompt, TUI modal) and the user's pick returns to the agent as tool data (`user answered: X`). Ambiguity is now a hard stop with a structured handoff, not a prose guess. Live-verified on Qwythos (:8089): model asked via clarify, piped pick flowed back as data.

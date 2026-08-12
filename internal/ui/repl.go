@@ -221,6 +221,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 
 	var thinkBuf strings.Builder
 	loopWarned := false
+	lastLine := ""
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
 		// Thinking is shown dimmed/italic above the answer (display-only),
@@ -281,8 +282,18 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			fmt.Fprintln(w, "history cleared")
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /help /yolo /retry /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
+		case "/retry":
+			if lastLine == "" {
+				fmt.Fprintln(w, "nothing to retry")
+				continue
+			}
+			// A single loop/malformed call is usually sampling instability.
+			client.Sampling.Temperature = 0.3
+			client.Sampling.RepetitionPenalty = 1.05
+			fmt.Fprintln(w, "retrying with a stable sampling profile (temp 0.3, repetition_penalty 1.05)")
+			line = lastLine
 		}
 		if strings.HasPrefix(line, "/") {
 			handled, err := skillsCmd.handle(line, ag)
@@ -298,6 +309,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 
 		thinkBuf.Reset()
 		loopWarned = false
+		lastLine = line
 		env.undo.StartTurn()
 		_, err = ag.Run(ctx, line)
 		env.undo.EndTurn()

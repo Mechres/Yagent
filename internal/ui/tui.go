@@ -250,6 +250,7 @@ type tuiModel struct {
 	reasoningTruncated bool
 	busy               bool
 	turnTokens         int
+	turnStart          time.Time
 	toolCalls          int
 	pending            chan agent.Approval
 	approveArg         string
@@ -963,6 +964,24 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	case "/skills":
 		m.input.Reset()
 		return m.openSkillsModal(), nil
+	case "/retry":
+		m.input.Reset()
+		if m.lastTurnText == "" {
+			m.append("nothing to retry")
+			return m, m.nextCmd()
+		}
+		if m.busy {
+			return m, m.nextCmd()
+		}
+		// A single loop/malformed call is usually sampling instability: retry
+		// the last input with a stable profile (temp 0.3 + repetition penalty).
+		if m.client != nil {
+			m.client.Sampling.Temperature = 0.3
+			m.client.Sampling.RepetitionPenalty = 1.05
+		}
+		m.append("retrying with a stable sampling profile (temp 0.3, repetition_penalty 1.05)")
+		m.startTurn(m.lastTurnText)
+		return m, nil
 	case "/clear":
 		m.input.Reset()
 		m.ag.Reset()
@@ -1000,11 +1019,19 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	}
 	m.input.Reset()
 	m.append("> " + text)
+	m.startTurn(text)
+	return m, nil
+}
+
+// startTurn begins a fresh turn for text: resets the stream/reasoning buffers,
+// records the input for /retry, and launches it under a cancelable context.
+func (m *tuiModel) startTurn(text string) {
 	m.busy = true
 	m.stream.Reset()
 	m.reasoning = ""
 	m.reasoningTruncated = false
 	m.turnTokens = 0
+	m.turnStart = time.Now()
 	m.toolCalls = 0
 	m.turnCancelled = false
 	m.cancelReason = ""
@@ -1012,7 +1039,6 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.retriedLoop = false
 	m.follow = true // new input snaps back to the bottom
 	m.submitTurn(text)
-	return m, nil
 }
 
 // submitTurn launches a turn under a fresh cancelable context (so Esc / the
@@ -2132,6 +2158,9 @@ func (m *tuiModel) statusText() (string, lipgloss.Color) {
 	base := marker + " " + state
 	if m.busy {
 		base += fmt.Sprintf("  ·  %d tok", m.turnTokens)
+		if el := time.Since(m.turnStart).Seconds(); el >= 1 && m.turnTokens > 0 {
+			base += fmt.Sprintf("  ·  %.1f t/s", float64(m.turnTokens)/el)
+		}
 	}
 	return base, color
 }
