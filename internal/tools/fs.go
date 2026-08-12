@@ -121,8 +121,10 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 // dedupMarker returns a cached marker when the file's content matches the last
 // full read this session (Gemini review #6 — token saver). It records the hash
 // on first read; a repeat full read of unchanged content yields the marker.
-// The marker is honest about pruning: if the earlier result was summarized
-// away, the model can still re-read via a line range.
+// The marker never claims the earlier content is still in history (pruning may
+// have removed it, and telling a small model to "reuse it" invites
+// hallucination) — it states the file is unchanged and offers a line-range
+// re-read, which is the safe way to fetch the content again.
 func (t *fsReadTool) dedupMarker(path string, data []byte) (string, bool) {
 	h := fmt.Sprintf("%x", sha256.Sum256(data))
 	t.mu.Lock()
@@ -135,7 +137,7 @@ func (t *fsReadTool) dedupMarker(path string, data []byte) (string, bool) {
 	if !seen || prev != h {
 		return "", false
 	}
-	return fmt.Sprintf("[cached] %s is unchanged since the earlier read this session (%d bytes) — reuse the earlier result if it is still in the conversation history; if it was summarized away, re-read with fs_read {path, offset, limit}.", filepath.Base(path), len(data)), true
+	return fmt.Sprintf("[cached] %s is unchanged since the earlier read this session (%d bytes). If you need its contents again, read it with fs_read {path, offset, limit}; otherwise treat the file as already known.", filepath.Base(path), len(data)), true
 }
 
 // fuzzyResolve corrects a small-model path slip like "README" when the real

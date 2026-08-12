@@ -295,6 +295,25 @@ Lighter-wins batch (2026-08-12) — the smaller deferred items:
 - Still deferred: crash-safe undo journal, TUI arg editor on approval,
   retrieval confidence thresholds, structured tool-failure session memory.
 
+QA / consolidation pass (2026-08-12): the full live re-validation (benchmark,
+sweep, fidelity eval) surfaced two real regressions from the lighter-wins batch,
+now fixed and re-verified at 100%:
+
+- ✅ **Agent-side loop guard** — `agent.RepeatLoop` (shared with the TUI) now
+  watches the streamed content *inside* `agent.Run`: on a repeating unit the
+  request is cancelled and a stop-repeating nudge fed back. Previously the loop
+  guard was TUI-only, so a looping *subagent* could burn the whole request
+  timeout (this made the live fidelity eval hit "context deadline exceeded").
+- ✅ **Safe fs_read dedup marker** — the `[cached]` marker no longer tells the
+  model to "reuse the earlier result in history" (pruning may have removed it,
+  and that suggestion invited hallucinated file contents — the fidelity eval
+  caught the child inventing "value = 10/15/20"); it now states the file is
+  unchanged and offers a line-range re-read.
+- Live-evidence note: the sampling sweep is noisy at N=3 tasks per recipe
+  (default/rep/minp/cold all swing between 1–3/3 across runs) — the shipped
+  recipe is fine; `yagent calibrate` output should be read as a range, and a
+  larger task set would be needed for a hard ranking.
+
 Making the small local model work better is now a measurable loop, not folklore. A Hermes review (2026-08-12) — "push correctness into tools, treat the model as proposer not executor" — transferred next:
 
 - ✅ **`clarify` tool** (Hermes #1/#5) — the model calls `clarify(question, choices[])` when a task is ambiguous or a decision matters; the UI renders the question as real options (REPL numbered prompt, TUI modal) and the user's pick returns to the agent as tool data (`user answered: X`). Ambiguity is now a hard stop with a structured handoff, not a prose guess. Live-verified on Qwythos (:8089): model asked via clarify, piped pick flowed back as data.

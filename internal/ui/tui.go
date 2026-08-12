@@ -1782,30 +1782,11 @@ func (m *tuiModel) checkLoop() {
 	if m.cfg != nil && !m.cfg.UI.LoopGuard {
 		return
 	}
-	if repeatLoop(m.reasoning) || repeatLoop(m.stream.String()) {
+	if agent.RepeatLoop(m.reasoning) || agent.RepeatLoop(m.stream.String()) {
 		m.turnCancelled = true
 		m.cancelReason = "stopped: the model was repeating itself (thinking loop) — /set sampling.repetition_penalty 1.05 often fixes it, or re-ask"
 		m.turnCancel()
 	}
-}
-
-// repeatLoop reports whether the tail of s shows any unit (20–160 chars)
-// repeated at least three times in a row — a strong signal of a model stuck in
-// a generation loop. Units shorter than ~20 chars are too common to trust;
-// legitimate reasoning rarely repeats a 20+ char unit three times verbatim.
-func repeatLoop(s string) bool {
-	const (
-		minUnit = 20
-		maxUnit = 160
-		reps    = 3
-	)
-	for unit := minUnit; unit <= maxUnit && len(s) >= unit*reps; unit++ {
-		tail := s[len(s)-unit*reps:]
-		if tail[:unit] == tail[unit:unit*2] && tail[unit:unit*2] == tail[unit*2:] {
-			return true
-		}
-	}
-	return false
 }
 
 // flushStream commits the current reasoning block and streamed answer into the

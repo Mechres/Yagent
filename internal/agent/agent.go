@@ -370,7 +370,42 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		if err := a.budget(ctx); err != nil {
 			return "", err
 		}
-		resp, err := a.llm.ChatStream(ctx, a.assembleContext(recall, code), a.activeToolSchemas(input, used), a.cfg.OnToken, a.cfg.OnReasoning)
+		// Agent-side loop guard: the stream is watched for a repeating unit;
+		// on detection the request is cancelled and a stop-repeating nudge is
+		// fed back, so a looping model (including inside subagents, where no
+		// TUI guard exists) can't burn minutes on one request.
+		reqCtx, reqCancel := context.WithCancel(ctx)
+		tail := &strings.Builder{}
+		looped := false
+		detect := func(d string) {
+			tail.WriteString(d)
+			if RepeatLoop(tail.String()) {
+				looped = true
+				reqCancel()
+			}
+		}
+		resp, err := a.llm.ChatStream(reqCtx, a.assembleContext(recall, code), a.activeToolSchemas(input, used),
+			func(d string) {
+				if a.cfg.OnToken != nil {
+					a.cfg.OnToken(d)
+				}
+				detect(d)
+			},
+			func(d string) {
+				if a.cfg.OnReasoning != nil {
+					a.cfg.OnReasoning(d)
+				}
+				detect(d)
+			})
+		reqCancel()
+		if looped {
+			// The stream repeated itself (cancelled mid-stream or ended that
+			// way): feed back a stop-repeating nudge and let the model finish.
+			if _, aerr := a.appendMessage(ctx, llm.Message{Role: "user", Content: "You began repeating the same text and your turn was stopped. Continue from where you were without repeating, or give your final answer."}); aerr != nil {
+				return "", aerr
+			}
+			continue
+		}
 		if err != nil {
 			return "", err
 		}
@@ -653,6 +688,25 @@ func (a *Agent) verifyBarrier(ctx context.Context) string {
 	return "The agent wrote files this turn but did not run workspace_diagnostics. " +
 		"Deterministic verification ran it now; the result is:\n" + result +
 		"\n\nIf the check found problems, fix them now. Otherwise give your final answer."
+}
+
+// RepeatLoop reports whether the tail of s shows any unit (20–160 chars)
+// repeated at least three times in a row — a strong signal of a model stuck in
+// a generation loop. Units shorter than ~20 chars are too common to trust.
+// Shared by the agent loop (subagents included) and the TUI status guard.
+func RepeatLoop(s string) bool {
+	const (
+		minUnit = 20
+		maxUnit = 160
+		reps    = 3
+	)
+	for unit := minUnit; unit <= maxUnit && len(s) >= unit*reps; unit++ {
+		tail := s[len(s)-unit*reps:]
+		if tail[:unit] == tail[unit:unit*2] && tail[unit:unit*2] == tail[unit*2:] {
+			return true
+		}
+	}
+	return false
 }
 
 // proseToolName matches a known tool name on a line.

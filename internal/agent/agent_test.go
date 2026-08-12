@@ -1085,6 +1085,38 @@ func TestTaskLedgerTracksProgress(t *testing.T) {
 	}
 }
 
+func TestAgentLoopGuardStopsRepetition(t *testing.T) {
+	// The model emits a repeating answer; the agent-side loop guard cancels it,
+	// feeds back a stop-repeating nudge, and the next response becomes final.
+	repeat := strings.Repeat("I need to check the file. ", 5) // 25-char unit ×5
+	s := newScriptedLLM(t, [][]string{
+		finalContent(repeat),
+		finalContent("final answer"),
+	})
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 8}, ws)
+
+	answer, err := a.Run(context.Background(), "do something")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "final answer" {
+		t.Errorf("final answer = %q", answer)
+	}
+	// the stop-repeating nudge must have been fed back
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "began repeating") {
+		t.Error("loop guard nudge not injected")
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",

@@ -723,8 +723,8 @@ func TestRepeatLoopDetector(t *testing.T) {
 		"the quick brown fox jumps over the lazy dog and back again": false, // no repetition
 	}
 	for in, want := range cases {
-		if got := repeatLoop(in); got != want {
-			t.Errorf("repeatLoop(%q…) = %v, want %v", in[:min(len(in), 40)], got, want)
+		if got := agent.RepeatLoop(in); got != want {
+			t.Errorf("agent.RepeatLoop(%q…) = %v, want %v", in[:min(len(in), 40)], got, want)
 		}
 	}
 }

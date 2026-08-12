@@ -4,6 +4,16 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
 ## Unreleased — 2026-08-12
 
+### Fixed
+- **Agent-side loop guard**: `agent.Run` now watches the streamed content for a
+  repeating unit and cancels + feeds back a stop-repeating nudge — previously
+  the loop guard was TUI-only, so a looping *subagent* burned the whole request
+  timeout.
+- **Safe fs_read dedup marker**: the `[cached]` marker no longer suggests
+  reusing an earlier result from history (which invited hallucinated file
+  contents once pruning removed it); it states the file is unchanged and offers
+  a line-range re-read.
+
 ### Added
 - **Goal-progress ledger**: the agent tracks touched files and the last tool
   failure and injects a compact `TASK STATE` block into the system message each

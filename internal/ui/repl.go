@@ -231,7 +231,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 				return
 			}
 			thinkBuf.WriteString(delta)
-			if !loopWarned && repeatLoop(thinkBuf.String()) {
+			if !loopWarned && agent.RepeatLoop(thinkBuf.String()) {
 				loopWarned = true
 				fmt.Fprintf(w, "\n[the model appears to be repeating itself — /set sampling.repetition_penalty 1.05 often fixes it, or press Ctrl-C]\n")
 			}
