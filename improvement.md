@@ -210,7 +210,27 @@ C3 (structured subagent returns, gated on evidence) and the M7 gated items.
 
 ## Local-model tuning (2026-08-12)
 
-Making the small local model work better is now a measurable loop, not folklore:
+Making the small local model work better is now a measurable loop, not folklore. A peer review (2026-08-12) proposed 8 items; implemented here:
+
+- ✅ **P1 per-model sampling profiles** — a `models:` config section matches
+  sampling overrides by model-name substring (pointer fields: unset = inherit
+  the base recipe), turning docs/models.md's hand-maintained matrix into code.
+- ✅ **P2 context-window auto-detect** — the client probes llama.cpp `/props`
+  (`default_generation_settings.n_ctx`); `yagent chat` caps the agent budget at
+  the server's real window (no more over-length 400s), the reserve is now a %
+  of the window, and `yagent doctor` reports `server n_ctx` vs the budget.
+- ✅ **P3 `yagent calibrate`** — runs the 3 canonical tasks across the 4 sampling
+  recipes against the live model, prints per-task pass/fail, and (with
+  `--write`) persists the best recipe into the config. `internal/bench` is the
+  shared task/recipe package also used by the live eval tests.
+- ✅ **P6 fuzzy path pre-resolution** — `fs_read`/`fs_edit` auto-correct a
+  dropped extension when exactly one file matches (`README` → `README.md`),
+  with a "resolved to" note; saves a wasted turn per slip.
+- Deferred from the review: #4 reasoning-budget passthrough (server support via
+  the OpenAI API is unclear), #5 single-slot concurrency guard, #7 truncated
+  tool-call recovery, #8 GBNF grammar passthrough (risky/uncertain).
+
+First sweep on Qwythos (:8089):
 
 - ✅ **Prompt rules** — `buildSystemPrompt` now tells the model to run
   `workspace_diagnostics` after code edits, ask clarifying questions when a task

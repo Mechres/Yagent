@@ -350,6 +350,43 @@ func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
 	return n, nil
 }
 
+// ServerProps is best-effort llama.cpp /props data.
+type ServerProps struct {
+	NCtx  int // the server's real context window (default_generation_settings.n_ctx)
+	Slots int // total generation slots
+}
+
+// ProbeServerProps fetches llama.cpp /props (P2 context-window autodetect).
+// ok=false when the server doesn't expose it (e.g. Ollama).
+func (c *Client) ProbeServerProps(ctx context.Context) (ServerProps, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	url := strings.TrimRight(c.ServerURL, "/") + "/props"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ServerProps{}, false
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return ServerProps{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ServerProps{}, false
+	}
+	var props struct {
+		TotalSlots                int `json:"total_slots"`
+		DefaultGenerationSettings struct {
+			NCtx int `json:"n_ctx"`
+		} `json:"default_generation_settings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&props); err != nil {
+		return ServerProps{}, false
+	}
+	return ServerProps{NCtx: props.DefaultGenerationSettings.NCtx, Slots: props.TotalSlots},
+		props.DefaultGenerationSettings.NCtx > 0
+}
+
 // tryTokenize POSTs a tokenize request and returns (count, ok). ok=false means
 // the endpoint is missing or returned something unexpected (the caller should
 // try another path, or give up).

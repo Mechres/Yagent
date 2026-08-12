@@ -422,6 +422,53 @@ func TestSetConsultCmdRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPerModelSamplingProfiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarModel, "")
+	t.Setenv(EnvVarServerURL, "")
+	t.Setenv(EnvVarEmbeddingModel, "")
+	t.Setenv(EnvVarDataDir, "")
+	path := writeConfig(t, `model: "Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf"
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+models:
+  - match: Qwythos
+    top_k: 20
+    repetition_penalty: 1.05
+  - match: qwen2.5-coder
+    temperature: 0.2
+    top_k: 40
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// first matching profile applies; unset fields inherit the base recipe
+	if cfg.Sampling.TopK != 20 || cfg.Sampling.RepetitionPenalty != 1.05 {
+		t.Errorf("Qwythos profile not applied: %+v", cfg.Sampling)
+	}
+	if cfg.Sampling.Temperature != 0.6 || cfg.Sampling.TopP != 0.95 {
+		t.Errorf("profile must not override unset fields: %+v", cfg.Sampling)
+	}
+
+	// a different model matches its own profile
+	path2 := writeConfig(t, `model: "qwen2.5-coder:14b"
+sampling:
+  temperature: 0.6
+models:
+  - match: qwen2.5-coder
+    temperature: 0.2
+`)
+	cfg2, err := LoadConfig(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.Sampling.Temperature != 0.2 {
+		t.Errorf("qwen profile not applied: %+v", cfg2.Sampling)
+	}
+}
+
 func TestLoadConfigTheme(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(EnvVarTheme, "")

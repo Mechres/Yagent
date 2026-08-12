@@ -42,6 +42,10 @@ type Config struct {
 	// repetition_penalty are opt-in (some OpenAI-compatible endpoints reject
 	// them).
 	Sampling SamplingConfig `yaml:"sampling"`
+	// Models is an ordered list of per-model sampling profiles: the first whose
+	// Match is a substring of the resolved model name wins, overriding the
+	// base sampling defaults (P1 — turns docs/models.md data into code).
+	Models []ModelProfile `yaml:"models"`
 	// Consult points the `consult` tool at a second local model ("advisor")
 	// the agent can ask for guidance. Empty = disabled.
 	Consult ConsultConfig `yaml:"consult"`
@@ -110,6 +114,44 @@ type SamplingConfig struct {
 	// MinP is the nucleus lower-bound filter (0 = off; llama.cpp/Ollama only —
 	// often tightens up small local models).
 	MinP float64 `yaml:"min_p"`
+}
+
+// ModelProfile overrides the base sampling for a model whose name contains
+// Match (substring). Pointer fields mean "only set when present" — unset
+// fields inherit the base SamplingConfig.
+type ModelProfile struct {
+	Match             string   `yaml:"match"`
+	Temperature       *float64 `yaml:"temperature"`
+	TopP              *float64 `yaml:"top_p"`
+	TopK              *int     `yaml:"top_k"`
+	RepetitionPenalty *float64 `yaml:"repetition_penalty"`
+	MinP              *float64 `yaml:"min_p"`
+}
+
+// applyModels applies the first matching per-model profile to the base sampling
+// (P1). Match is a substring of the model name; the first hit wins.
+func (c *Config) applyModels() {
+	for _, p := range c.Models {
+		if p.Match == "" || !strings.Contains(c.Model, p.Match) {
+			continue
+		}
+		if p.Temperature != nil {
+			c.Sampling.Temperature = *p.Temperature
+		}
+		if p.TopP != nil {
+			c.Sampling.TopP = *p.TopP
+		}
+		if p.TopK != nil {
+			c.Sampling.TopK = *p.TopK
+		}
+		if p.RepetitionPenalty != nil {
+			c.Sampling.RepetitionPenalty = *p.RepetitionPenalty
+		}
+		if p.MinP != nil {
+			c.Sampling.MinP = *p.MinP
+		}
+		return
+	}
 }
 
 // UIConfig holds display preferences.
@@ -313,6 +355,9 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		cfg.DataDir = dataDir
 	}
+	// Per-model sampling profiles override the base recipe for the resolved
+	// model (P1) — last, so they apply on top of file + env sampling.
+	cfg.applyModels()
 	return cfg, nil
 }
 

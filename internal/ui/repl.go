@@ -587,6 +587,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		InitialHistory:  env.initialHistory,
 		InitialSummary:  env.initialSummary,
 		Window:          cfg.ContextWindow,
+		Reserve:         cfg.ContextWindow / 8, // P2: auto-reserve as a % of the window
 		Counter:         client,
 		Trace:           trace,
 	}, ws)

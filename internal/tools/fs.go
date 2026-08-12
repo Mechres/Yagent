@@ -57,7 +57,18 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	if err != nil {
 		return "", err
 	}
+	resolved := ""
 	data, err := os.ReadFile(path)
+	if err != nil && os.IsNotExist(err) {
+		// P6 — small models often drop the extension (fs_read {path:"README"});
+		// correct it when exactly one file matches, saving a wasted turn.
+		if fixed, ok := fuzzyResolve(t.ws, a.Path); ok {
+			if data, err = os.ReadFile(fixed); err == nil {
+				path = fixed
+				resolved = a.Path
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
@@ -78,6 +89,9 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 		lines = lines[:fsReadMaxLines]
 	}
 	var b strings.Builder
+	if resolved != "" {
+		fmt.Fprintf(&b, "note: path %q was resolved to %s\n", resolved, filepath.Base(path))
+	}
 	start := 1
 	if a.Offset > 0 {
 		start = a.Offset + 1
@@ -86,6 +100,38 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 		fmt.Fprintf(&b, "%6d: %s\n", start+i, line)
 	}
 	return capResult(b.String(), maxResultBytes), nil
+}
+
+// fuzzyResolve corrects a small-model path slip like "README" when the real
+// file is README.md: it scans the workspace for files whose basename starts
+// with the given basename and corrects ONLY when exactly one file matches and
+// the original had no extension. Returns the resolved path, or "", false.
+func fuzzyResolve(ws, p string) (string, bool) {
+	base := filepath.Base(p)
+	if base == "" || base == "." || strings.Contains(base, ".") {
+		return "", false // never guess when an extension is already present
+	}
+	var matches []string
+	_ = filepath.WalkDir(ws, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipRefactorDir[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, base) && name != base && strings.Contains(name, ".") {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+	return "", false
 }
 
 func isBinary(data []byte) bool {
@@ -170,7 +216,18 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	if err != nil {
 		return "", err
 	}
+	resolved := ""
 	data, err := os.ReadFile(path)
+	if err != nil && os.IsNotExist(err) {
+		// P6 — small models often drop the extension; correct it when exactly
+		// one file matches.
+		if fixed, ok := fuzzyResolve(t.ws, a.Path); ok {
+			if data, err = os.ReadFile(fixed); err == nil {
+				path = fixed
+				resolved = a.Path
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Sprintf("error: %v; re-read the file first with fs_read", err), nil
 	}
@@ -190,6 +247,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	newContent := strings.Replace(old, a.OldString, a.NewString, 1)
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
+	}
+	if resolved != "" {
+		return fmt.Sprintf("note: path %q was resolved to %s\nedited %s:\n%s", resolved, filepath.Base(path), a.Path, simpleDiff(old, newContent, 100)), nil
 	}
 	return fmt.Sprintf("edited %s:\n%s", a.Path, simpleDiff(old, newContent, 100)), nil
 }

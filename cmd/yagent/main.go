@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Mechres/Yagent/internal/bench"
 	"github.com/Mechres/Yagent/internal/config"
 	"github.com/Mechres/Yagent/internal/doctor"
 	"github.com/Mechres/Yagent/internal/llm"
@@ -73,6 +75,12 @@ func main() {
 			RepetitionPenalty: cfg.Sampling.RepetitionPenalty,
 			MinP:              cfg.Sampling.MinP,
 		}
+		// P2 — cap the context budget at the server's real window so the
+		// agent can never push a request past n_ctx (over-length 400s).
+		if p, ok := client.ProbeServerProps(context.Background()); ok && p.NCtx > 0 && cfg.ContextWindow > p.NCtx {
+			fmt.Fprintf(os.Stderr, "note: server context window is %d (configured %d); capping the agent budget\n", p.NCtx, cfg.ContextWindow)
+			cfg.ContextWindow = p.NCtx
+		}
 		var trace io.Writer
 		if *traceFile != "" {
 			f, err := os.Create(*traceFile)
@@ -123,6 +131,16 @@ func main() {
 			os.Exit(2)
 		}
 		if err := runBackup(cfg, *output); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	case "calibrate":
+		fs := flag.NewFlagSet("calibrate", flag.ContinueOnError)
+		write := fs.Bool("write", false, "write the best recipe's sampling block into the config file")
+		if err := fs.Parse(args[1:]); err != nil {
+			os.Exit(2)
+		}
+		if err := runCalibrate(cfg, *write); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -178,7 +196,7 @@ const bashCompletion = `# yagent bash completion — source with: source <(yagen
 _yagent() {
     local cur
     cur="${COMP_WORDS[COMP_CWORD]}"
-    local commands="chat sessions skills doctor completion playbook"
+    local commands="chat sessions skills doctor completion playbook calibrate"
     local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo"
     local skills_cmds="list import"
     local scopes="global project"
@@ -208,7 +226,7 @@ complete -F _yagent yagent
 
 const zshCompletion = `#compdef yagent
 # yagent zsh completion — add this directory to your fpath and symlink to _yagent
-_arguments '1:command:(chat sessions skills doctor completion playbook)' '*: :->args'
+_arguments '1:command:(chat sessions skills doctor completion playbook calibrate)' '*: :->args'
 case $words[1] in
   chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' ;;
   skills) _arguments '1:skill command:(list import)' '*: :->file' ;;
@@ -218,7 +236,7 @@ esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent playbook list | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent playbook list | yagent calibrate [--write] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 
@@ -380,6 +398,76 @@ func copyDir(src, dst string) error {
 		}
 		return os.WriteFile(target, data, info.Mode().Perm())
 	})
+}
+
+// runCalibrate runs the canonical small-model benchmark across the sampling
+// recipes against the real local model and reports pass rates (P3). With
+// --write it persists the best recipe's sampling into the config file.
+func runCalibrate(cfg *config.Config, writeBest bool) error {
+	client := llm.NewClient(cfg.ServerURL, cfg.Model)
+	client.BearerToken = cfg.APIKey
+	client.Sampling = llm.Sampling{
+		Temperature:       cfg.Sampling.Temperature,
+		TopP:              cfg.Sampling.TopP,
+		TopK:              cfg.Sampling.TopK,
+		RepetitionPenalty: cfg.Sampling.RepetitionPenalty,
+		MinP:              cfg.Sampling.MinP,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if _, err := client.ChatStream(ctx, []llm.Message{{Role: "user", Content: "reply with the single word ok"}}, nil, func(string) {}, nil); err != nil {
+		return fmt.Errorf("cannot reach the model at %s: %w", cfg.ServerURL, err)
+	}
+
+	tasks := bench.Tasks()
+	fmt.Printf("calibrating sampling for %q across %d canonical tasks\n", cfg.Model, len(tasks))
+	var best *bench.RecipeResult
+	for _, r := range bench.RunSweep(client, tasks) {
+		if best == nil || r.Pass() > best.Pass() {
+			rr := r
+			best = &rr
+		}
+		fmt.Printf("%-12s %d/%d pass\n", r.Recipe.Name, r.Pass(), len(tasks))
+		for i, tk := range tasks {
+			mark := "ok "
+			if !r.Results[i].Pass {
+				mark = "FAIL"
+			}
+			fmt.Printf("  %-12s %s  %s\n", tk.Name, mark, r.Results[i].Detail)
+		}
+	}
+	fmt.Printf("\nbest recipe: %s (%d/%d)\n", best.Recipe.Name, best.Pass(), len(tasks))
+	if writeBest && cfg.Path != "" {
+		for _, kv := range samplingKeyValues(best.Recipe.Sampling) {
+			if err := config.Set(cfg.Path, kv.key, kv.value); err != nil {
+				return err
+			}
+		}
+		fmt.Printf("wrote sampling to %s\n", cfg.Path)
+		return nil
+	}
+	fmt.Println("add this to your config to apply it:")
+	fmt.Print(bench.RenderRecipe(best.Recipe))
+	return nil
+}
+
+type samplingKV struct{ key, value string }
+
+func samplingKeyValues(s llm.Sampling) []samplingKV {
+	kv := []samplingKV{
+		{"sampling.temperature", strconv.FormatFloat(s.Temperature, 'f', -1, 64)},
+		{"sampling.top_p", strconv.FormatFloat(s.TopP, 'f', -1, 64)},
+	}
+	if s.TopK > 0 {
+		kv = append(kv, samplingKV{"sampling.top_k", strconv.Itoa(s.TopK)})
+	}
+	if s.RepetitionPenalty > 0 {
+		kv = append(kv, samplingKV{"sampling.repetition_penalty", strconv.FormatFloat(s.RepetitionPenalty, 'f', -1, 64)})
+	}
+	if s.MinP > 0 {
+		kv = append(kv, samplingKV{"sampling.min_p", strconv.FormatFloat(s.MinP, 'f', -1, 64)})
+	}
+	return kv
 }
 
 // runSessionsCmd dispatches `yagent sessions [search <q> | export <id>]`.

@@ -111,6 +111,34 @@ func TestFSEdit(t *testing.T) {
 	}
 }
 
+func TestFuzzyResolve(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "README.md", "# readme\n")
+	writeFile(t, ws, "src/main.go", "package main\n")
+
+	// exact basename with a single extension match -> corrected
+	if got, ok := fuzzyResolve(ws, "README"); !ok || !strings.HasSuffix(got, "README.md") {
+		t.Errorf("fuzzyResolve(README) = %q, %v", got, ok)
+	}
+	// ambiguous -> no correction
+	writeFile(t, ws, "README.txt", "x\n")
+	if _, ok := fuzzyResolve(ws, "README"); ok {
+		t.Error("ambiguous README should not resolve")
+	}
+	// paths that already have an extension are never guessed
+	if _, ok := fuzzyResolve(ws, "README.md"); ok {
+		t.Error("extension present: should not fuzzy-resolve")
+	}
+	// the tool wires it in: fs_read {path:"README"} succeeds with a note
+	ws2 := t.TempDir()
+	writeFile(t, ws2, "README.md", "# readme\n")
+	reg := NewRegistry(ws2, Options{})
+	res := execTool(t, reg, "fs_read", map[string]any{"path": "README"})
+	if !strings.Contains(res, "resolved to README.md") || !strings.Contains(res, "readme") {
+		t.Errorf("fs_read fuzzy = %q", res)
+	}
+}
+
 func TestGlob(t *testing.T) {
 	ws, reg := fakeWorkspace(t)
 	writeFile(t, ws, "a/main.go", "")

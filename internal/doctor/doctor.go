@@ -94,6 +94,13 @@ func Run(cfg *config.Config) Report {
 	default:
 		rep.add("config", StatusPass, fmt.Sprintf("server_url %s, model %q, data dir %s, context window %d", cfg.ServerURL, cfg.Model, cfg.DataDir, cfg.ContextWindow))
 	}
+	if n, ok := serverNCtx(cfg.ServerURL); ok {
+		if cfg.ContextWindow > n {
+			rep.add("context window", StatusWarn, fmt.Sprintf("configured %d exceeds the server's n_ctx %d — the agent caps its budget at startup", cfg.ContextWindow, n))
+		} else {
+			rep.add("context window", StatusPass, fmt.Sprintf("server n_ctx %d (agent budget %d)", n, cfg.ContextWindow))
+		}
+	}
 	if cfg.APIKey != "" {
 		rep.add("config", StatusInfo, "api_key set — requests are sent to a cloud OpenAI-compatible endpoint (opt-in)")
 	}
@@ -296,6 +303,29 @@ func probeChat(client *http.Client, base, model string) error {
 		return fmt.Errorf("empty answer")
 	}
 	return nil
+}
+
+// serverNCtx reads the server's real context window from llama.cpp /props
+// (P2). ok=false when the server doesn't expose it (e.g. Ollama).
+func serverNCtx(base string) (int, bool) {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(strings.TrimRight(base, "/") + "/props")
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	var props struct {
+		DefaultGenerationSettings struct {
+			NCtx int `json:"n_ctx"`
+		} `json:"default_generation_settings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&props); err != nil || props.DefaultGenerationSettings.NCtx <= 0 {
+		return 0, false
+	}
+	return props.DefaultGenerationSettings.NCtx, true
 }
 
 // serverName distinguishes llama.cpp from Ollama for the reachability line.

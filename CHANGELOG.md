@@ -5,6 +5,20 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased — 2026-08-12
 
 ### Added
+- **Per-model sampling profiles**: a `models:` config section overrides
+  sampling per model-name substring (unset fields inherit the base recipe) —
+  docs/models.md's tuning matrix is now code.
+- **Context-window auto-detect**: the client reads llama.cpp `/props` n_ctx;
+  `yagent chat` caps the agent budget at the server's real window (prevents
+  over-length 400s), the reserve is now a percentage of the window, and
+  `yagent doctor` reports `server n_ctx` vs the budget.
+- **`yagent calibrate`**: runs the canonical small-model tasks across the
+  sampling recipes against the live model and reports per-task pass/fail; with
+  `--write` it persists the best recipe into the config. Shared `internal/bench`
+  package drives both the command and the live eval tests.
+- **Fuzzy path pre-resolution**: `fs_read`/`fs_edit` auto-correct a dropped
+  file extension when exactly one file matches (e.g. `README` → `README.md`)
+  with a "resolved to" note, saving a wasted turn.
 - **Local-model tuning**: the system prompt now instructs the model to run
   `workspace_diagnostics` after code edits and to ask clarifying questions on
   ambiguous tasks, plus two worked tool-use examples.
