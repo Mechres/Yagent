@@ -16,6 +16,7 @@ import (
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/logx"
 	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/playbook"
 	"github.com/Mechres/Yagent/internal/skills"
 	"github.com/Mechres/Yagent/internal/ui"
 )
@@ -56,6 +57,7 @@ func main() {
 		goal := fs.String("goal", "", "run the agent autonomously toward this goal (loop mode), then exit")
 		rounds := fs.Int("rounds", 0, "max goal-loop rounds (default 8; only with --goal)")
 		resumeGoal := fs.String("resume-goal", "", "resume an interrupted goal run: restore the goal checkpoint and continue this session")
+		playbookName := fs.String("playbook", "", "run a declarative multi-stage workflow (.yagent/playbooks/<name>.yaml), then exit")
 		traceFile := fs.String("trace", "", "write a per-context prompt dump (with token estimates) to this file")
 		plain := fs.Bool("plain", false, "force the plain REPL instead of the TUI")
 		yolo := fs.Bool("yolo", false, "auto-approve every write/destructive tool and apply skills immediately")
@@ -82,7 +84,7 @@ func main() {
 		}
 		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{
 			Plain: *plain, YOLO: *yolo, Fork: *forkID, Goal: *goal, Rounds: *rounds,
-			ResumeGoal: *resumeGoal, Trace: trace,
+			ResumeGoal: *resumeGoal, Playbook: *playbookName, Trace: trace,
 		}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
@@ -123,6 +125,27 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "playbook":
+		if len(args) < 2 || args[1] != "list" {
+			fmt.Fprintln(os.Stderr, "usage: yagent playbook list   (also: yagent chat --playbook <name>)")
+			os.Exit(2)
+		}
+		ws, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		names := playbook.List(ws)
+		if len(names) == 0 {
+			fmt.Println("no playbooks in .yagent/playbooks/")
+		}
+		for _, n := range names {
+			if pb, err := playbook.Load(ws, n); err == nil {
+				fmt.Printf("%-24s %s (%d phases)\n", n, pb.Description, len(pb.Phases))
+			} else {
+				fmt.Printf("%-24s (error: %v)\n", n, err)
+			}
+		}
 	case "completion":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: yagent completion bash|zsh")
@@ -154,8 +177,8 @@ const bashCompletion = `# yagent bash completion — source with: source <(yagen
 _yagent() {
     local cur
     cur="${COMP_WORDS[COMP_CWORD]}"
-    local commands="chat sessions skills doctor completion"
-    local chat_flags="--continue --fork --goal --rounds --resume-goal --trace --plain --yolo"
+    local commands="chat sessions skills doctor completion playbook"
+    local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo"
     local skills_cmds="list import"
     local scopes="global project"
     if [ "$COMP_CWORD" -eq 1 ]; then
@@ -184,16 +207,17 @@ complete -F _yagent yagent
 
 const zshCompletion = `#compdef yagent
 # yagent zsh completion — add this directory to your fpath and symlink to _yagent
-_arguments '1:command:(chat sessions skills doctor completion)' '*: :->args'
+_arguments '1:command:(chat sessions skills doctor completion playbook)' '*: :->args'
 case $words[1] in
   chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' ;;
   skills) _arguments '1:skill command:(list import)' '*: :->file' ;;
   completion) _arguments '1:shell:(bash zsh)' ;;
+  playbook) _arguments '1:command:(list)' ;;
 esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent playbook list | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 

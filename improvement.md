@@ -161,7 +161,7 @@ Screened against the codebase (see session notes); **skipped** items marked ⚪:
   high rework for medium value.
 
 **Phase plan**: A = P1+P2+P3 (quick wins) → B = P4+P5+P6 (medium) →
-C = P7+P8 (bigger). Status: **Phase A + B shipped** (2026-08-12); Phase C next.
+C = P7+P8 (bigger). Status: **Phases A + B + C all shipped** (2026-08-12).
 
 Phase A status:
 - ✅ **P1 project-instructions reader** — `repoInstructions` (agent.go) appends
@@ -192,6 +192,21 @@ Phase B status:
 - ✅ **P6 skills manager modal** — bare `/skills` opens a TUI modal over the
   pending staged writes (following the `/settings`+`/sessions` patterns):
   ↑/↓ pick, `d` diff, `v` verify, `a` approve, `r` reject, esc close.
+
+Phase C status:
+- ✅ **P7 `fs_refactor` rename** — word-boundary symbol rename across all
+  source files (skips .git/.yagent/build dirs, binary files), rewrites every
+  occurrence (comments/strings included) and records originals for /undo.
+  Write-gated (approval); validation for empty/equal/non-identifier names.
+- ✅ **P8 declarative playbooks** — `.yagent/playbooks/<name>.yaml` of phases
+  `{goal, rounds, tools[], success}`; `yagent chat --playbook <name>` and
+  `/playbook <name>` (or bare `/playbook` to list) run each phase as an
+  autonomous goal run scoped to its tool subset (`agent.SetRegistry`),
+  snapshotted per phase. `yagent playbook list` lists them. Live-verified on
+  :8089.
+
+With this, the agy roadmap (all non-⚪ items) is complete. Remaining backlog:
+C3 (structured subagent returns, gated on evidence) and the M7 gated items.
 
 A second external agent's plan (2026-08-11). Its section A (fs_patch modal v2)
 was superseded mid-inspection — that work is already shipped (per-hunk walker

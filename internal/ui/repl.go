@@ -21,6 +21,7 @@ import (
 	"github.com/Mechres/Yagent/internal/jobs"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/playbook"
 	"github.com/Mechres/Yagent/internal/skills"
 	"github.com/Mechres/Yagent/internal/tools"
 	"github.com/Mechres/Yagent/internal/undo"
@@ -44,6 +45,9 @@ type Options struct {
 	// ResumeGoal resumes an interrupted goal run: the goal checkpoint is
 	// restored and the given session is continued in goal mode.
 	ResumeGoal string
+	// Playbook runs a declarative multi-stage workflow
+	// (.yagent/playbooks/<name>.yaml), then exits (P8).
+	Playbook string
 	// Trace, when set, receives a per-section dump of every assembled context
 	// with token estimates (B2, `yagent chat --trace <file>`).
 	Trace io.Writer
@@ -132,6 +136,18 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		}
 		fmt.Printf("resuming goal from checkpoint — %q\n", goal)
 		return runGoalMode(ctx, client, cfg, env, goal, opts.Rounds, opts.YOLO, opts.Trace)
+	}
+	// Playbook mode: run a declarative multi-stage workflow, then exit (P8).
+	if opts.Playbook != "" {
+		env, err := newChatEnv(ctx, cfg, continueID, opts.Fork)
+		if err != nil {
+			return err
+		}
+		defer env.st.Close()
+		defer env.vs.Close()
+		defer env.projVS.Close()
+		defer env.idx.Close()
+		return runPlaybookMode(ctx, client, cfg, env, opts.Playbook, opts.YOLO, opts.Trace)
 	}
 	// Goal mode: autonomous loop toward a goal, then exit.
 	if opts.Goal != "" {
@@ -275,6 +291,87 @@ done:
 	}
 	fmt.Fprintf(w, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
 	return nil
+}
+
+// runPlaybookMode executes a declarative playbook's phases in order, each as an
+// autonomous goal run scoped to the phase's tool subset (P8). The workspace is
+// snapshotted before every phase so a failed phase can be rolled back.
+func runPlaybookMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, name string, yolo bool, trace io.Writer) error {
+	ws, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	pb, err := playbook.Load(ws, name)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("playbook %q — %s (%d phases)\n", pb.Name, pb.Description, len(pb.Phases))
+
+	w := os.Stdout
+	ap := newToggleableApprover(&replApprover{reader: bufio.NewReader(os.Stdin), writer: w})
+	ap.SetYOLO(yolo)
+	if yolo {
+		env.registry.SetSkillsWriteApproval(false)
+	}
+	ag := newAgent(client, cfg, env, ap,
+		func(delta string) { _, _ = io.WriteString(w, delta) },
+		func(delta string) {
+			_, _ = fmt.Fprintf(w, "\x1b[2m\x1b[3m%s\x1b[0m", delta)
+		},
+		func(call llm.ToolCall) {
+			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
+		},
+		trace)
+
+	executePlaybook(ctx, client, cfg, env, ag, w, pb)
+	if err := ag.Finish(ctx); err != nil {
+		fmt.Fprintf(w, "\nwarning: skill review: %v\n", err)
+	}
+	if err := memory.SummarizeSession(ctx, client, env.st, env.vs, env.sessionID); err != nil {
+		fmt.Fprintf(w, "\nwarning: session summary: %v\n", err)
+	}
+	fmt.Fprintf(w, "\nplaybook %q done — session: %s (resume with: yagent chat --continue %s)\n", pb.Name, env.sessionID, env.sessionID)
+	return nil
+}
+
+// executePlaybook runs a playbook's phases in order against an existing agent
+// (P8): each phase is an autonomous goal run scoped to its tool subset, with a
+// workspace snapshot before it so a failed phase can be rolled back. The agent's
+// registry is restored after every phase.
+func executePlaybook(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, ag *agent.Agent, w io.Writer, pb *playbook.Playbook) {
+	ws, _ := os.Getwd()
+	for i, phase := range pb.Phases {
+		rounds := phase.Rounds
+		if rounds <= 0 {
+			rounds = agent.DefaultGoalRounds
+		}
+		headline := strings.TrimSpace(strings.SplitN(phase.Goal, "\n", 2)[0])
+		fmt.Fprintf(w, "\n—— phase %d/%d: %s ——\n", i+1, len(pb.Phases), headline)
+		if phase.Success != "" {
+			fmt.Fprintf(w, "  done when: %s\n", phase.Success)
+		}
+		if ws != "" {
+			if _, err := checkpoint.Save(ws, checkpoint.GoalName); err != nil {
+				fmt.Fprintf(w, "(warning: could not snapshot workspace: %v)\n", err)
+			}
+		}
+		if len(phase.Tools) > 0 {
+			reg, err := env.registry.Restrict(phase.Tools)
+			if err != nil {
+				fmt.Fprintf(w, "\nphase %d failed: %v\n", i+1, err)
+				break
+			}
+			ag.SetRegistry(reg)
+		}
+		_, err := ag.RunGoal(ctx, phase.Goal, rounds, func(r int, _ string) {
+			fmt.Fprintf(w, "\n—— round %d ——\n", r)
+		})
+		ag.SetRegistry(env.registry)
+		if err != nil {
+			fmt.Fprintf(w, "\nphase %d failed: %v\n", i+1, err)
+			break
+		}
+	}
 }
 
 // chatEnv is the shared runtime state for the REPL and TUI.
@@ -564,6 +661,12 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.undoLastTurn()
 	case rest == "checkpoint" || strings.HasPrefix(rest, "checkpoint "):
 		return h.handleCheckpoint(rest)
+	case rest == "playbook" || strings.HasPrefix(rest, "playbook "):
+		parts := strings.Fields(rest)
+		if len(parts) < 2 {
+			return h.listPlaybooks()
+		}
+		return h.runPlaybook(ag, parts[1])
 	default:
 		// /skill-name: load a SKILL.md into context and continue.
 		content, warning, err := h.store.View(rest, "")
@@ -958,6 +1061,42 @@ func (h *skillsHandler) runGoal(ag *agent.Agent, goal string) (bool, error) {
 		return true, nil
 	}
 	fmt.Fprintf(h.w, "\ngoal achieved.\n")
+	return true, nil
+}
+
+// listPlaybooks prints the available playbooks in the workspace.
+func (h *skillsHandler) listPlaybooks() (bool, error) {
+	ws, _ := os.Getwd()
+	names := playbook.List(ws)
+	if len(names) == 0 {
+		fmt.Fprintln(h.w, "no playbooks in .yagent/playbooks/ (create one with: /playbook <name>)")
+		return true, nil
+	}
+	fmt.Fprintln(h.w, "playbooks:")
+	for _, n := range names {
+		pb, err := playbook.Load(ws, n)
+		if err != nil {
+			fmt.Fprintf(h.w, "  %s  (error: %v)\n", n, err)
+			continue
+		}
+		fmt.Fprintf(h.w, "  %-24s %s (%d phases)\n", n, pb.Description, len(pb.Phases))
+	}
+	return true, nil
+}
+
+// runPlaybook runs a declarative playbook inline through the current agent
+// (each phase as an autonomous goal run). Streams through the UI's OnToken.
+func (h *skillsHandler) runPlaybook(ag *agent.Agent, name string) (bool, error) {
+	ws, err := os.Getwd()
+	if err != nil {
+		return true, fmt.Errorf("workspace: %w", err)
+	}
+	pb, err := playbook.Load(ws, name)
+	if err != nil {
+		return true, err
+	}
+	fmt.Fprintf(h.w, "playbook %q — %s (%d phases)\n", pb.Name, pb.Description, len(pb.Phases))
+	executePlaybook(h.ctx, h.client, h.cfg, h.env, ag, h.w, pb)
 	return true, nil
 }
 

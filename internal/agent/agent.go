@@ -294,6 +294,14 @@ func (a *Agent) LoadSession(history []llm.Message, summary string) {
 	a.totalToolCalls = 0
 }
 
+// SetRegistry swaps the tool registry (used by playbooks to scope each phase's
+// tools, P8). Call it between turns, never while a turn is dispatching.
+func (a *Agent) SetRegistry(reg *tools.Registry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.registry = reg
+}
+
 // SetSessionID switches the session that new messages persist to.
 func (a *Agent) SetSessionID(id string) {
 	a.mu.Lock()
@@ -646,7 +654,7 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 // holds every tool, so a tool the model calls anyway still works.
 var (
 	coreToolNames = []string{
-		"fs_read", "fs_write", "fs_edit", "glob", "grep", "shell_exec",
+		"fs_read", "fs_write", "fs_edit", "fs_refactor", "glob", "grep", "shell_exec",
 		"workspace_diagnostics",
 		"git_status", "git_diff", "git_log", "memory_save", "memory_search",
 		"skills_list", "skill_view", "consult",

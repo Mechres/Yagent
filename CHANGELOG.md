@@ -31,6 +31,15 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 - **Skills manager modal (P6)**: bare `/skills` in the TUI opens a modal over
   pending staged skill writes — ↑/↓ pick, `d` diff, `v` verify, `a` approve,
   `r` reject, esc close.
+- **`fs_refactor` rename (P7)**: word-boundary symbol rename across every
+  source file (build/vendored dirs and binary files skipped), rewriting all
+  occurrences and recording the originals so `/undo` reverts the whole rename.
+  Approval-gated; validates identifier names.
+- **Declarative playbooks (P8)**: `.yagent/playbooks/<name>.yaml` define
+  multi-stage workflows — phases of `{goal, rounds, tools[], success}`. Run
+  with `yagent chat --playbook <name>` or `/playbook <name>` (bare `/playbook`
+  lists them; `yagent playbook list` too). Each phase is an autonomous goal run
+  scoped to its tool subset, snapshotted per phase.
 
 ## v0.1.5 — 2026-08-12
 
