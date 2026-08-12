@@ -8,14 +8,15 @@ A local-first AI agent for **code, audit, review, web search and research** — 
 
 ## Features
 
-- **Agent loop with tools** — streaming chat, tool calling with risk-gated approvals, validation + retry with fuzzy argument aliasing, `/yolo` mode, goal mode with **workspace checkpoints** (`/checkpoint`) for safe autonomous runs, and per-hunk `fs_patch` approval in the TUI.
-- **Memory** — SQLite sessions (`yagent sessions`, `chat --continue`, auto-titles, `/undo`), running-summary context budgeting, and hybrid semantic recall (vector + FTS5 + importance + recency).
-- **Skills** — procedural memory as `SKILL.md` files; the agent creates, discovers and applies its own skills.
-- **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, **call-graph references** (`code_references`: who calls X), per-turn code retrieval.
-- **Web tools** — `web_search` (DuckDuckGo by default, Mojeek or SearXNG as alternatives) and `web_fetch` with HTML→text extraction.
-- **Orchestration** — goal mode, parallel subagents with per-subagent **tool subsets** and a shared **scratchpad** (`scratch_write`/`scratch_read`), an advisor (`consult`) model, tool-output compaction to protect the context window.
-- **Two UIs** — a bubbletea TUI and a plain REPL, sharing one runtime. The TUI has a 24-bit theme system (Tokyo Night default; Catppuccin Mocha and Nord selectable in `/settings`), a pill-style header/status bar with a live context gauge, markdown rendering for assistant messages, and **collapsible "thinking" blocks** for reasoning models (click the `🧠 thought` header, or press `t`; `Ctrl+M` toggles mouse capture so drag-select keeps working by default).
-- **Diagnostics** — `yagent doctor`, slog logging, a golden YAML eval harness.
+- **Agent loop with tools** — streaming chat, risk-gated approvals with TUI diff previews, per-hunk `fs_patch` approval, validation + retry with fuzzy argument aliasing, `/yolo`, **Esc cancels the running turn** (the session stays alive), and a **loop guard** that auto-stops repeating-generation loops.
+- **Memory** — SQLite sessions (`yagent sessions`, `chat --continue`, `/undo`, Markdown/HTML exports), **accurate token counting** (server tokenizer), a budget that first prunes old tool output then summarizes, and hybrid semantic recall (vector + FTS5 + importance + recency).
+- **Skills** — procedural memory as `SKILL.md` files with progressive disclosure, autonomous creation + a verification harness (`/skills verify`), a TUI skills manager modal (bare `/skills`), and `yagent skills import`.
+- **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, call-graph `code_references`, and **`code_slice`** for surgical single-declaration reads.
+- **Code guardrails** — `workspace_diagnostics` (auto-runs `go vet`/`tsc --noEmit`/`cargo check`/`ruff`), **pre-flight syntax validation** (a broken edit never reaches disk), `fs_refactor` (undo-aware symbol rename), and fuzzy path pre-resolution (`README` → `README.md`).
+- **Web tools** — `web_search` (DuckDuckGo default, Mojeek/SearXNG alternatives, provider fallback) and `web_fetch` with HTML→text extraction.
+- **Orchestration** — goal mode with workspace checkpoints and `--resume-goal`, declarative **playbooks** (`.yagent/playbooks/*.yaml`), parallel subagents with preset **roles** (architect/auditor/test-engineer/docs-writer), tool subsets and a shared scratchpad, an advisor (`consult`) model, and **`clarify`/`plan`** tools for structured user handoffs.
+- **Two UIs** — a bubbletea TUI and a plain REPL sharing one runtime: 24-bit themes (Tokyo Night default; Catppuccin/Nord in `/settings`), pill header/status bar with a live context gauge, markdown rendering, collapsible "thinking" blocks, **Ctrl+F transcript search**, and interactive settings/sessions/skills modals.
+- **Tuning & diagnostics** — per-model sampling profiles, `sampling.min_p`/`repetition_penalty` knobs, context-window auto-detect (budget capped at the server's real `n_ctx`), `yagent doctor`, **`yagent calibrate`** (live benchmark across sampling recipes), `--trace` prompt dumps, a golden YAML eval harness, and a live small-model benchmark.
 
 ## Install
 
@@ -39,6 +40,9 @@ ollama pull nomic-embed-text
 yagent doctor                 # diagnose config / server / model / embeddings
 yagent chat                   # streaming TUI (or REPL with --plain)
 yagent chat --goal "refactor the parser package"
+yagent chat --playbook release-checklist   # run a declarative workflow
+yagent calibrate              # tune sampling for your local model
+yagent sessions export <id> --format html  # share a session as HTML
 ```
 
 By default Yagent talks to `http://localhost:11434` (Ollama). Point it elsewhere with `YAGENT_SERVER_URL` / `YAGENT_MODEL` / `config.yaml` — see [`config.example.yaml`](config.example.yaml).
