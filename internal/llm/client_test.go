@@ -440,3 +440,78 @@ func TestChatStreamGivesUpAfterMaxRetries(t *testing.T) {
 		t.Errorf("error = %v, want retry-exhausted message", err)
 	}
 }
+
+func TestCountTokensLlamaCPPEndpoint(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tokenize" {
+			t.Errorf("path = %q, want /tokenize", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, ok := req["content"]; !ok {
+			t.Errorf("llama.cpp tokenize body = %v, want a content field", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"tokens":[1,2,3,4,5]}`)
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, "m")
+	n, err := c.CountTokens(context.Background(), "hello world")
+	if err != nil {
+		t.Fatalf("CountTokens: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("tokens = %d, want 5", n)
+	}
+}
+
+func TestCountTokensOllamaFallback(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tokenize":
+			http.Error(w, "not found", http.StatusNotFound)
+		case "/api/tokenize":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]any
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if req["model"] != "m" || req["prompt"] == "" {
+				t.Errorf("ollama tokenize body = %v", req)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"tokens":[9,8,7]}`)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, "m")
+	n, err := c.CountTokens(context.Background(), "hey")
+	if err != nil {
+		t.Fatalf("CountTokens: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("tokens = %d, want 3", n)
+	}
+}
+
+func TestCountTokensUnavailable(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, "m")
+	if _, err := c.CountTokens(context.Background(), "x"); err == nil {
+		t.Fatal("expected an error when the server exposes no tokenizer")
+	}
+}

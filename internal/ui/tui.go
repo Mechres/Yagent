@@ -35,8 +35,8 @@ func isTerminal(f *os.File) bool {
 
 // RunTUI drives the bubbletea interface: streaming answers, a scrollable
 // transcript, tool lines, approval prompts and a status line.
-func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, yolo bool, forkID string) error {
-	env, err := newChatEnv(ctx, cfg, continueID, forkID)
+func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, opts Options) error {
+	env, err := newChatEnv(ctx, cfg, continueID, opts.Fork)
 	if err != nil {
 		return err
 	}
@@ -51,8 +51,8 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	runnerCtx, runnerCancel := context.WithCancel(ctx)
 	runnerDone := make(chan struct{})
 	ap := newToggleableApprover(&tuiApprover{incoming: incoming, ctx: runnerCtx})
-	ap.SetYOLO(yolo)
-	if yolo {
+	ap.SetYOLO(opts.YOLO)
+	if opts.YOLO {
 		env.registry.SetSkillsWriteApproval(false)
 	}
 
@@ -68,7 +68,8 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { send(tokenMsg{delta: delta}) },
 		func(delta string) { send(reasoningMsg{delta: delta}) },
-		func(call llm.ToolCall) { send(toolMsg{call: call}) })
+		func(call llm.ToolCall) { send(toolMsg{call: call}) },
+		opts.Trace)
 	env.registry.SetIndexProgress(func(line string) { send(progressMsg{text: line}) })
 	startBackgroundIndex(runnerCtx, env, func(line string) { send(progressMsg{text: line}) })
 
@@ -242,11 +243,19 @@ type tuiModel struct {
 	sessionsConfirm bool
 	sessionsAction  string
 	sessions        []memory.SessionSummary
+
+	// In-viewport transcript search (Ctrl+F): findOpen captures keys into
+	// findQuery; findMatches are byte offsets into the joined transcript and
+	// findMatch is the current one (jumped to in the viewport).
+	findOpen    bool
+	findQuery   string
+	findMatches []int
+	findMatch   int
 }
 
 func newInput() textinput.Model {
 	in := textinput.New()
-	in.Placeholder = "message (enter to send, ctrl-c to quit, pgup/dn to scroll)"
+	in.Placeholder = "message (enter to send, ctrl-f to search, ctrl-c to quit, pgup/dn to scroll)"
 	in.CharLimit = 4000
 	in.Prompt = iconCommand + " "
 	return in
@@ -279,6 +288,116 @@ func (m *tuiModel) append(line string) {
 // refreshViewport pushes just the committed transcript into the viewport.
 func (m *tuiModel) refreshViewport() {
 	m.syncViewport()
+}
+
+// openFind enters in-viewport transcript search: further keys are captured into
+// the query until esc or Ctrl+F closes it.
+func (m *tuiModel) openFind() tea.Model {
+	m.findOpen = true
+	m.findQuery = ""
+	m.findMatches = nil
+	m.findMatch = 0
+	return m
+}
+
+// handleFindKey drives transcript search: printable runes extend the query,
+// enter/ctrl+g jump to the next match, esc/Ctrl+F close it.
+func (m *tuiModel) handleFindKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+f":
+		m.findOpen = false
+		m.findQuery = ""
+		m.findMatches = nil
+		m.findMatch = 0
+		return m, m.nextCmd()
+	case "enter", "ctrl+g", "down":
+		if len(m.findMatches) > 0 {
+			m.findMatch = (m.findMatch + 1) % len(m.findMatches)
+			m.scrollToFind(m.findMatches[m.findMatch])
+		}
+		return m, m.nextCmd()
+	case "backspace":
+		if len(m.findQuery) > 0 {
+			r := []rune(m.findQuery)
+			m.findQuery = string(r[:len(r)-1])
+			m.findUpdate()
+		}
+		return m, m.nextCmd()
+	}
+	if len(msg.Runes) > 0 {
+		for _, r := range msg.Runes {
+			if r < 32 {
+				return m, m.nextCmd() // control rune leaked into the query
+			}
+		}
+		m.findQuery += string(msg.Runes)
+		m.findUpdate()
+	}
+	return m, m.nextCmd()
+}
+
+// findUpdate recomputes the match offsets for the current query and jumps to
+// the first (or re-clamps) match. Searching is over the committed transcript
+// (the live stream tail is below it, so row offsets stay stable).
+func (m *tuiModel) findUpdate() {
+	hay := strings.Join(m.transcript, "\n")
+	q := strings.ToLower(m.findQuery)
+	m.findMatches = m.findMatches[:0]
+	if q != "" && hay != "" {
+		lower := strings.ToLower(hay)
+		for start := 0; ; {
+			idx := strings.Index(lower[start:], q)
+			if idx < 0 {
+				break
+			}
+			abs := start + idx
+			m.findMatches = append(m.findMatches, abs)
+			start = abs + len(q)
+		}
+	}
+	if len(m.findMatches) == 0 {
+		m.findMatch = 0
+		return
+	}
+	if m.findMatch >= len(m.findMatches) {
+		m.findMatch = 0
+	}
+	m.scrollToFind(m.findMatches[m.findMatch])
+}
+
+// scrollToFind scrolls the viewport so the transcript row containing the match
+// offset is visible. The row index is the newline count before the offset in
+// the joined transcript, which the viewport content mirrors (committed lines
+// are joined with "\n"; the live stream hangs off the bottom).
+func (m *tuiModel) scrollToFind(offset int) {
+	hay := strings.Join(m.transcript, "\n")
+	row := strings.Count(hay[:offset], "\n")
+	m.follow = false
+	target := row - m.viewport.Height/3
+	if target < 0 {
+		target = 0
+	}
+	// SetYOffset clamps to the available scroll range internally.
+	m.viewport.SetYOffset(target)
+	m.refreshViewport()
+}
+
+// findView renders the search bar: the query, the match position, and a hint.
+func (m *tuiModel) findView() string {
+	th := m.th
+	label := lipgloss.NewStyle().Bold(true).Foreground(th.Primary).Render("find:")
+	query := lipgloss.NewStyle().Foreground(th.Foreground).Render(m.findQuery + "▍")
+	status := ""
+	switch {
+	case m.findQuery == "":
+		status = lipgloss.NewStyle().Foreground(th.Muted).Render("type to search")
+	case len(m.findMatches) == 0:
+		status = lipgloss.NewStyle().Foreground(th.Error).Render("no matches")
+	default:
+		status = lipgloss.NewStyle().Foreground(th.Muted).
+			Render(fmt.Sprintf("%d/%d · enter next · esc close", m.findMatch+1, len(m.findMatches)))
+	}
+	return label + " " + query + "  " + status
 }
 
 // handleSettingsKey drives the settings page: up/down to choose a row, enter
@@ -548,7 +667,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.nextCmd()
 			}
 		}
+		if m.findOpen {
+			return m.handleFindKey(msg)
+		}
 		switch msg.String() {
+		case "ctrl+f":
+			return m.openFind(), nil
 		case "ctrl+c":
 			if m.busy && !m.confirmQuit {
 				m.confirmQuit = true
@@ -690,7 +814,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	case "/help":
 		m.input.Reset()
 		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /mouse /skills list|pending|diff|approve|reject|approval /skill-name")
-		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty; mouse capture: Ctrl+M")
+		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty; search: Ctrl+F; mouse capture: Ctrl+M")
 		return m, m.nextCmd()
 	case "/settings":
 		m.input.Reset()
@@ -1399,7 +1523,11 @@ func (m *tuiModel) View() string {
 	if m.width > 0 {
 		m.input.Width = m.width // cap the visible input so long text/placeholder scrolls, never overflows
 	}
-	out += m.input.View() + "\n"
+	if m.findOpen {
+		out += m.findView() + "\n"
+	} else {
+		out += m.input.View() + "\n"
+	}
 	out += m.statusView()
 	if m.settingsOpen {
 		out = overlayModal(m.th, m.settingsView(), m.width, m.height)
@@ -1452,7 +1580,7 @@ func (m *tuiModel) layoutHeight() int {
 
 // showPopover reports whether the "/" command palette should be rendered.
 func (m *tuiModel) showPopover() bool {
-	if m.settingsOpen || m.sessionsOpen {
+	if m.settingsOpen || m.sessionsOpen || m.findOpen {
 		return false
 	}
 	return strings.HasPrefix(m.input.Value(), "/") && len(m.slashMatches()) > 0

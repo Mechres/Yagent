@@ -41,6 +41,12 @@ type Options struct {
 	// interactive chat; Rounds caps the loop (default 8).
 	Goal   string
 	Rounds int
+	// ResumeGoal resumes an interrupted goal run: the goal checkpoint is
+	// restored and the given session is continued in goal mode.
+	ResumeGoal string
+	// Trace, when set, receives a per-section dump of every assembled context
+	// with token estimates (B2, `yagent chat --trace <file>`).
+	Trace io.Writer
 }
 
 // autoApprover grants every approval without prompting (--yolo).
@@ -102,6 +108,31 @@ func (t *toggleableApprover) IsYOLO() bool {
 //	/skills approval on|off
 //	/skill-name            load a SKILL.md into context
 func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, opts Options) error {
+	// Goal-mode resume: restore the goal checkpoint, continue the session, and
+	// pick the goal back up from its last user message (C2).
+	if opts.ResumeGoal != "" {
+		ws, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("workspace: %w", err)
+		}
+		if err := checkpoint.Restore(ws, checkpoint.GoalName); err != nil {
+			return fmt.Errorf("resume goal: %w", err)
+		}
+		env, err := newChatEnv(ctx, cfg, opts.ResumeGoal, opts.Fork)
+		if err != nil {
+			return err
+		}
+		defer env.st.Close()
+		defer env.vs.Close()
+		defer env.projVS.Close()
+		defer env.idx.Close()
+		goal, err := lastUserMessage(ctx, env)
+		if err != nil || goal == "" {
+			return fmt.Errorf("resume goal: could not find the goal in session %s", opts.ResumeGoal)
+		}
+		fmt.Printf("resuming goal from checkpoint — %q\n", goal)
+		return runGoalMode(ctx, client, cfg, env, goal, opts.Rounds, opts.YOLO, opts.Trace)
+	}
 	// Goal mode: autonomous loop toward a goal, then exit.
 	if opts.Goal != "" {
 		env, err := newChatEnv(ctx, cfg, continueID, opts.Fork)
@@ -112,12 +143,12 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		defer env.vs.Close()
 		defer env.projVS.Close()
 		defer env.idx.Close()
-		return runGoalMode(ctx, client, cfg, env, opts.Goal, opts.Rounds, opts.YOLO)
+		return runGoalMode(ctx, client, cfg, env, opts.Goal, opts.Rounds, opts.YOLO, opts.Trace)
 	}
 	// TUI by default on a real terminal; --plain (or piped stdin) falls back
 	// to the streaming REPL.
 	if !opts.Plain && isTerminal(os.Stdin) {
-		return RunTUI(ctx, client, cfg, continueID, opts.YOLO, opts.Fork)
+		return RunTUI(ctx, client, cfg, continueID, opts)
 	}
 	env, err := newChatEnv(ctx, cfg, continueID, opts.Fork)
 	if err != nil {
@@ -155,7 +186,8 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		},
 		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
-		})
+		},
+		opts.Trace)
 
 	skillsCmd := &skillsHandler{
 		store:       env.sk,
@@ -255,8 +287,10 @@ type chatEnv struct {
 
 // runGoalMode drives the agent autonomously toward a goal: each round runs the
 // full loop, streams its answer, and a DONE/CONTINUE verdict decides whether to
-// continue. Ends with the session id for later resume.
-func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, goal string, rounds int, yolo bool) error {
+// continue. The workspace is snapshotted before the run and after every
+// completed round (so `--resume-goal` can roll back to the last good state).
+// Ends with the session id for later resume.
+func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, goal string, rounds int, yolo bool, trace io.Writer) error {
 	w := os.Stdout
 	ap := newToggleableApprover(&replApprover{reader: bufio.NewReader(os.Stdin), writer: w})
 	ap.SetYOLO(yolo)
@@ -270,21 +304,28 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 		},
 		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
-		})
+		},
+		trace)
 
 	fmt.Printf("goal mode — working toward: %s\n", goal)
 	if env.forkSource != "" {
 		fmt.Printf("(forked from %s)\n", env.forkSource)
 	}
-	if ws, err := os.Getwd(); err == nil {
+	saveGoalCheckpoint := func(label string) {
+		ws, err := os.Getwd()
+		if err != nil {
+			return
+		}
 		if dir, err := checkpoint.Save(ws, checkpoint.GoalName); err != nil {
-			fmt.Fprintf(w, "(warning: could not snapshot workspace for rollback: %v)\n", err)
-		} else {
+			fmt.Fprintf(w, "(warning: could not %s: %v)\n", label, err)
+		} else if label == "snapshot workspace" {
 			fmt.Fprintf(w, "workspace snapshotted (%s) — revert later with /checkpoint restore goal\n", dir)
 		}
 	}
+	saveGoalCheckpoint("snapshot workspace")
 	answer, err := ag.RunGoal(ctx, goal, rounds, func(r int, _ string) {
 		fmt.Fprintf(w, "\n—— round %d ——\n", r)
+		saveGoalCheckpoint("save round checkpoint")
 	})
 	if err != nil {
 		fmt.Fprintf(w, "\ngoal loop: %v\n", err)
@@ -392,8 +433,10 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 	return env, nil
 }
 
-// newAgent builds the agent loop over a chatEnv.
-func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken, onReasoning func(string), onTool func(llm.ToolCall)) *agent.Agent {
+// newAgent builds the agent loop over a chatEnv. trace, when non-nil, receives
+// the per-context prompt dump (B2); the client is also wired as the token
+// counter so the context gauge uses the server tokenizer when available (C1).
+func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken, onReasoning func(string), onTool func(llm.ToolCall), trace io.Writer) *agent.Agent {
 	ws, _ := os.Getwd()
 	// M7 v1: subagents are read-only child agents that return a summary.
 	// M7 beyond v2: an optional tools slice scopes each child's registry.
@@ -433,7 +476,30 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		InitialHistory:  env.initialHistory,
 		InitialSummary:  env.initialSummary,
 		Window:          cfg.ContextWindow,
+		Counter:         client,
+		Trace:           trace,
 	}, ws)
+}
+
+// lastUserMessage returns the goal text of a goal-mode session (goal mode
+// re-sends the goal as a user message every round, so the last user message IS
+// the goal). Used by `--resume-goal` to recover the goal from a session.
+func lastUserMessage(ctx context.Context, env *chatEnv) (string, error) {
+	for i := len(env.initialHistory) - 1; i >= 0; i-- {
+		if env.initialHistory[i].Role == "user" {
+			return env.initialHistory[i].Content, nil
+		}
+	}
+	history, err := env.st.History(ctx, env.sessionID)
+	if err != nil {
+		return "", err
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return history[i].Content, nil
+		}
+	}
+	return "", nil
 }
 
 // skillsHandler implements the /skills and /skill-name REPL commands.
@@ -837,23 +903,35 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 		c.Consult.Model = value
 	case "consult.api_key":
 		c.Consult.APIKey = value
+	case "consult.cmd":
+		c.Consult.Cmd = strings.Fields(value)
 	}
 	return nil
 }
 
 // runGoal drives the current agent through the autonomous goal loop, printing
-// a round marker per round; the answers stream through the UI's OnToken.
+// a round marker per round; the answers stream through the UI's OnToken. The
+// workspace is snapshotted before the run and after each round (C2), so an
+// interrupted run can be resumed with `yagent chat --resume-goal <session>`.
 func (h *skillsHandler) runGoal(ag *agent.Agent, goal string) (bool, error) {
 	fmt.Fprintf(h.w, "goal mode — working toward: %s\n", goal)
+	saveGoalCheckpoint := func() {
+		if ws, err := os.Getwd(); err == nil {
+			if _, err := checkpoint.Save(ws, checkpoint.GoalName); err != nil {
+				fmt.Fprintf(h.w, "(warning: could not snapshot workspace for rollback: %v)\n", err)
+			}
+		}
+	}
 	if ws, err := os.Getwd(); err == nil {
 		if dir, err := checkpoint.Save(ws, checkpoint.GoalName); err != nil {
 			fmt.Fprintf(h.w, "(warning: could not snapshot workspace for rollback: %v)\n", err)
 		} else {
-			fmt.Fprintf(h.w, "workspace snapshotted (%s) — revert later with /checkpoint restore goal\n", dir)
+			fmt.Fprintf(h.w, "workspace snapshotted (%s) — revert later with /checkpoint restore goal, or resume with --resume-goal %s\n", dir, h.env.sessionID)
 		}
 	}
 	_, err := ag.RunGoal(h.ctx, goal, agent.DefaultGoalRounds, func(r int, _ string) {
 		fmt.Fprintf(h.w, "\n—— round %d ——\n", r)
+		saveGoalCheckpoint()
 	})
 	if err != nil {
 		fmt.Fprintf(h.w, "\ngoal loop: %v\n", err)

@@ -361,6 +361,7 @@ func Settings() []SettingKey {
 		{Key: "consult.server_url", Label: "Consult server URL"},
 		{Key: "consult.model", Label: "Consult model"},
 		{Key: "consult.api_key", Label: "Consult API key"},
+		{Key: "consult.cmd", Label: "Consult CLI app (space-separated argv)"},
 	}
 }
 
@@ -411,6 +412,8 @@ func (c *Config) Get(key string) string {
 		return c.Consult.Model
 	case "consult.api_key":
 		return c.Consult.APIKey
+	case "consult.cmd":
+		return strings.Join(c.Consult.Cmd, " ")
 	}
 	return ""
 }
@@ -490,6 +493,7 @@ func validateKey(parts []string, value string) error {
 		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
 		"shell.sandbox":      true,
 		"consult.server_url": true, "consult.model": true, "consult.api_key": true,
+		"consult.cmd": true,
 	}
 	key := strings.Join(parts, ".")
 	if !known[key] {
@@ -552,6 +556,16 @@ func typedScalar(key, value string) *yaml.Node {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
 	case "temperature", "top_p", "repetition_penalty":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: value}
+	case "cmd":
+		// consult.cmd is stored as a YAML sequence: "/set consult.cmd claude -p"
+		// round-trips to `cmd: [claude, -p]` (ConsultConfig.Cmd is []string).
+		return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: func() []*yaml.Node {
+			var items []*yaml.Node
+			for _, part := range strings.Fields(value) {
+				items = append(items, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: part})
+			}
+			return items
+		}()}
 	}
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
 }

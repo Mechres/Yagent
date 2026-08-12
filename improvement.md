@@ -1,7 +1,8 @@
 # Yagent improvement roadmap
 
-Consolidated, prioritized plan for post-M6 work. Status: **P0 and P1 complete** —
-the remaining items are P2/deferred.
+Consolidated, prioritized plan for post-M6 work. Status: **P0, P1 and the B
+quick wins (B1–B4) plus C1/C2 are shipped** (2026-08-12 batch); the remaining
+items are C3 and the M7 gated/deferred items.
 
 Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
@@ -121,34 +122,55 @@ was superseded mid-inspection — that work is already shipped (per-hunk walker
 
 ### B — quick wins (no new deps, local-first)
 
-- 🟡 **B1 eval-coverage gaps** — golden evals for `/skills verify` PASS/FAIL,
-  `/undo` revert, `/checkpoint` save|restore, consult soft-fail, and
-  `shell.sandbox: bwrap` loud-deny. Scripted httptest servers, no network.
-- 🟡 **B2 `--trace` prompt dump** — `yagent chat --trace <file>` writes each
-  assembled context with per-section token estimates (system / L0 / summary /
-  recall / code / history). Local file only (fits privacy stance). Acceptance:
-  segments sum to `ContextUsage`.
-- 🟡 **B3 TUI transcript search** — in-viewport find (Ctrl-/ or similar) that
-  jumps to the next match. *Already present:* scrollable viewport.
-- 🟡 **B4 config schema completeness** — `consult.cmd` and shell/job timeouts
-  aren't editable via `/set`; expose missing keys (with choosers where apt) so
-  `/settings` is the single surface. Acceptance: `/set consult.cmd [...]`
-  round-trips and reloads.
+- ✅ **B1 eval-coverage gaps** — `/skills verify` PASS/FAIL flow (staged
+  skill, verdict parse, pending+skill failure counters), end-to-end `/undo`
+  revert over a scripted agent write, and consult soft-fail are now covered
+  by `internal/eval/gaps_test.go` + `internal/tools/consult_test.go`;
+  `/checkpoint` save|restore and `shell.sandbox: bwrap` loud-deny were already
+  covered (`checkpoint_test.go`, `TestShellExecSandboxNotInstalled`).
+  Scripted httptest servers, no network.
+- ✅ **B2 `--trace` prompt dump** — `yagent chat --trace <file>` writes each
+  assembled context with per-section token estimates (system / skills L0 /
+  code / summary / recall / injected / history) plus the full content. Local
+  file only (fits privacy stance). Acceptance met: the trace's section
+  estimates are exactly what `ContextUsage` accounts from (non-history
+  sections + live history), verified by `TestTraceSegmentsSumToContextUsage`.
+- ✅ **B3 TUI transcript search** — `Ctrl+F` opens an in-viewport find bar:
+  type to search (case-insensitive), enter jumps to the next match, esc
+  closes. *Already present:* scrollable viewport.
+- ✅ **B4 config schema completeness** — `consult.cmd` is now editable:
+  `/set consult.cmd claude -p` persists a YAML sequence and round-trips on
+  reload (tested). `shell.sandbox` was already exposed; shell/job timeouts are
+  per-call `timeout_sec` arguments, not global keys, so there is nothing to
+  expose — `/settings` is the single surface for all config keys.
 
 ### C — capability features (medium effort)
 
-- 🟡 **C1 accurate token counting via `/tokenize`** — `llm.CountTokens()` calls
-  the server's tokenizer when exposed, falling back to len/4; wire into
-  `estTokensLocked`/`ContextUsage` so the gauge and summarization trigger are
-  accurate. *Note:* dev llama.cpp `llama-server` exposes `POST /tokenize` at
-  the root, so C1 is feasible on :8089 without a workaround.
-- 🟡 **C2 goal-mode resume across restarts** — wire `RunGoal` to the checkpoint
-  store so each round auto-saves and `--resume-goal` continues. *Already
-  present:* pre-goal snapshot (`/checkpoint restore goal`).
+- ✅ **C1 accurate token counting via `/tokenize`** — `llm.Client.CountTokens`
+  calls the server tokenizer (llama.cpp `/tokenize` at the root, Ollama
+  `/api/tokenize`; probed once, len/4 fallback) and is wired into the agent:
+  the system prompt, running summary, injected skills and every history
+  message are counted accurately (no network under the lock — the gauge sums a
+  cached per-section summary plus live history tokens). Verified on :8089
+  format + fake server: the gauge and summarization trigger now reflect real
+  counts.
+- ✅ **C2 goal-mode resume across restarts** — goal mode snapshots the
+  workspace after every completed round, and `yagent chat --resume-goal
+  <session>` restores the goal checkpoint and continues the session, picking
+  the goal back up from its last user message. *Was already present:* pre-goal
+  snapshot (`/checkpoint restore goal`).
 - 🟡 **C3 subagent structured returns** — children return structured JSON
   (findings + paths + confidence) the parent can index/act on, plus a shared
   read-only subagent workspace. Gated: only if string-summary is the real
   bottleneck. (Same target as the Copilot artifact item above.)
+  *Evidence (2026-08-12, `internal/eval/live_test.go` vs Qwythos on :8089):*
+  a 18-fact inventory (6 files × 3 high-entropy values buried in decoy prose)
+  shows **100% fidelity for every output style** — free-text summary, concise
+  summary, structured findings list, and strict JSON (which Qwythos emits
+  validly on demand). Reported 18/18, recalled 18/18 across all cells. The
+  string-summary bottleneck **does not reproduce at this scale**, so C3 stays
+  gated; the live eval is the repeatable evidence harness if a larger/adversarial
+  scenario is ever wanted.
 
 ### D — out of scope (local-first / privacy)
 

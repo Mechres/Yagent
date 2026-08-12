@@ -2,6 +2,35 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.4 — 2026-08-12
+
+### Added
+- **Accurate token counting (C1)**: `llm.Client.CountTokens` calls the model
+  server's own tokenizer (llama.cpp `/tokenize`, Ollama `/api/tokenize`,
+  probed once, len/4 fallback), and the agent now counts the system prompt,
+  running summary, injected skills and every history message with it. The TUI
+  context gauge and the summarization trigger reflect the real token counts;
+  no network under the context lock.
+- **`--trace <file>` (B2)**: `yagent chat --trace` writes every assembled
+  context with per-section token estimates (system / skills L0 / code index /
+  summary / recall / injected / history) that always sum to the live
+  `ContextUsage` gauge — a real prompt dump for budget debugging.
+- **`--resume-goal <session>` (C2)**: goal mode now snapshots the workspace
+  after every completed round (not just before the run), and `--resume-goal`
+  restores the goal checkpoint and continues the session — an interrupted
+  multi-round goal run picks up where it left off, not from scratch.
+- **TUI transcript search (B3)**: `Ctrl+F` opens an in-viewport find bar;
+  typing searches the transcript (case-insensitive), enter jumps to the next
+  match, esc closes. Works in the REPL-free TUI only.
+- **`consult.cmd` editable via `/set` (B4)**: `/set consult.cmd claude -p`
+  persists `consult.cmd: [claude, -p]` as a YAML sequence (round-trips through
+  reload); `/settings` now lists it.
+- New regression tests closing eval-coverage gaps (B1): the staged-skill
+  verify flow (FAIL accumulates / PASS clears pending+skill failure counters),
+  an end-to-end `/undo` revert over a scripted agent write, consult soft-fail
+  on a failing advisor server, accurate-counter and trace==gauge agent tests,
+  and `CountTokens` server-tokenizer tests.
+
 ## v0.1.3 — 2026-08-11
 
 ### Added

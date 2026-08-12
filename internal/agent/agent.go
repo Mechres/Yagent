@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/llm"
@@ -81,9 +83,29 @@ Writes are checked by the safety scanner and apply immediately (they may be stag
 
 // historyEntry pairs a persisted message with its store row id (0 when not
 // persisted), so the budget manager knows which messages a summary covers.
+// tokens caches the message's token estimate (accurate via the server
+// tokenizer when a Counter is configured, else the len/4 heuristic).
 type historyEntry struct {
-	id  int64
-	msg llm.Message
+	id     int64
+	msg    llm.Message
+	tokens int
+}
+
+// TokenCounter estimates the token count of a text with the model server's own
+// tokenizer. *llm.Client implements it (C1: llama.cpp /tokenize, Ollama
+// /api/tokenize); a nil counter falls back to the len/4 heuristic.
+type TokenCounter interface {
+	CountTokens(ctx context.Context, text string) (int, error)
+}
+
+// traceSection is one context segment of an assembled request: its name, the
+// full content (used only for the --trace dump; never retained), and its token
+// estimate. The estimates are the same numbers the context gauge reports, so a
+// trace's segments always sum to ContextUsage.
+type traceSection struct {
+	Name    string
+	Content string
+	Tokens  int
 }
 
 // Config holds loop knobs.
@@ -125,6 +147,15 @@ type Config struct {
 	// inject the top matching chunks into context each turn.
 	Index           *index.Store
 	IndexAutoInject bool
+
+	// Counter estimates token counts with the server tokenizer (C1). When nil
+	// the len/4 heuristic is used everywhere.
+	Counter TokenCounter
+
+	// Trace, when set, receives a per-section dump of every assembled context
+	// with token estimates (B2, `yagent chat --trace <file>`). The segments sum
+	// to ContextUsage.
+	Trace io.Writer
 
 	// InitialHistory/InitialSummary seed a resumed session (chat --continue).
 	InitialHistory []llm.Message
@@ -172,6 +203,16 @@ type Agent struct {
 	runningSummary string
 	injected       []string
 	totalToolCalls int
+
+	// Cached accurate token estimates (C1). sysTokens/summaryTokens/
+	// injectedTokens are counted at the point each piece is set; lastCtx holds
+	// the token-only section summary of the most recent assembled context, so
+	// the gauge and budget math need no network calls under the lock.
+	sysTokens      int
+	summaryTokens  int
+	injectedTokens []int
+	lastCtx        []traceSection
+	traceSeq       int
 }
 
 // New constructs an Agent bound to a workspace and tool registry.
@@ -207,10 +248,20 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 		systemPrompt:   buildSystemPrompt(workspace),
 		runningSummary: cfg.InitialSummary,
 	}
+	a.sysTokens = a.tokensFor(shortCtx(), a.systemPrompt)
+	a.summaryTokens = a.tokensFor(shortCtx(), cfg.InitialSummary)
 	for _, m := range cfg.InitialHistory {
-		a.history = append(a.history, historyEntry{msg: m})
+		a.history = append(a.history, historyEntry{msg: m, tokens: len(m.Content) / 4})
 	}
 	return a
+}
+
+// shortCtx bounds tokenizer probe/startup calls (New, InjectSystem) so a
+// dead or slow server can never hang session startup.
+func shortCtx() context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = cancel // the agent loop runs past this; only the call is bounded
+	return ctx
 }
 
 // Reset clears conversation history and the running summary (/clear).
@@ -218,7 +269,10 @@ func (a *Agent) Reset() {
 	a.mu.Lock()
 	a.history = nil
 	a.runningSummary = ""
+	a.summaryTokens = 0
 	a.injected = nil
+	a.injectedTokens = nil
+	a.lastCtx = nil
 	a.mu.Unlock()
 }
 
@@ -229,9 +283,12 @@ func (a *Agent) LoadSession(history []llm.Message, summary string) {
 	defer a.mu.Unlock()
 	a.history = nil
 	for _, m := range history {
-		a.history = append(a.history, historyEntry{msg: m})
+		a.history = append(a.history, historyEntry{msg: m, tokens: len(m.Content) / 4})
 	}
 	a.runningSummary = summary
+	a.summaryTokens = len(summary) / 4
+	a.injectedTokens = nil
+	a.lastCtx = nil
 	a.totalToolCalls = 0
 }
 
@@ -332,8 +389,10 @@ func (a *Agent) InjectSystem(content string) {
 	if content == "" {
 		return
 	}
+	tokens := a.tokensFor(shortCtx(), content)
 	a.mu.Lock()
 	a.injected = append(a.injected, content)
+	a.injectedTokens = append(a.injectedTokens, tokens)
 	a.mu.Unlock()
 }
 
@@ -517,10 +576,23 @@ func (a *Agent) appendMessage(ctx context.Context, msg llm.Message) (int64, erro
 			return 0, fmt.Errorf("persist message: %w", err)
 		}
 	}
+	tokens := a.tokensFor(ctx, messageTokenText(msg))
 	a.mu.Lock()
-	a.history = append(a.history, historyEntry{id: id, msg: msg})
+	a.history = append(a.history, historyEntry{id: id, msg: msg, tokens: tokens})
 	a.mu.Unlock()
 	return id, nil
+}
+
+// messageTokenText approximates the text a message contributes to the prompt
+// (content plus any tool-call names/arguments), for token counting.
+func messageTokenText(m llm.Message) string {
+	var b strings.Builder
+	b.WriteString(m.Content)
+	for _, tc := range m.ToolCalls {
+		b.WriteString(tc.Function.Name)
+		b.WriteString(string(tc.Function.Arguments))
+	}
+	return b.String()
 }
 
 // recall injects the top-k semantic memories for the user input (L3),
@@ -629,33 +701,121 @@ func codeSignal(s string) bool {
 // the prompt.
 func (a *Agent) assembleContext(recall, code string) []llm.Message {
 	var sys strings.Builder
+	var sections []traceSection
+
+	// system prompt
+	sections = append(sections, traceSection{Name: "system", Content: a.systemPrompt, Tokens: a.sysTokens})
 	sys.WriteString(a.systemPrompt)
+
+	// skills L0 index
 	if l0 := a.skillIndex(); l0 != "" {
+		sections = append(sections, traceSection{Name: "skills L0", Content: l0, Tokens: len(l0) / 4})
 		sys.WriteString("\n\n" + l0)
 	}
+
+	// code retrieval
 	if code != "" {
+		sections = append(sections, traceSection{Name: "code index", Content: code, Tokens: len(code) / 4})
 		sys.WriteString("\n\n" + code)
 	}
+
 	a.mu.RLock()
 	runningSummary := a.runningSummary
 	injected := append([]string(nil), a.injected...)
+	injectedTokens := append([]int(nil), a.injectedTokens...)
 	hist := make([]llm.Message, 0, len(a.history))
+	histTokens := 0
 	for _, h := range a.history {
 		hist = append(hist, h.msg)
+		histTokens += h.tokens
 	}
 	a.mu.RUnlock()
+
+	// running summary
 	if runningSummary != "" {
+		sections = append(sections, traceSection{Name: "summary", Content: runningSummary, Tokens: a.summaryTokens})
 		sys.WriteString("\n\nSummary of the earlier part of this conversation:\n" + runningSummary)
 	}
+
+	// recall
 	if recall != "" {
+		sections = append(sections, traceSection{Name: "recall", Content: recall, Tokens: len(recall) / 4})
 		sys.WriteString("\n\n" + recall)
 	}
-	for _, chunk := range injected {
+
+	// injected skill/system chunks
+	for i, chunk := range injected {
+		tk := len(chunk) / 4
+		if i < len(injectedTokens) {
+			tk = injectedTokens[i]
+		}
+		sections = append(sections, traceSection{Name: "injected", Content: chunk, Tokens: tk})
 		sys.WriteString("\n\n" + chunk)
 	}
+
+	// history
+	histDump := ""
+	if a.cfg.Trace != nil {
+		histDump = renderHistoryDump(hist)
+	}
+	sections = append(sections, traceSection{Name: "history", Content: histDump, Tokens: histTokens})
+
+	// Cache the token-only section summary for the context gauge/budget (no
+	// content is retained, so this does not duplicate the whole context), and
+	// dump the full trace when configured.
+	tokenOnly := make([]traceSection, len(sections))
+	for i, s := range sections {
+		tokenOnly[i] = traceSection{Name: s.Name, Tokens: s.Tokens}
+	}
+	a.mu.Lock()
+	a.lastCtx = tokenOnly
+	a.mu.Unlock()
+	if a.cfg.Trace != nil {
+		a.writeTrace(sections)
+	}
+
 	msgs := []llm.Message{{Role: "system", Content: sys.String()}}
 	msgs = append(msgs, hist...)
 	return msgs
+}
+
+// renderHistoryDump renders the history messages as text for the --trace dump.
+func renderHistoryDump(hist []llm.Message) string {
+	var b strings.Builder
+	for _, m := range hist {
+		body := m.Content
+		if body == "" && len(m.ToolCalls) > 0 {
+			names := make([]string, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				names = append(names, tc.Function.Name)
+			}
+			body = "(tool calls: " + strings.Join(names, ", ") + ")"
+		}
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, body)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// writeTrace dumps one assembled context with per-section token estimates. The
+// section totals are exactly what ContextUsage reports, so a trace's segments
+// always sum to the gauge.
+func (a *Agent) writeTrace(sections []traceSection) {
+	a.traceSeq++
+	w := a.cfg.Trace
+	fmt.Fprintf(w, "\n===== context #%d =====\n", a.traceSeq)
+	total := 0
+	for _, s := range sections {
+		total += s.Tokens
+		fmt.Fprintf(w, "  %-14s %7d tok %9d ch\n", s.Name, s.Tokens, len(s.Content))
+	}
+	fmt.Fprintf(w, "  %-14s %7d tok\n", "total", total)
+	for _, s := range sections {
+		if s.Content == "" {
+			continue
+		}
+		fmt.Fprintf(w, "\n--- %s ---\n%s\n", s.Name, s.Content)
+	}
+	fmt.Fprintln(w)
 }
 
 // codeIndex retrieves the top chunks matching the user input from the codebase
@@ -771,22 +931,51 @@ func (a *Agent) estTokens() int {
 	return a.estTokensLocked()
 }
 
-// estTokensLocked is estTokens with the history lock already held.
+// estTokensLocked is estTokens with the history lock already held. It sums the
+// non-history sections of the most recently assembled context (accurate via the
+// server tokenizer when a Counter is configured; the cached per-piece counts
+// before anything has been assembled) plus the LIVE history token totals, so
+// the gauge and the budget always see the current context — including messages
+// appended since the last assembly.
 func (a *Agent) estTokensLocked() int {
-	total := len(a.systemPrompt)/4 + len(a.runningSummary)/4
-	if a.cfg.Skills != nil {
-		total += maxL0Tokens // L0 skills index is always in context
-	}
-	if a.cfg.Index != nil && a.cfg.IndexAutoInject {
-		total += maxIndexTokens // per-turn code retrieval
-	}
-	for _, chunk := range a.injected {
-		total += len(chunk) / 4
+	total := 0
+	if len(a.lastCtx) > 0 {
+		for _, s := range a.lastCtx {
+			if s.Name == "history" {
+				continue // history is counted live below
+			}
+			total += s.Tokens
+		}
+	} else {
+		total = a.sysTokens + a.summaryTokens
+		if a.cfg.Skills != nil {
+			total += maxL0Tokens // L0 skills index is always in context
+		}
+		if a.cfg.Index != nil && a.cfg.IndexAutoInject {
+			total += maxIndexTokens // per-turn code retrieval
+		}
+		for _, t := range a.injectedTokens {
+			total += t
+		}
 	}
 	for _, h := range a.history {
-		total += len(h.msg.Content)/4 + len(h.msg.ToolCallID)/4
+		total += h.tokens
 	}
 	return total
+}
+
+// tokensFor estimates the token count of text: accurate via the configured
+// server tokenizer (C1) when available, else the len/4 heuristic.
+func (a *Agent) tokensFor(ctx context.Context, text string) int {
+	if text == "" {
+		return 0
+	}
+	if a.cfg.Counter != nil {
+		if n, err := a.cfg.Counter.CountTokens(ctx, text); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return len(text) / 4
 }
 
 // budget summarizes the oldest half of history when the window is exceeded,
@@ -847,8 +1036,10 @@ func (a *Agent) budget(ctx context.Context) error {
 	}
 	summary := strings.TrimSpace(resp.Message.Content)
 
+	summaryTokens := a.tokensFor(ctx, summary)
 	a.mu.Lock()
 	a.runningSummary = summary
+	a.summaryTokens = summaryTokens
 	if len(a.history) >= len(segCopy) {
 		a.history = append([]historyEntry{}, a.history[len(segCopy):]...)
 	}

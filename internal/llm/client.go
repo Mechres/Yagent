@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -60,6 +62,12 @@ type Client struct {
 	BearerToken string
 	// Sampling is forwarded on every chat request (zero values omitted).
 	Sampling Sampling
+
+	// tokenizeOnce/tokenizePath cache which tokenizer endpoint this server
+	// exposes ("" = none), so CountTokens does not probe on every call.
+	tokenizeOnce sync.Once
+	tokenizePath string
+	tokenizeErr  error
 }
 
 // NewClient constructs a Client with default HTTP settings.
@@ -291,4 +299,74 @@ func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]f
 		vectors = append(vectors, d.Embedding)
 	}
 	return vectors, nil
+}
+
+// CountTokens returns the number of tokens the server's tokenizer assigns to
+// text. It supports llama.cpp's root /tokenize endpoint (the dev llama-server
+// on :8089) and Ollama's /api/tokenize. It returns an error when the server
+// exposes neither — callers (e.g. agent.tokensFor) fall back to len/4 then.
+// Every call is bounded by a 5s timeout so a slow server never stalls a turn.
+func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	c.tokenizeOnce.Do(func() {
+		if n, ok := c.tryTokenize(ctx, "tokenize", map[string]any{"content": "probe"}); ok && n >= 0 {
+			c.tokenizePath = "tokenize"
+			return
+		}
+		if n, ok := c.tryTokenize(ctx, "api/tokenize", map[string]any{"model": c.Model, "prompt": "probe"}); ok && n >= 0 {
+			c.tokenizePath = "api/tokenize"
+			return
+		}
+		c.tokenizeErr = errors.New("server exposes no tokenizer (no /tokenize or /api/tokenize)")
+	})
+	if c.tokenizePath == "" {
+		return 0, c.tokenizeErr
+	}
+	if c.tokenizePath == "tokenize" {
+		n, ok := c.tryTokenize(ctx, "tokenize", map[string]any{"content": text})
+		if !ok {
+			return 0, c.tokenizeErr
+		}
+		return n, nil
+	}
+	n, ok := c.tryTokenize(ctx, "api/tokenize", map[string]any{"model": c.Model, "prompt": text})
+	if !ok {
+		return 0, c.tokenizeErr
+	}
+	return n, nil
+}
+
+// tryTokenize POSTs a tokenize request and returns (count, ok). ok=false means
+// the endpoint is missing or returned something unexpected (the caller should
+// try another path, or give up).
+func (c *Client) tryTokenize(ctx context.Context, path string, body any) (int, bool) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return 0, false
+	}
+	url := strings.TrimRight(c.ServerURL, "/") + "/" + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return 0, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	var out struct {
+		Tokens []int `json:"tokens"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, false
+	}
+	return len(out.Tokens), true
 }

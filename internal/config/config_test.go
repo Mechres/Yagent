@@ -399,6 +399,29 @@ func TestSetGeneralAndValidation(t *testing.T) {
 	}
 }
 
+func TestSetConsultCmdRoundTrip(t *testing.T) {
+	path := writeConfig(t, "server_url: x\nmodel: y\n")
+	// /set consult.cmd claude -p must persist as a YAML sequence and reload
+	// into ConsultConfig.Cmd without "cannot unmarshal" errors.
+	if err := Set(path, "consult.cmd", "claude -p"); err != nil {
+		t.Fatalf("set consult.cmd: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(cfg.Consult.Cmd) != 2 || cfg.Consult.Cmd[0] != "claude" || cfg.Consult.Cmd[1] != "-p" {
+		t.Errorf("consult.cmd = %v, want [claude -p]", cfg.Consult.Cmd)
+	}
+	if cfg.Get("consult.cmd") != "claude -p" {
+		t.Errorf("Get(consult.cmd) = %q", cfg.Get("consult.cmd"))
+	}
+	// empty value is rejected (a command is required when the key is used)
+	if err := Set(path, "consult.cmd", ""); err == nil {
+		t.Error("empty consult.cmd should be rejected")
+	}
+}
+
 func TestLoadConfigTheme(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(EnvVarTheme, "")

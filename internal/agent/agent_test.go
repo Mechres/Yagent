@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -862,6 +865,90 @@ func TestParseVerdict(t *testing.T) {
 			t.Errorf("ParseVerdict(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// fixedCounter returns a fixed token count for every non-empty text, so a test
+// can prove the accurate Counter is wired into ContextUsage.
+type fixedCounter struct{ n int }
+
+func (f fixedCounter) CountTokens(ctx context.Context, text string) (int, error) {
+	if text == "" {
+		return 0, nil
+	}
+	return f.n, nil
+}
+
+func TestContextUsageUsesAccurateCounter(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{finalContent("hello world")})
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 5, Counter: fixedCounter{n: 1000}}, ws)
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	used, _ := a.ContextUsage()
+	// system (1) + user message (1) + assistant message (1) = 3, each 1000
+	if used != 3000 {
+		t.Errorf("ContextUsage = %d, want 3000 (accurate counter not wired)", used)
+	}
+}
+
+func TestTraceSegmentsSumToContextUsage(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{finalContent("hello world")})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "data")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	var trace bytes.Buffer
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 5, Counter: fixedCounter{n: 1000}, Trace: &trace}, ws)
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	used, _ := a.ContextUsage()
+	// ContextUsage = the trace's non-history sections + the LIVE history
+	// totals (history grows after the last assembly). Verify the trace file's
+	// section estimates are exactly the ones the gauge accounts from.
+	nonHist, histTrace := lastTraceSections(trace.String())
+	a.mu.RLock()
+	liveHist := 0
+	for _, h := range a.history {
+		liveHist += h.tokens
+	}
+	a.mu.RUnlock()
+	if got := nonHist + liveHist; got != used {
+		t.Errorf("ContextUsage = %d, want %d (non-history %d + live history %d)\n%s",
+			used, got, nonHist, liveHist, trace.String())
+	}
+	if histTrace > liveHist {
+		t.Errorf("trace history %d exceeds live history %d", histTrace, liveHist)
+	}
+	if !strings.Contains(trace.String(), "===== context #1 =====") {
+		t.Errorf("trace missing context marker:\n%s", trace.String())
+	}
+}
+
+// lastTraceSections parses the final trace block's per-section token counts and
+// returns (non-history total, history count). Each line is "  <name> N tok";
+// the "total" line is excluded (it is the sum of the section lines).
+func lastTraceSections(trace string) (nonHist, history int) {
+	blocks := strings.Split(trace, "===== context #")
+	if len(blocks) == 0 {
+		return 0, 0
+	}
+	re := regexp.MustCompile(`\s+(\S+)\s+(\d+)\s+tok`)
+	for _, m := range re.FindAllStringSubmatch(blocks[len(blocks)-1], -1) {
+		if m[1] == "total" {
+			continue
+		}
+		n, _ := strconv.Atoi(m[2])
+		if m[1] == "history" {
+			history = n
+		} else {
+			nonHist += n
+		}
+	}
+	return nonHist, history
 }
 
 func TestContextUsageConcurrent(t *testing.T) {

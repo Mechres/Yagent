@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -647,6 +648,67 @@ func TestStatusPills(t *testing.T) {
 	state, _ = m.statusText()
 	if !strings.Contains(state, "working") {
 		t.Errorf("busy state = %q", state)
+	}
+}
+
+func TestTranscriptFind(t *testing.T) {
+	m := testModel(t)
+	m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+	m.cfg = &config.Config{Model: "m"}
+	m.width, m.height = 80, 24
+	m.viewport = viewport.New(80, 20)
+	m.viewport.KeyMap.Up.SetEnabled(false)
+	m.viewport.KeyMap.Down.SetEnabled(false)
+
+	m.transcript = []string{
+		"> explain the budget",
+		"the budget summarizes old history",
+		"> where does budget live",
+		"budget is in agent.go",
+	}
+	m.refreshViewport()
+
+	// Ctrl+F opens find; typing narrows matches (case-insensitive)
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if !m.findOpen {
+		t.Fatal("ctrl+f did not open find")
+	}
+	m.handleFindKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("budget")})
+	if len(m.findMatches) != 4 {
+		t.Fatalf("matches = %d, want 4", len(m.findMatches))
+	}
+	// findView shows the match position
+	if v := ansiStrip(m.findView()); !strings.Contains(v, "1/4") {
+		t.Errorf("findView = %q, want 1/4", v)
+	}
+	// enter cycles to the next match
+	m.handleFindKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.findMatch != 1 {
+		t.Errorf("findMatch = %d, want 1 after enter", m.findMatch)
+	}
+	// no matches state
+	m.handleFindKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("zzz")})
+	if len(m.findMatches) != 0 {
+		t.Errorf("matches = %d, want 0", len(m.findMatches))
+	}
+	if !strings.Contains(ansiStrip(m.findView()), "no matches") {
+		t.Errorf("findView = %q", ansiStrip(m.findView()))
+	}
+	// backspace restores matches
+	m.handleFindKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	m.handleFindKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	m.handleFindKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	if len(m.findMatches) == 0 {
+		t.Error("backspace should have restored matches")
+	}
+	// esc closes and hands back to the input
+	m.handleFindKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.findOpen {
+		t.Fatal("esc did not close find")
+	}
+	// the find bar is gone from the view, the input line is back
+	if v := ansiStrip(m.View()); strings.Contains(v, "find:") || !strings.Contains(v, "message (enter") {
+		t.Errorf("find bar not cleared from view:\n%s", v)
 	}
 }
 

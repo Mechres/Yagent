@@ -56,6 +56,22 @@ func TestConsultToolUnconfigured(t *testing.T) {
 	}
 }
 
+func TestConsultToolSoftFailsOnServerError(t *testing.T) {
+	// The advisor is best-effort: a dead/erroring server must produce a
+	// graceful "continue without it" message, never a hard error that breaks
+	// the agent turn.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "model overloaded", http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	reg := NewRegistry(t.TempDir(), Options{Consult: llm.NewClient(ts.URL, "advisor")})
+	got := execTool(t, reg, "consult", map[string]any{"question": "should I proceed?"})
+	if !strings.Contains(got, "consult unavailable") || !strings.Contains(got, "continue without the advisor") {
+		t.Errorf("soft-fail consult = %q", got)
+	}
+}
+
 func TestConsultToolCLIAdvisor(t *testing.T) {
 	reg := NewRegistry(t.TempDir(), Options{ConsultCmd: []string{"echo", "ADVISOR:"}})
 	got := execTool(t, reg, "consult", map[string]any{"question": "should I do it?"})
