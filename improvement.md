@@ -232,6 +232,29 @@ hope, token frugality — implemented here:
 - #5 TUI side drawer, #6 shadow speculative execution — deferred (big TUI lift
   / single-GPU contention; same call as the earlier dual-viewport skip).
 
+Four external reviews (gemini/luna/mistral/nemotron, 2026-08-12, `ideas/` —
+untracked) deduped. Highest recurring picks shipped here:
+
+- ✅ **SlotLock — serialize inference** (gemini #3, luna #1): a process-wide,
+  per-server semaphore (`internal/llm/slot.go`) around chat/embed/tokenizer
+  requests so parallel subagents, consult and embeddings never hit a
+  single-slot llama.cpp/Ollama concurrently (HTTP 500 / VRAM thrash). Capacity
+  defaults to 1 and is raised to the server's real slot count from `/props`.
+- ✅ **Deterministic error remediation** (gemini #1): `fs_edit` "old_string not
+  found" now reports the nearest matching line (substring/Levenshtein), so a
+  typo recovers in one turn instead of three loops.
+- ✅ **Truncated tool-call recovery** (luna #2): a cut-off tool-call args
+  object (unclosed string/brace) returns "arguments were truncated (incomplete
+  JSON) — re-emit the full tool call" instead of a generic syntax error.
+- ✅ **Prose tool-call nudge** (gemini #2): when the model narrates a tool call
+  ("I will fs_read main.go") with no tool_calls emitted and no tool has run,
+  the agent nudges it to emit the call (never auto-executes); past-tense
+  mentions and code fences are ignored. Unit-tested deterministically.
+- Already covered by earlier work: mistral's arg-repair/sampling profiles/
+  pruning, gemini's pre-flight syntax + diagnostics, luna's dedup/validation
+  counters. Deferred: structured error envelopes, verify-barrier enforcement,
+  goal-progress ledger, retrieval thresholds, crash-safe undo, TUI arg editor.
+
 Making the small local model work better is now a measurable loop, not folklore. A Hermes review (2026-08-12) — "push correctness into tools, treat the model as proposer not executor" — transferred next:
 
 - ✅ **`clarify` tool** (Hermes #1/#5) — the model calls `clarify(question, choices[])` when a task is ambiguous or a decision matters; the UI renders the question as real options (REPL numbered prompt, TUI modal) and the user's pick returns to the agent as tool data (`user answered: X`). Ambiguity is now a hard stop with a structured handoff, not a prose guess. Live-verified on Qwythos (:8089): model asked via clarify, piped pick flowed back as data.

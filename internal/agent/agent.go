@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -340,6 +341,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	valFails := make(map[string]int)
 	blocked := make(map[string]bool)
 	turnCalls := 0
+	nudged := false
 	used := make(map[string]bool)
 	a.lastCallSig = ""
 
@@ -358,6 +360,19 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		}
 
 		if len(resp.ToolCalls) == 0 {
+			// Prose tool-call nudge: small models often NARRATE a tool call
+			// ("I will fs_read main.go") instead of emitting tool_calls, which
+			// would end the turn without running anything. Nudge once — never
+			// auto-execute, and only when no tool ran this turn yet.
+			if turnCalls == 0 && !nudged {
+				if nudge := proseToolNudge(resp.Message.Content); nudge != "" {
+					nudged = true
+					if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: nudge}); err != nil {
+						return "", err
+					}
+					continue
+				}
+			}
 			a.totalToolCalls += turnCalls
 			_ = a.maybeOfferSkillCreation(ctx, turnCalls) // best-effort
 			slog.Debug("final answer", "tokens", len(resp.Message.Content)/4)
@@ -557,6 +572,39 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 		}
 	}
 	return last, fmt.Errorf("goal not achieved after %d rounds", maxRounds)
+}
+
+// proseToolName matches a known tool name on a line.
+var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|index_search|index_repo|code_references|code_slice|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
+
+// intentWord marks a line as the model *planning* a tool call in prose rather
+// than reporting one it already made.
+var intentWord = regexp.MustCompile(`(?i)\b(will|let me|i'll|going to|use|should|need to)\b`)
+
+// proseToolNudge scans a final-answer draft for a tool call the model narrated
+// but did not emit (Gemini review #2). Returns a short instruction, or "" when
+// the text doesn't look like narrated intent. Detection is deliberately gated:
+// an intent-bearing line (will/let me/use/…) that names a known tool, outside
+// code fences. The caller only nudges when no tool has run this turn, and the
+// model is nudged — never auto-executed.
+func proseToolNudge(content string) string {
+	inFence := false
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if !intentWord.MatchString(line) {
+			continue
+		}
+		if m := proseToolName.FindString(line); m != "" {
+			return "You narrated a tool call (" + m + ") but did not emit it as a tool call. If you intend to run " + m + ", emit the tool call now instead of describing it. If this is truly your final answer, give the answer as plain text."
+		}
+	}
+	return ""
 }
 
 // goalDone asks the model for a DONE/CONTINUE verdict without touching history

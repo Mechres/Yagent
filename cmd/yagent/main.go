@@ -76,10 +76,16 @@ func main() {
 			MinP:              cfg.Sampling.MinP,
 		}
 		// P2 — cap the context budget at the server's real window so the
-		// agent can never push a request past n_ctx (over-length 400s).
-		if p, ok := client.ProbeServerProps(context.Background()); ok && p.NCtx > 0 && cfg.ContextWindow > p.NCtx {
-			fmt.Fprintf(os.Stderr, "note: server context window is %d (configured %d); capping the agent budget\n", p.NCtx, cfg.ContextWindow)
-			cfg.ContextWindow = p.NCtx
+		// agent can never push a request past n_ctx (over-length 400s), and
+		// raise the inference slot limit to the server's real slot count.
+		if p, ok := client.ProbeServerProps(context.Background()); ok {
+			if p.NCtx > 0 && cfg.ContextWindow > p.NCtx {
+				fmt.Fprintf(os.Stderr, "note: server context window is %d (configured %d); capping the agent budget\n", p.NCtx, cfg.ContextWindow)
+				cfg.ContextWindow = p.NCtx
+			}
+			if p.Slots > 0 {
+				llm.SetDefaultSlotLimit(p.Slots)
+			}
 		}
 		var trace io.Writer
 		if *traceFile != "" {

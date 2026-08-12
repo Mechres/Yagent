@@ -111,6 +111,29 @@ func TestFSEdit(t *testing.T) {
 	}
 }
 
+func TestNearestLineHint(t *testing.T) {
+	content := "package demo\n\nfunc helper() int {\n    return resultValue\n}\n"
+	// a typo'd target finds the closest line
+	hint := nearestLineHint(content, "    retrun resultValu")
+	if !strings.Contains(hint, "line 4") || !strings.Contains(hint, "resultValue") {
+		t.Errorf("hint = %q", hint)
+	}
+	// far-away targets produce no hint
+	if hint := nearestLineHint(content, "completely unrelated text here"); hint != "" {
+		t.Errorf("unexpected hint = %q", hint)
+	}
+	// wired into fs_edit: a bad old_string reports the nearest line
+	ws := t.TempDir()
+	writeFile(t, ws, "a.go", content)
+	reg := NewRegistry(ws, Options{})
+	res := execTool(t, reg, "fs_edit", map[string]any{
+		"path": "a.go", "old_string": "    retrun resultValu", "new_string": "    return 1",
+	})
+	if !strings.Contains(res, "nearest match at line 4") {
+		t.Errorf("fs_edit hint = %q", res)
+	}
+}
+
 func TestFuzzyResolve(t *testing.T) {
 	ws := t.TempDir()
 	writeFile(t, ws, "README.md", "# readme\n")

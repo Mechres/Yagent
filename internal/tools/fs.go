@@ -241,7 +241,7 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	n := strings.Count(old, a.OldString)
 	switch n {
 	case 0:
-		return fmt.Sprintf("error: old_string not found in %s; re-read the file and copy the exact text", a.Path), nil
+		return fmt.Sprintf("error: old_string not found in %s; re-read the file and copy the exact text%s", a.Path, nearestLineHint(old, a.OldString)), nil
 	case 1:
 		// proceed
 	default:
@@ -258,6 +258,50 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 		return fmt.Sprintf("note: path %q was resolved to %s\nedited %s:\n%s", resolved, filepath.Base(path), a.Path, simpleDiff(old, newContent, 100)), nil
 	}
 	return fmt.Sprintf("edited %s:\n%s", a.Path, simpleDiff(old, newContent, 100)), nil
+}
+
+// nearestLineHint finds the line in content most similar to the target string
+// and returns a " — nearest match at line N: ..." hint, or "" when nothing is
+// close enough. Deterministic remediation for small models that botch
+// old_string (Gemini review #1): a concrete hint recovers in one turn instead
+// of three loops.
+func nearestLineHint(content, target string) string {
+	bestLine := 0
+	bestScore := 0.0
+	for i, line := range strings.Split(content, "\n") {
+		if s := lineSimilarity(line, target); s > bestScore {
+			bestScore = s
+			bestLine = i + 1
+		}
+	}
+	if bestLine == 0 || bestScore < 0.5 {
+		return ""
+	}
+	text := strings.TrimSpace(strings.SplitN(content, "\n", bestLine)[bestLine-1])
+	if len(text) > 60 {
+		text = text[:60] + "…"
+	}
+	return fmt.Sprintf(" — nearest match at line %d: %q", bestLine, text)
+}
+
+// lineSimilarity scores how close a line is to the target: 1.0 for a substring
+// match, else 1 - normalized Levenshtein distance.
+func lineSimilarity(line, target string) float64 {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return 0
+	}
+	if strings.Contains(line, target) || strings.Contains(target, line) {
+		return 1.0
+	}
+	longer := len(line)
+	if len(target) > longer {
+		longer = len(target)
+	}
+	if longer == 0 {
+		return 0
+	}
+	return 1.0 - float64(levenshtein(line, target))/float64(longer)
 }
 
 // simpleDiff emits a crude -/+ line diff, capped at maxLines.

@@ -332,7 +332,45 @@ func decodeArgs(args json.RawMessage, v any) error {
 			return nil
 		}
 	}
+	if isTruncatedJSON(args) {
+		// A stream cut mid-tool-call (small models near the context limit):
+		// tell the model to re-emit the full call instead of chasing a syntax
+		// error it can't see (Luna review #2).
+		return validationErrorf("tool-call arguments were truncated (incomplete JSON) — re-emit the full tool call with all required fields")
+	}
 	return validationErrorf("invalid arguments: unknown or malformed fields; pass a JSON object matching the tool schema")
+}
+
+// isTruncatedJSON reports whether the raw arguments are structurally
+// incomplete: an unclosed string or more open braces/brackets than close.
+func isTruncatedJSON(args []byte) bool {
+	depth := 0
+	inString := false
+	escaped := false
+	for _, c := range args {
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
+	}
+	return depth > 0 || inString
 }
 
 func strictDecode(args json.RawMessage, v any) error {

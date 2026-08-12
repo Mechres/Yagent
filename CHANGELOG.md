@@ -5,6 +5,21 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased — 2026-08-12
 
 ### Added
+- **SlotLock (inference serialization)**: a process-wide per-server semaphore
+  serializes chat/embed/tokenizer requests so parallel subagents, consult and
+  embeddings never hit a single-slot local server concurrently (HTTP 500 / VRAM
+  thrash). Capacity defaults to 1 and is raised to the server's real slot count
+  from `/props`.
+- **Deterministic error remediation**: `fs_edit` "old_string not found" now
+  hints at the nearest matching line (substring/Levenshtein), recovering a
+  typo in one turn.
+- **Truncated tool-call recovery**: cut-off tool-call arguments return
+  "arguments were truncated (incomplete JSON) — re-emit the full tool call"
+  instead of a generic syntax error the model can't act on.
+- **Prose tool-call nudge**: when the model narrates a tool call ("I will
+  fs_read main.go") without emitting tool_calls and no tool has run this turn,
+  the agent feeds back a nudge to emit it — never auto-executing. Past-tense
+  mentions and code fences are ignored.
 - **`code_slice` tool**: reads one declaration's exact source span (body + doc
   comment) via tree-sitter instead of a whole file — ~80% fewer tokens on large
   modules (`index.SliceSymbol`).

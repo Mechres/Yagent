@@ -968,6 +968,58 @@ func TestRunSubagentRolePrompt(t *testing.T) {
 	}
 }
 
+func TestProseToolNudge(t *testing.T) {
+	// narrated intent -> nudge
+	if n := proseToolNudge("I will fs_read main.go and look at it."); !strings.Contains(n, "fs_read") {
+		t.Errorf("nudge missing for narrated read: %q", n)
+	}
+	if n := proseToolNudge("Let me use grep to search for the symbol."); !strings.Contains(n, "grep") {
+		t.Errorf("nudge missing for use-grep: %q", n)
+	}
+	// past tense (already did it) -> no nudge
+	if n := proseToolNudge("I used fs_read to read the file and it worked."); n != "" {
+		t.Errorf("past-tense narration should not nudge: %q", n)
+	}
+	// no intent word -> no nudge
+	if n := proseToolNudge("The fs_read tool returns file contents."); n != "" {
+		t.Errorf("no-intent mention should not nudge: %q", n)
+	}
+	// a tool name inside a code fence -> no nudge
+	if n := proseToolNudge("Here is an example:\n```go\n// we will call fs_read here\n```"); n != "" {
+		t.Errorf("fenced code should not nudge: %q", n)
+	}
+}
+
+func TestRunNudgesProseToolCall(t *testing.T) {
+	// the model narrates fs_read in prose; the loop nudges, then the model
+	// emits the real call and answers.
+	s := newScriptedLLM(t, [][]string{
+		finalContent("I will fs_read a.txt now."),
+		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
+		finalContent("a.txt contains payload."),
+	})
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "payload")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 10}, ws)
+
+	answer, err := a.Run(context.Background(), "read a.txt")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(answer, "payload") {
+		t.Errorf("answer = %q", answer)
+	}
+	// the nudge must have been fed back as a user message
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req := string(s.requests[1])
+	if !strings.Contains(req, "You narrated a tool call") {
+		t.Errorf("nudge not in the second request: %q", req[:min(len(req), 300)])
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",

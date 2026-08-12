@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -59,5 +60,32 @@ func TestRepairJSON(t *testing.T) {
 		if got := string(repairJSON([]byte(c.in))); got != c.want {
 			t.Errorf("repairJSON(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestTruncatedToolCallFeedback(t *testing.T) {
+	// a truncated args object must produce a "re-emit the full call" message,
+	// not a generic syntax error the model can't act on.
+	reg := NewRegistry(t.TempDir(), Options{})
+	tool, ok := reg.Get("fs_read")
+	if !ok {
+		t.Fatal("fs_read not registered")
+	}
+	_, err := tool.Execute(ctx(), []byte(`{"path": "a.tx`)) // truncated mid-string
+	if err == nil {
+		t.Fatal("truncated args should fail")
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("truncated error = %v", err)
+	}
+	// structural balance: unclosed brace
+	_, err = tool.Execute(ctx(), []byte(`{"path":"a.txt"`))
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("unclosed brace error = %v", err)
+	}
+	// a complete-but-unknown-field object is a plain validation error
+	_, err = tool.Execute(ctx(), []byte(`{"path":"a.txt","bogus":1}`))
+	if err == nil || strings.Contains(err.Error(), "truncated") {
+		t.Errorf("unknown-field error = %v", err)
 	}
 }

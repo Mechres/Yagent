@@ -146,6 +146,13 @@ type chatChunk struct {
 // response including any tool calls. It retries transport errors up to 3 times
 // with backoff; HTTP error statuses are returned as errors immediately.
 func (c *Client) ChatStream(ctx context.Context, messages []Message, tools []ToolSchema, onDelta, onReasoning func(string)) (*Response, error) {
+	// Serialize against other inference on the same single-slot server
+	// (subagents, consult, embeddings); a waiting request blocks, it never 500s.
+	release, err := acquireSlot(ctx, c.ServerURL)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	reqBody := chatCompletionRequest{Model: c.Model, Messages: messages, Stream: true, Tools: tools, Sampling: c.Sampling}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -272,6 +279,11 @@ func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]f
 	if len(texts) == 0 {
 		return nil, nil
 	}
+	release, err := acquireSlot(ctx, c.ServerURL)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	reqBody, err := json.Marshal(map[string]any{"model": model, "input": texts})
 	if err != nil {
 		return nil, fmt.Errorf("marshal embed request: %w", err)
@@ -322,6 +334,11 @@ func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]f
 func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	release, err := acquireSlot(ctx, c.ServerURL)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	c.tokenizeOnce.Do(func() {
 		if n, ok := c.tryTokenize(ctx, "tokenize", map[string]any{"content": "probe"}); ok && n >= 0 {
 			c.tokenizePath = "tokenize"
