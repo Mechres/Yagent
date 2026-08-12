@@ -54,9 +54,9 @@ func TestExportOpenAI(t *testing.T) {
 	}
 	var line struct {
 		Messages []struct {
-			Role       string `json:"role"`
-			Content    string `json:"content"`
-			ToolCalls  int    `json:"-"`
+			Role      string `json:"role"`
+			Content   string `json:"content"`
+			ToolCalls int    `json:"-"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &line); err != nil {

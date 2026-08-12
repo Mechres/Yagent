@@ -702,23 +702,23 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		return fmt.Sprintf("%s\n\n(subagent used ~%d tokens)", answer, tokens), nil
 	})
 	return agent.New(client, env.registry, approver, agent.Config{
-		OnToken:         onToken,
-		OnReasoning:     onReasoning,
-		OnTool:          onTool,
-		Store:           env.st,
-		SessionID:       env.sessionID,
-		Vectors:         env.vs,
-		ProjectVectors:  env.projVS,
-		Skills:          env.sk,
-		Index:           env.idx,
-		IndexAutoInject: true,
-		InitialHistory:  env.initialHistory,
-		InitialSummary:  env.initialSummary,
-		Window:          cfg.ContextWindow,
-		Reserve:         cfg.ContextWindow / 8, // P2: auto-reserve as a % of the window
-		Counter:         client,
-		Trace:           trace,
-		VerifyWrites:    true, // deterministic verify-don't-trust "done" gate
+		OnToken:          onToken,
+		OnReasoning:      onReasoning,
+		OnTool:           onTool,
+		Store:            env.st,
+		SessionID:        env.sessionID,
+		Vectors:          env.vs,
+		ProjectVectors:   env.projVS,
+		Skills:           env.sk,
+		Index:            env.idx,
+		IndexAutoInject:  true,
+		InitialHistory:   env.initialHistory,
+		InitialSummary:   env.initialSummary,
+		Window:           cfg.ContextWindow,
+		Reserve:          cfg.ContextWindow / 8, // P2: auto-reserve as a % of the window
+		Counter:          client,
+		Trace:            trace,
+		VerifyWrites:     true, // deterministic verify-don't-trust "done" gate
 		VramThresholdTPS: cfg.VramThresholdTPS,
 	}, ws)
 }

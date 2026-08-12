@@ -244,14 +244,14 @@ func DefaultDataDir() (string, error) {
 // default path silently falls back to built-in defaults.
 func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
-		ServerURL:      DefaultServerURL,
-		Model:          DefaultModel,
-		EmbeddingModel: DefaultEmbeddingModel,
-		ContextWindow:  DefaultContextWindow,
-		Theme:          DefaultTheme,
-		UI:             UIConfig{ShowReasoning: true, LoopGuard: true},
-		Sampling:       SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
-		Skills:         SkillsConfig{WriteApproval: false},
+		ServerURL:        DefaultServerURL,
+		Model:            DefaultModel,
+		EmbeddingModel:   DefaultEmbeddingModel,
+		ContextWindow:    DefaultContextWindow,
+		Theme:            DefaultTheme,
+		UI:               UIConfig{ShowReasoning: true, LoopGuard: true},
+		Sampling:         SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
+		Skills:           SkillsConfig{WriteApproval: false},
 		VramThresholdTPS: DefaultVramThresholdTPS,
 	}
 	dataDir, err := DefaultDataDir()

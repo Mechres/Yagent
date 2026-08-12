@@ -26,22 +26,22 @@ const (
 // OpenAI message shapes (mirrors llm.Message but flattened to the wire form
 // fine-tuners expect).
 type openAIMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
-	ToolCalls  []llm.ToolCall   `json:"tool_calls,omitempty"`
-	Name       string           `json:"name,omitempty"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCalls  []llm.ToolCall `json:"tool_calls,omitempty"`
+	Name       string         `json:"name,omitempty"`
 }
 
 type shareGPTMessage struct {
-	From  string `json:"from"`  // system | human | gpt | tool
+	From  string `json:"from"` // system | human | gpt | tool
 	Value string `json:"value"`
 }
 
 // Options control trajectory extraction.
 type Options struct {
 	Format      Format
-	MinMessages int  // skip sessions with fewer messages than this
+	MinMessages int    // skip sessions with fewer messages than this
 	SessionID   string // "" = every session
 }
 
