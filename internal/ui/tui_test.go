@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -980,6 +981,16 @@ func TestStatusTokensPerSecond(t *testing.T) {
 	state, _ := m.statusText()
 	if !strings.Contains(state, "30.0 t/s") {
 		t.Errorf("status = %q, want a 30.0 t/s reading", state)
+	}
+}
+
+func TestOfferDistillationGatedOnWork(t *testing.T) {
+	// no tool work in history -> distillation is skipped entirely (if it ran,
+	// the stub model would append the distillation prompt as a user message).
+	ag := agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 3}, t.TempDir())
+	offerDistillation(context.Background(), ag, &chatEnv{}, &bytes.Buffer{})
+	if len(ag.History()) != 0 {
+		t.Errorf("distillation ran despite no tool work: history = %d messages", len(ag.History()))
 	}
 }
 

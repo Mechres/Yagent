@@ -2,6 +2,22 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.18 — 2026-08-12
+
+### Added
+- **Post-goal playbook distillation**: after a successful autonomous goal run
+  with ≥ 3 tool calls, the agent offers to distill the workflow into a reusable
+  `.yagent/playbooks/<name>.yaml` (the model writes it with `fs_write`, or
+  declines with "no playbook"). Complements the existing end-of-turn
+  skill-creation opportunity.
+
+## v0.1.17 — 2026-08-12
+
+### Added
+- **Benchmark expansion**: the live small-model benchmark grows to six canonical
+  tasks (adds fuzzy-path, code-locate, grep-find), making the sampling sweep a
+  stabler tuning signal.
+
 ## v0.1.16 — 2026-08-12
 
 ### Fixed

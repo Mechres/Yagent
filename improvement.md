@@ -326,6 +326,15 @@ Eval/acceptance expansion (2026-08-12):
   → round done, checkpoint snapshotted), and the benchmark/fidelity evals all
   pass. The sampling sweep remains noisy at N=3 (see QA note).
 
+Skill/playbook auto-distillation (2026-08-12) — the last deferred idea from the
+6-ideas review:
+
+- ✅ **Post-goal playbook distillation** — after a successful autonomous goal
+  run with ≥ 3 tool calls, the agent offers to distill the workflow into a
+  reusable `.yagent/playbooks/<name>.yaml` (the model writes it with fs_write,
+  or declines with "no playbook"). Complements the existing end-of-turn skill-
+  creation opportunity. Live-verified on Qwythos (:8089).
+
 Making the small local model work better is now a measurable loop, not folklore. A Hermes review (2026-08-12) — "push correctness into tools, treat the model as proposer not executor" — transferred next:
 
 - ✅ **`clarify` tool** (Hermes #1/#5) — the model calls `clarify(question, choices[])` when a task is ambiguous or a decision matters; the UI renders the question as real options (REPL numbered prompt, TUI modal) and the user's pick returns to the agent as tool data (`user answered: X`). Ambiguity is now a hard stop with a structured handoff, not a prose guess. Live-verified on Qwythos (:8089): model asked via clarify, piped pick flowed back as data.

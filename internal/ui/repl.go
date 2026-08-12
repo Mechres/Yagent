@@ -537,15 +537,42 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 	if err != nil {
 		fmt.Fprintf(w, "\ngoal loop: %v\n", err)
 	}
+	_ = answer
+	if err == nil {
+		offerDistillation(ctx, ag, env, w)
+	}
 	if err := ag.Finish(ctx); err != nil {
 		fmt.Fprintf(w, "\nwarning: skill review: %v\n", err)
 	}
 	if err := memory.SummarizeSession(ctx, client, env.st, env.vs, env.sessionID); err != nil {
 		fmt.Fprintf(w, "\nwarning: session summary: %v\n", err)
 	}
-	_ = answer
 	fmt.Fprintf(w, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
 	return nil
+}
+
+// offerDistillation asks the model, after a successful autonomous goal run, to
+// save a reusable declarative playbook capturing the workflow (the model writes
+// it with fs_write; it may decline with "no playbook"). Gated on the session
+// having done real work (>= 3 tool calls) so trivial goals aren't distilled.
+func offerDistillation(ctx context.Context, ag *agent.Agent, env *chatEnv, w io.Writer) {
+	if ag == nil || env == nil {
+		return
+	}
+	toolCalls := 0
+	for _, m := range ag.History() {
+		if m.Role == "tool" {
+			toolCalls++
+		}
+	}
+	if toolCalls < 3 {
+		return
+	}
+	prompt := "One-shot distillation opportunity: this autonomous run succeeded. If the work is a repeatable multi-step workflow, write a declarative playbook to .yagent/playbooks/<name>.yaml that would reproduce it: one or more phases, each with a goal, optionally a tools subset and success checks (file_contains / file_exists / diagnostics). Use fs_write to create the file. If it was a one-off task, reply exactly: no playbook"
+	fmt.Fprintf(w, "\n[offering to distill this run into a reusable playbook…]\n")
+	if _, err := ag.Run(ctx, prompt); err != nil {
+		fmt.Fprintf(w, "\n(distillation skipped: %v)\n", err)
+	}
 }
 
 // startBackgroundIndex refreshes the code index at session start when it is
@@ -1170,6 +1197,7 @@ func (h *skillsHandler) runGoal(ag *agent.Agent, goal string) (bool, error) {
 		return true, nil
 	}
 	fmt.Fprintf(h.w, "\ngoal achieved.\n")
+	offerDistillation(h.ctx, ag, h.env, h.w)
 	return true, nil
 }
 
