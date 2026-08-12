@@ -7,7 +7,7 @@
 # OpenAI-compatible inference server (Ollama, llama.cpp — or any cloud
 # OpenAI-compatible endpoint: OpenRouter, Groq, Together, Gemini).
 server_url: http://localhost:11434
-model: qwen2.5-coder:14b
+model: Qwen3VL-8B-Instruct-Q4_K_M.gguf
 # api_key: ""                  # Bearer token for cloud endpoints (opt-in).
 #                              # YAGENT_API_KEY env var works too; local-first
 #                              # is the default (empty = no auth header).
@@ -52,6 +52,11 @@ theme: tokyo
 #   - match: Qwen3VL-8B       # recommended default on a 12 GB card (18/18)
 #     temperature: 0.6
 #     top_p: 0.95
+#   - match: Ornith-1.0-9B    # Qwen3.5 coding-agent model (14/18; fastest per task)
+#     temperature: 0.6
+#     top_p: 0.95
+#     top_k: 20
+#     repetition_penalty: 1.05
 
 # Display preferences.
 ui:

@@ -30,7 +30,7 @@ Then set up an inference server and pull a model:
 
 ```bash
 ollama serve                 # or: llama.cpp llama-server --embeddings
-ollama pull qwen2.5-coder:14b
+ollama pull qwen3vl:8b       # or your GGUF on llama.cpp (e.g. Qwen3VL-8B-Instruct-Q4_K_M.gguf)
 ollama pull nomic-embed-text
 ```
 

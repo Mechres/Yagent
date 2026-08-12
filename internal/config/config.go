@@ -171,7 +171,7 @@ type UIConfig struct {
 // Defaults applied when no config file and no env override is present.
 const (
 	DefaultServerURL      = "http://localhost:11434"
-	DefaultModel          = "qwen2.5-coder:14b"
+	DefaultModel          = "Qwen3VL-8B-Instruct-Q4_K_M.gguf"
 	DefaultEmbeddingModel = "nomic-embed-text"
 	DefaultContextWindow  = 16384
 	DefaultTheme          = "tokyo"

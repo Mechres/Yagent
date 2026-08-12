@@ -7,7 +7,7 @@ Execute in order. Do not skip ahead; each milestone's acceptance criteria must p
 ```bash
 # inference server — option A: Ollama (ROCm)
 HSA_OVERRIDE_GFX_VERSION=10.3.0 ollama serve
-ollama pull qwen2.5-coder:14b
+ollama pull qwen3vl:8b
 ollama pull nomic-embed-text
 
 # option B: llama.cpp llama-server with Vulkan
@@ -15,7 +15,7 @@ ollama pull nomic-embed-text
 
 # sanity check the OpenAI-compatible API
 curl http://localhost:11434/v1/chat/completions -H 'Content-Type: application/json' -d '{
-  "model": "qwen2.5-coder:14b",
+  "model": "qwen3vl:8b",
   "messages": [{"role":"user","content":"say ok"}],
   "stream": false
 }'
