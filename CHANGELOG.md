@@ -2,6 +2,29 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.27 — 2026-08-13
+
+### Added
+- **`diff_semantic` symbol-delta guardrail.** `fs_edit`/`fs_patch` now compare
+  the file's exported top-level declarations before/after a write
+  (`index.ExportedSymbols`) and block an edit that would silently delete a
+  public symbol (renames too — the error points at `fs_refactor`). Layered on
+  the existing tree-sitter `preflightSyntax` check; `fs_write` (full rewrites)
+  is exempt.
+- **`yagent export-dataset`.** `internal/dataset` converts verified session
+  trajectories into OpenAI-chat or ShareGPT JSONL for fine-tuning local models,
+  dropping failed turns (empty assistant replies, `[redacted]`/`[home]`
+  markers, scrubbed tool args). Flags: `--output`, `--format openai|sharegpt`,
+  `--session`, `--min-messages`.
+- **VRAM pressure detector.** `vram_threshold_tps` (default 5,
+  `YAGENT_VRAM_THRESHOLD_TPS`, `/settings` + `/set`) — the agent measures each
+  stream's t/s, flags KV-cache spill when it drops below the threshold, the
+  next `budget()` force-prunes old tool output, and the TUI shows a `⚠ VRAM`
+  pill until it clears.
+- **Qwen3VL-8B-Instruct is now the default model** (18/18 on the benchmark;
+  see `docs/models-benchmark.md`). Ornith-1.0-9B (16/18) and
+  Qwopus3.5-9B-coder-Exp (12/18 @ temp 1.0) recorded as alternatives.
+
 ## v0.1.26 — 2026-08-12
 
 ### Fixed

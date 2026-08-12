@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -84,4 +86,45 @@ func SliceSymbol(workspace, rel, symbol string) (string, bool, error) {
 		}
 	}
 	return "", false, nil
+}
+
+// ExportedSymbols returns the names of a source file's exported top-level
+// declarations (public API surface): functions, methods, types. It is the
+// symbol-delta source for the diff_semantic write guardrail — a file edit must
+// never silently drop a public symbol. Returns nil for unsupported files or
+// languages without a tree-sitter grammar.
+func ExportedSymbols(rel, content string) []string {
+	lang := languageFor(rel)
+	if lang == nil {
+		return nil
+	}
+	decls := parseDecls(rel, content, lang)
+	var out []string
+	for _, d := range decls {
+		if exportedName(lang.name, d.name) {
+			out = append(out, d.name)
+		}
+	}
+	return out
+}
+
+// exportedName reports whether a declaration name is externally visible in a
+// language. Heuristic per grammar family: Go exports uppercase initial
+// identifiers; Python has no hard keyword so we conservatively keep every
+// non-dunder top-level name; JavaScript/TypeScript export whatever `export`
+// marks, which we cannot cheaply distinguish here, so we treat all top-level
+// names as public (the guardrail errs on the safe side).
+func exportedName(langName, name string) bool {
+	if name == "" {
+		return false
+	}
+	switch langName {
+	case "go":
+		r, _ := utf8.DecodeRuneInString(name)
+		return unicode.IsUpper(r)
+	case "python":
+		return !strings.HasPrefix(name, "__") && !strings.HasPrefix(name, "_")
+	default:
+		return true
+	}
 }

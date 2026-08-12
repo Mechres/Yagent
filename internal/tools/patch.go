@@ -78,6 +78,9 @@ func (t *fsPatchTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		if msg := preflightSyntax(f.path, out); msg != "" {
 			return fmt.Sprintf("error: %s: %s", f.path, msg), nil
 		}
+		if msg := preflightSymbols(f.path, string(data), out); msg != "" {
+			return fmt.Sprintf("error: %s: %s", f.path, msg), nil
+		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}

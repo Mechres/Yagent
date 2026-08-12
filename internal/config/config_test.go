@@ -570,6 +570,28 @@ func TestLoadConfigSampling(t *testing.T) {
 		reloaded.Sampling.Temperature != 0.6 || reloaded.Sampling.MinP != 0.05 {
 		t.Errorf("round-trip sampling = %+v", reloaded.Sampling)
 	}
+
+	// vram_threshold_tps default, /set round-trip, validation
+	if cfg.VramThresholdTPS != DefaultVramThresholdTPS {
+		t.Errorf("VramThresholdTPS default = %v, want %v", cfg.VramThresholdTPS, DefaultVramThresholdTPS)
+	}
+	path = writeConfig(t, "server_url: x\nmodel: y\n")
+	if err := Set(path, "vram_threshold_tps", "3"); err != nil {
+		t.Fatalf("set vram_threshold_tps: %v", err)
+	}
+	reloaded, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("reload after Set vram: %v", err)
+	}
+	if reloaded.VramThresholdTPS != 3 {
+		t.Errorf("VramThresholdTPS after Set = %v, want 3", reloaded.VramThresholdTPS)
+	}
+	if err := Set(path, "vram_threshold_tps", "abc"); err == nil {
+		t.Error("non-numeric vram_threshold_tps should be rejected")
+	}
+	if err := Set(path, "vram_threshold_tps", "-1"); err == nil {
+		t.Error("negative vram_threshold_tps should be rejected")
+	}
 }
 
 func TestSettingsCatalogAndGet(t *testing.T) {

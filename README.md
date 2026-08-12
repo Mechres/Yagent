@@ -16,7 +16,7 @@ A local-first AI agent for **code, audit, review, web search and research** — 
 - **Web tools** — `web_search` (DuckDuckGo default, Mojeek/SearXNG alternatives, provider fallback) and `web_fetch` with HTML→text extraction.
 - **Orchestration** — goal mode with workspace checkpoints and `--resume-goal`, declarative **playbooks** (`.yagent/playbooks/*.yaml`), parallel subagents with preset **roles** (architect/auditor/test-engineer/docs-writer), tool subsets and a shared scratchpad, an advisor (`consult`) model, and **`clarify`/`plan`** tools for structured user handoffs.
 - **Two UIs** — a bubbletea TUI and a plain REPL sharing one runtime: 24-bit themes (Tokyo Night default; Catppuccin/Nord in `/settings`), pill header/status bar with a live context gauge, markdown rendering, collapsible "thinking" blocks, **Ctrl+F transcript search**, and interactive settings/sessions/skills modals.
-- **Tuning & diagnostics** — per-model sampling profiles, `sampling.min_p`/`repetition_penalty` knobs, context-window auto-detect (budget capped at the server's real `n_ctx`), `yagent doctor`, **`yagent calibrate`** (live benchmark across sampling recipes), `--trace` prompt dumps, a golden YAML eval harness, and a live small-model benchmark.
+- **Tuning & diagnostics** — per-model sampling profiles, `sampling.min_p`/`repetition_penalty` knobs, context-window auto-detect (budget capped at the server's real `n_ctx`), `yagent doctor`, **`yagent calibrate`** (live benchmark across sampling recipes), `--trace` prompt dumps, a golden YAML eval harness, a live small-model benchmark, a **VRAM pressure detector** (auto-prunes context when streaming slows — KV spill), a **symbol-delta write guardrail** (an edit can't silently delete an exported symbol), and **`yagent export-dataset`** (verified sessions → OpenAI/ShareGPT fine-tuning JSONL).
 
 ## Install
 
@@ -42,6 +42,7 @@ yagent chat                   # streaming TUI (or REPL with --plain)
 yagent chat --goal "refactor the parser package"
 yagent chat --playbook release-checklist   # run a declarative workflow
 yagent calibrate              # tune sampling for your local model
+yagent export-dataset --output fine-tune.jsonl --format sharegpt   # turn verified sessions into a training set
 yagent sessions export <id> --format html  # share a session as HTML
 ```
 

@@ -465,3 +465,56 @@ was superseded mid-inspection — that work is already shipped (per-hunk walker
 
 Telemetry/metrics, Docker/systemd units, man pages, docs site, embedded
 inference, MCP client, cloud provider SDKs (CI already ships).
+
+## Review batch 2026-08-13 (7 proposals — 3 shipped, 4 rejected)
+
+A seven-proposal "local-LLM-first" review (2026-08-13). Screened against the
+codebase; three implemented (all tested), four rejected. **Rejected items are
+closed with reasons — do not re-propose them without new evidence.**
+
+### Shipped
+
+- ✅ **diff_semantic symbol-delta guardrail** (proposal #2) — `fs_edit`/`fs_patch`
+  now compare the file's exported top-level declarations before/after a write
+  (`index.ExportedSymbols`: Go = uppercase, Python = non-dunder, others = all
+  names) and block an edit that would silently delete a public symbol (renames
+  too — the error tells the model to use `fs_refactor`). Layered on the existing
+  `preflightSyntax` check; `fs_write` (full rewrites) is exempt. Covered by
+  `TestPreflightBlocksExportedDeletion`.
+- ✅ **`yagent export-dataset`** (proposal #5) — `internal/dataset` converts
+  verified session trajectories to OpenAI-chat or ShareGPT JSONL, dropping
+  failed turns (empty assistant replies, `[redacted]`/`[home]` markers, scrubbed
+  tool args). CLI: `--output`, `--format openai|sharegpt`, `--session`,
+  `--min-messages`. No new deps (own JSON encoder).
+- ✅ **VRAM pressure detector** (proposal #6) — `vram_threshold_tps` (default 5,
+  `YAGENT_VRAM_THRESHOLD_TPS`, `/settings` + `/set`): the agent measures each
+  stream's t/s (content + reasoning), flags pressure when it drops below the
+  threshold (the KV-cache spill signature), the next `budget()` force-prunes
+  old tool output even when under the window, and the TUI shows a `⚠ VRAM` pill
+  until it clears. Covered by `TestVramPressureDetectAndPrune`.
+
+### Rejected (do not re-propose)
+
+- ⚪ **`code_skeleton` AST focal-point folding** (proposal #1) — *already
+  covered by three existing tools:* `code_slice(path, symbol)` returns exactly
+  the focal declaration's span (~80% cheaper than fs_read), `code_outline`
+  lists signatures without bodies, and the code-injection path already
+  collapses chunk bodies to `// …` under budget. A "focal symbol + folded
+  neighbors" variant adds a fourth tool with marginal savings.
+- ⚪ **In-memory workspace staging overlay (`/stage`)** (proposal #4) — a
+  virtual filesystem layer across all write tools is a large architectural
+  change for marginal safety gain: `/undo` (per-turn write buffer), `/checkpoint`
+  (goal-mode snapshots) and `shell.sandbox: bwrap` already cover the
+  rollback/safety story, including under `--yolo`.
+- ⚪ **`task_decompose` multi-file decomposer** (proposal #7) — subagents are
+  **read-only by design** (M7 v1) and already have parallel `tasks[]`; a
+  writable multi-file decomposer requires the C3 structured subagent workspace,
+  which is deliberately **gated** (the live fidelity eval shows string summaries
+  lose zero facts). Contradicts the design until C3 un-gates.
+- ⚪ **Pythonic tool-call format support** (LFM2.5-style `[tool(args)]`) —
+  Yagent speaks OpenAI `tool_calls` end-to-end; llama.cpp already bridges
+  Pythonic models to that format. LFM2.5's card says to force JSON via the
+  system prompt (a per-model prompt hint, not a parser) and admits it is "not
+  the best fit for heavy programming". A format-translation layer for one
+  mid-tier model is not worth the complexity. If a future top-tier model is
+  Pythonic-native, revisit.

@@ -89,3 +89,59 @@ func TestPreflightBlocksBrokenEdit(t *testing.T) {
 		t.Errorf("markdown write blocked: %q", res4)
 	}
 }
+
+func TestPreflightBlocksExportedDeletion(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "api.go", `package demo
+
+// ExportedFunc is public API.
+func ExportedFunc() int {
+    return 42
+}
+
+func helper() int { return 1 }
+`)
+	reg := NewRegistry(ws, Options{})
+
+	// deleting an exported function in a targeted edit is blocked
+	res := execTool(t, reg, "fs_edit", map[string]any{
+		"path": "api.go", "old_string": "func ExportedFunc() int {\n    return 42\n}\n\n", "new_string": "",
+	})
+	if !strings.Contains(res, "exported symbol") {
+		t.Fatalf("exported deletion not blocked: %q", res)
+	}
+	data, _ := os.ReadFile(filepath.Join(ws, "api.go"))
+	if strings.Contains(string(data), "return 42") == false {
+		t.Errorf("exported symbol removal was written to disk: %q", data)
+	}
+	if !strings.Contains(string(data), "ExportedFunc") {
+		t.Errorf("ExportedFunc was removed despite the block: %q", data)
+	}
+
+	// an unexported (lowercase) function may be removed in the same file
+	res2 := execTool(t, reg, "fs_edit", map[string]any{
+		"path": "api.go", "old_string": "func helper() int { return 1 }\n", "new_string": "",
+	})
+	if !strings.Contains(res2, "edited") {
+		t.Errorf("unexported deletion blocked: %q", res2)
+	}
+
+	// renaming a public function removes the old exported symbol — blocked in
+	// a targeted edit (use fs_refactor for renames)
+	writeFile(t, ws, "b.go", "package demo\n\nfunc Original() int { return 1 }\n")
+	res3 := execTool(t, reg, "fs_edit", map[string]any{
+		"path": "b.go", "old_string": "func Original()", "new_string": "func Renamed()",
+	})
+	if !strings.Contains(res3, "exported symbol") {
+		t.Errorf("rename of exported symbol not blocked: %q", res3)
+	}
+
+	// fs_write (full rewrite) is NOT subject to the symbol-delta guardrail —
+	// the model may intentionally replace the whole file.
+	res4 := execTool(t, reg, "fs_write", map[string]any{
+		"path": "c.go", "content": "package demo\n\nfunc OnlyOne() int { return 1 }\n",
+	})
+	if !strings.Contains(res4, "wrote") {
+		t.Errorf("fs_write blocked: %q", res4)
+	}
+}

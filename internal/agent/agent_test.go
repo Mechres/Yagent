@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/llm"
@@ -945,6 +946,63 @@ func TestBudgetPrunesToolOutputsBeforeSummarizing(t *testing.T) {
 	}
 }
 
+func TestVramPressureDetectAndPrune(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 5, Window: 8000, Reserve: 1000, VramThresholdTPS: 5.0}, ws)
+
+	// A slow stream (few tokens over a long wall time) must flag pressure.
+	a.detectVramPressure(time.Now().Add(-10*time.Second), 20, 10) // 3 t/s < 5
+	if !a.ContextPressure() {
+		t.Fatal("slow stream did not flag VRAM pressure")
+	}
+
+	// A fast stream clears nothing but never flags.
+	a.mu.Lock()
+	a.pressure = false
+	a.mu.Unlock()
+	a.detectVramPressure(time.Now(), 2000, 1000) // very high t/s
+	if a.ContextPressure() {
+		t.Fatal("fast stream flagged VRAM pressure")
+	}
+
+	// Now prime a small history and a real pressure flag: budget() must prune
+	// tool output even though the context is UNDER the window (the force-prune
+	// path is the whole point of the feature).
+	bigTool := strings.Repeat("tool result line\n", 1600)
+	a.mu.Lock()
+	a.history = []historyEntry{
+		{msg: llm.Message{Role: "user", Content: "first instruction keep me"}},
+		{msg: llm.Message{Role: "tool", Content: bigTool, ToolCallID: "c1"}},
+		{msg: llm.Message{Role: "tool", Content: bigTool, ToolCallID: "c2"}},
+		{msg: llm.Message{Role: "user", Content: "current turn"}},
+	}
+	for i := range a.history {
+		a.history[i].tokens = len(a.history[i].msg.Content)/4 + len(a.history[i].msg.ToolCallID)/4
+	}
+	a.pressure = true
+	a.mu.Unlock()
+
+	if err := a.budget(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.pressure {
+		t.Error("budget did not consume the pressure flag")
+	}
+	pruned := 0
+	for _, h := range a.history {
+		if h.msg.Role == "tool" && strings.Contains(h.msg.Content, "tool output concealed") {
+			pruned++
+		}
+	}
+	if pruned != 2 {
+		t.Errorf("force-pruned %d tool messages, want 2 (pressure prune under window)", pruned)
+	}
+}
+
 func TestVerifySkillPass(t *testing.T) {
 	s := newScriptedLLM(t, [][]string{
 		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
@@ -958,7 +1016,10 @@ func TestVerifySkillPass(t *testing.T) {
 
 	answer, err := VerifySkill(context.Background(), client, reg, &stubApprover{allow: true}, skillContent, ws)
 	if err != nil {
-		t.Fatalf("VerifySkill: %v", err)
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer, "PASS") {
+		t.Errorf("answer = %q, want PASS", answer)
 	}
 	if ParseVerdict(answer) != "PASS" {
 		t.Errorf("verdict = %q (answer %q)", ParseVerdict(answer), answer)

@@ -178,6 +178,12 @@ type Config struct {
 	// to ContextUsage.
 	Trace io.Writer
 
+	// VramThresholdTPS, when > 0, flags context pressure when a stream's
+	// average generation speed drops below this t/s. The next budget() call
+	// then force-prunes old tool output even when under the window (a slow
+	// stream on a 12 GB card usually means the KV cache spilled to RAM).
+	VramThresholdTPS float64
+
 	// InitialHistory/InitialSummary seed a resumed session (chat --continue).
 	InitialHistory []llm.Message
 	InitialSummary string
@@ -256,6 +262,11 @@ type Agent struct {
 	injectedTokens []int
 	lastCtx        []traceSection
 	traceSeq       int
+
+	// pressure is set when a stream's t/s fell below VramThresholdTPS, i.e.
+	// the KV cache likely spilled out of VRAM. budget() consumes it to force a
+	// prune on the next request, then clears it.
+	pressure bool
 }
 
 // New constructs an Agent bound to a workspace and tool registry.
@@ -371,6 +382,15 @@ func (a *Agent) ContextUsage() (used, limit int) {
 	return a.estTokensLocked(), a.cfg.Window
 }
 
+// ContextPressure reports whether the last stream was slow enough to suggest
+// VRAM pressure (KV cache spill). The UI shows a warning until budget()
+// consumes the flag and force-prunes. Safe to call while a turn runs.
+func (a *Agent) ContextPressure() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.pressure
+}
+
 // Run processes one user input through the loop and returns the final answer
 // text (which was also streamed via cfg.OnToken).
 func (a *Agent) Run(ctx context.Context, input string) (string, error) {
@@ -408,6 +428,8 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		reqCtx, reqCancel := context.WithCancel(ctx)
 		tail := &strings.Builder{}
 		looped := false
+		streamStart := time.Now()
+		var streamTokens, streamReasoning int
 		detect := func(d string) {
 			tail.WriteString(d)
 			if RepeatLoop(tail.String()) {
@@ -417,12 +439,14 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		}
 		resp, err := a.llm.ChatStream(reqCtx, a.assembleContext(recall, code), a.activeToolSchemas(input, used),
 			func(d string) {
+				streamTokens += len(d) / 4
 				if a.cfg.OnToken != nil {
 					a.cfg.OnToken(d)
 				}
 				detect(d)
 			},
 			func(d string) {
+				streamReasoning += len(d) / 4
 				if a.cfg.OnReasoning != nil {
 					a.cfg.OnReasoning(d)
 				}
@@ -440,6 +464,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		a.detectVramPressure(streamStart, streamTokens, streamReasoning)
 		if _, err := a.appendMessage(ctx, resp.Message); err != nil {
 			return "", err
 		}
@@ -1274,15 +1299,21 @@ func (a *Agent) budget(ctx context.Context) error {
 	}
 	a.mu.RLock()
 	over := a.estTokensLocked() > limit
+	pressure := a.pressure
+	if pressure {
+		// Consume the VRAM-pressure flag so a single slow stream causes one
+		// force-prune, not a permanent throttle.
+		a.pressure = false
+	}
 	a.mu.RUnlock()
-	if !over {
+	if !over && !pressure {
 		return nil
 	}
 	// P4 — before falling back to summarization, try pruning OLD tool outputs
 	// to a one-line marker. Tool results are the biggest, least valuable part
 	// of history; collapsing them preserves the user's instructions and the
 	// model's own reasoning turns, which the running summary would otherwise
-	// condense away.
+	// condense away. Under VRAM pressure we prune even when under the window.
 	if a.pruneToolOutputs(limit) {
 		return nil
 	}
@@ -1385,6 +1416,28 @@ func (a *Agent) pruneToolOutputs(limit int) bool {
 // markerTokens is the heuristic token estimate of the one-line tool-output
 // marker used by pruneToolOutputs.
 const markerTokens = 8
+
+// detectVramPressure measures the average t/s of a completed stream (content +
+// reasoning) and flags context pressure when it drops below the configured
+// threshold — the signature of the KV cache spilling out of VRAM into system
+// RAM on a consumer card. The next budget() consumes the flag and force-prunes
+// tool output to pull the context back inside the GPU.
+func (a *Agent) detectVramPressure(start time.Time, tokens, reasoning int) {
+	if a.cfg.VramThresholdTPS <= 0 {
+		return
+	}
+	el := time.Since(start).Seconds()
+	if el < 1.0 {
+		return // too short to measure reliably
+	}
+	tps := float64(tokens+reasoning) / el
+	if tps < a.cfg.VramThresholdTPS {
+		a.mu.Lock()
+		a.pressure = true
+		a.mu.Unlock()
+		slog.Info("VRAM pressure detected (slow stream)", "tps", tps, "threshold", a.cfg.VramThresholdTPS)
+	}
+}
 
 // dispatchAll runs tool calls: read-only batches execute concurrently, any
 // write/destructive call forces sequential execution after approval.

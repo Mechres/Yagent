@@ -49,6 +49,11 @@ type Config struct {
 	// Consult points the `consult` tool at a second local model ("advisor")
 	// the agent can ask for guidance. Empty = disabled.
 	Consult ConsultConfig `yaml:"consult"`
+	// VramThresholdTPS flags context pressure when a stream's average
+	// generation speed drops below this many tokens/second (0 = off). A slow
+	// stream on a 12 GB card usually means the KV cache spilled out of VRAM;
+	// the agent then force-prunes old tool output to pull context back.
+	VramThresholdTPS float64 `yaml:"vram_threshold_tps"`
 	// Path is the config file this was loaded from ("" when none existed);
 	// used to persist runtime toggles like skills.write_approval.
 	Path string `yaml:"-"`
@@ -175,6 +180,10 @@ const (
 	DefaultEmbeddingModel = "nomic-embed-text"
 	DefaultContextWindow  = 16384
 	DefaultTheme          = "tokyo"
+	// DefaultVramThresholdTPS flags context pressure when streaming drops below
+	// this t/s (0 = off). A 12 GB card normally streams 30–50 t/s; a collapse
+	// to 1–2 t/s means the KV cache spilled into system RAM.
+	DefaultVramThresholdTPS = 5.0
 	// DefaultTemperature / DefaultTopP follow the Qwythos-9B recipe (0.6 /
 	// 0.95). TopK (20) and RepetitionPenalty (1.05) are documented but not
 	// defaulted, since some OpenAI-compatible endpoints reject them.
@@ -203,6 +212,7 @@ const (
 	EnvVarConsultModel    = "YAGENT_CONSULT_MODEL"
 	EnvVarConsultAPIKey   = "YAGENT_CONSULT_API_KEY"
 	EnvVarShellSandbox    = "YAGENT_SHELL_SANDBOX"
+	EnvVarVramThreshold   = "YAGENT_VRAM_THRESHOLD_TPS"
 )
 
 // DefaultPath is the config file used when no explicit path is given.
@@ -242,6 +252,7 @@ func LoadConfig(path string) (*Config, error) {
 		UI:             UIConfig{ShowReasoning: true, LoopGuard: true},
 		Sampling:       SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
 		Skills:         SkillsConfig{WriteApproval: false},
+		VramThresholdTPS: DefaultVramThresholdTPS,
 	}
 	dataDir, err := DefaultDataDir()
 	if err != nil {
@@ -333,6 +344,13 @@ func LoadConfig(path string) (*Config, error) {
 	if v := os.Getenv(EnvVarShellSandbox); v != "" {
 		cfg.Shell.Sandbox = v
 	}
+	if v := os.Getenv(EnvVarVramThreshold); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("%s must be a number >= 0, got %q", EnvVarVramThreshold, v)
+		}
+		cfg.VramThresholdTPS = n
+	}
 
 	if cfg.ServerURL == "" {
 		cfg.ServerURL = DefaultServerURL
@@ -417,6 +435,7 @@ func Settings() []SettingKey {
 		{Key: "skills.data_dir", Label: "Skills data dir"},
 		{Key: "skills.project_dir", Label: "Skills project dir"},
 		{Key: "shell.sandbox", Label: "Shell sandbox", Options: []string{"", "bwrap"}},
+		{Key: "vram_threshold_tps", Label: "VRAM pressure t/s threshold (0 = off; auto-prunes context when streaming slows)"},
 		{Key: "consult.server_url", Label: "Consult server URL"},
 		{Key: "consult.model", Label: "Consult model"},
 		{Key: "consult.api_key", Label: "Consult API key"},
@@ -471,6 +490,8 @@ func (c *Config) Get(key string) string {
 		return c.Skills.ProjectDir
 	case "shell.sandbox":
 		return c.Shell.Sandbox
+	case "vram_threshold_tps":
+		return strconv.FormatFloat(c.VramThresholdTPS, 'f', -1, 64)
 	case "consult.server_url":
 		return c.Consult.ServerURL
 	case "consult.model":
@@ -559,6 +580,7 @@ func validateKey(parts []string, value string) error {
 		"web_search.provider": true, "web_search.searxng_url": true,
 		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
 		"shell.sandbox":      true,
+		"vram_threshold_tps": true,
 		"consult.server_url": true, "consult.model": true, "consult.api_key": true,
 		"consult.cmd": true,
 	}
@@ -590,6 +612,11 @@ func validateKey(parts []string, value string) error {
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil || f < 0 || f > 2 {
 			return &ValidationError{msg: key + " must be a number between 0 and 2"}
+		}
+	case "vram_threshold_tps":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || f < 0 {
+			return &ValidationError{msg: "vram_threshold_tps must be a non-negative number (0 = off)"}
 		}
 	case "sampling.top_k":
 		n, err := strconv.Atoi(value)
@@ -631,7 +658,7 @@ func typedScalar(key, value string) *yaml.Node {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
 	case "context_window", "top_k", "reasoning_max_tokens":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
-	case "temperature", "top_p", "repetition_penalty", "min_p":
+	case "temperature", "top_p", "repetition_penalty", "min_p", "vram_threshold_tps":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: value}
 	case "cmd":
 		// consult.cmd is stored as a YAML sequence: "/set consult.cmd claude -p"

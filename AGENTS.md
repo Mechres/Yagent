@@ -61,6 +61,7 @@ Yagent is a **local-first AI agent** (code / audit / review / web search / resea
 - v0.1.24 model-guidance refresh 2 (all tested): benchmarked **Qwen3-8B** (non-VL, 14/18 — but thinks by default on llama.cpp, ~4× slower than the VL) and **LFM2.5-2.6B** (13/18 — surprisingly capable for 1.7 GB, but 0/3 on edit-verify/loops and overthinks on multi-turn). Verdict recorded: Qwen3VL-8B stays the recommended default; the plain Qwen3-8B is strictly worse for Yagent on llama.cpp.
 - v0.1.25 model-guidance refresh 3 (all tested): benchmarked **LFM2.5-8B-A1B-UD** with its recommended recipe (10 → 13/18 — per-model sampling helps) and re-ran **LFM2.5-2.6B** with its recipe (14 → 13/18 — within noise; its default is already good). Verdict: per-model sampling matters but must be measured per model; both LFM models loop into "max iterations" on edit-verify/multi-turn. `config.example.yaml` gained split `models:` profiles for the two LFM variants.
 - v0.1.26 dedup fix (all tested, found via LFM2.5 live-tracing): **tool-call dedup no longer skips read-only tools** — an identical re-read was skipped as "duplicate", which a small model reads as "didn't run, retry" and loops on forever (the edit-verify task loop). Dedup now applies only to writes/destructive tools; repeated reads are legitimate (verify-don't-trust) and the `fs_read` cache returns a `[cached]` marker for unchanged files. LFM2.5's remaining edit-verify/code-locate failures are genuine model weaknesses, not misconfiguration — its raw `tool_calls` emission is correct.
+- v0.1.27 review batch (all tested): **diff_semantic symbol-delta guardrail** — `fs_edit`/`fs_patch` compare the file's exported top-level declarations before/after a write (`index.ExportedSymbols`; Go = uppercase, Python = non-dunder, others = all names) and block an edit that would silently delete a public symbol (renames too — use `fs_refactor`); layered on the existing `preflightSyntax` check, and `fs_write` (full rewrites) is exempt; **`yagent export-dataset`** (`internal/dataset`) — exports verified session trajectories as OpenAI-chat or ShareGPT JSONL, dropping failed turns (empty assistant replies, `[redacted]`/`[home]` markers, scrubbed tool args); **VRAM pressure detector** (`vram_threshold_tps`, default 5, `YAGENT_VRAM_THRESHOLD_TPS`) — the agent measures each stream's t/s (content + reasoning), flags pressure when it drops below the threshold (KV-cache spill signature), the next `budget()` force-prunes old tool output even when under the window, and the TUI shows a `⚠ VRAM` pill until it clears. New default model: **Qwen3VL-8B-Instruct** (18/18, see `docs/models-benchmark.md`; Ornith 16/18 and Qwopus 12/18 @ temp 1 recorded).
 
 ## Commands
 
@@ -86,6 +87,7 @@ internal/
   memory/          conversation store, summarization, vector memory
   skills/          procedural memory: SKILL.md store, progressive disclosure (M3.5)
   index/           repo indexer: chunking + embeddings + semantic search
+  dataset/         session → fine-tuning JSONL exporter (export-dataset)
   ui/              CLI REPL first; bubbletea TUI in M6
 ```
 

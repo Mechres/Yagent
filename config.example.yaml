@@ -79,6 +79,12 @@ skills:
 shell:
   sandbox: ""                 # "bwrap" wraps shell_exec in bubblewrap (Linux)
 
+# VRAM pressure detector: when a stream's average t/s drops below this
+# threshold (KV-cache spill signature on a 12 GB card), the next request
+# force-prunes old tool output and the TUI shows a ⚠ VRAM pill. 0 = off.
+# (also YAGENT_VRAM_THRESHOLD_TPS)
+vram_threshold_tps: 5
+
 consult:                      # the `consult` tool (advisor). Disabled until set.
   # server_url: http://localhost:11434
   # model: qwen2.5-coder:14b

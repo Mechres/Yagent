@@ -289,6 +289,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	if msg := preflightSyntax(a.Path, newContent); msg != "" {
 		return "error: " + msg, nil
 	}
+	if msg := preflightSymbols(a.Path, old, newContent); msg != "" {
+		return "error: " + msg, nil
+	}
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}

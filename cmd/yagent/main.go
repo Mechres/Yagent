@@ -15,6 +15,7 @@ import (
 
 	"github.com/Mechres/Yagent/internal/bench"
 	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/dataset"
 	"github.com/Mechres/Yagent/internal/doctor"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/logx"
@@ -108,6 +109,19 @@ func main() {
 		}
 	case "sessions":
 		if err := runSessionsCmd(cfg, args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	case "export-dataset":
+		fs := flag.NewFlagSet("export-dataset", flag.ContinueOnError)
+		output := fs.String("output", "", "write the dataset to this file (default: stdout)")
+		format := fs.String("format", "openai", "output format: openai | sharegpt")
+		sessionID := fs.String("session", "", "only export this session id (default: all)")
+		minMsgs := fs.Int("min-messages", 2, "skip sessions with fewer messages than this")
+		if err := fs.Parse(args[1:]); err != nil {
+			os.Exit(2)
+		}
+		if err := runExportDataset(cfg, *output, *format, *sessionID, *minMsgs); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -215,7 +229,7 @@ const bashCompletion = `# yagent bash completion — source with: source <(yagen
 _yagent() {
     local cur
     cur="${COMP_WORDS[COMP_CWORD]}"
-    local commands="chat sessions skills doctor completion playbook calibrate bench"
+    local commands="chat sessions skills doctor completion playbook calibrate bench export-dataset"
     local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo"
     local skills_cmds="list import"
     local scopes="global project"
@@ -255,7 +269,7 @@ esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent export-dataset [--output file] [--format openai|sharegpt] [--session <id>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 
@@ -705,6 +719,37 @@ func noteRedacted(md string) {
 	if strings.Contains(md, "[redacted]") || strings.Contains(md, "[home]") {
 		fmt.Println("note: this export contains [redacted]/[home] markers — the original session had secrets scrubbed from storage")
 	}
+}
+
+// runExportDataset writes fine-tuning trajectories from sessions to a JSONL
+// file (or stdout), skipping failed/redacted turns.
+func runExportDataset(cfg *config.Config, output, format, sessionID string, minMsgs int) error {
+	st, err := memory.Open(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer st.Close()
+
+	var w io.Writer = os.Stdout
+	var f *os.File
+	if output != "" && output != "-" {
+		f, err = os.Create(output)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		w = f
+	}
+	n, err := dataset.Export(context.Background(), st, w, dataset.Options{
+		Format:      dataset.Format(format),
+		SessionID:   sessionID,
+		MinMessages: minMsgs,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "wrote %d trajectory(ies) in %s format\n", n, format)
+	return nil
 }
 
 // runSessions lists persisted sessions, newest first.

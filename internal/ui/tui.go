@@ -2095,6 +2095,9 @@ func (m *tuiModel) statusView() string {
 	used, limit := m.ag.ContextUsage()
 	parts = append(parts, th.pill(th.Surface, color, false).Render(iconCtx+" "+m.ctxGauge(used, limit)))
 	parts = append(parts, th.pill(th.Surface, th.Muted, false).Render(iconTool+" "+fmt.Sprint(m.toolCalls)))
+	if m.ag.ContextPressure() {
+		parts = append(parts, th.pill(th.Error, "#ffffff", true).Render("⚠ VRAM"))
+	}
 	if m.yoloToggler != nil && m.yoloToggler.IsYOLO() {
 		parts = append(parts, th.pill(th.Error, "#ffffff", true).Render(iconYOLO+" YOLO"))
 	}
