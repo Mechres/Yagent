@@ -616,3 +616,59 @@ rejected/covered with reasons.
   tool-loop breaker, convergence nudge, agent loop guard, and structured error
   envelopes. A persistent aggregate hint in the system prompt adds marginal
   value over the existing immediate per-failure feedback.
+
+## Review batch 2026-08-13 (fourth agy review — 8 proposals: 4 shipped, 4 skipped)
+
+A fourth agy review (2026-08-13, A–H) verified against improvement.md — none
+repeat closed items. Four implemented (all tested), four skipped with reasons.
+A reviewer's independent pass corrected three implementation details before they
+shipped (syntax-only on refactor, cache invalidation, candidates-not-truth).
+
+### Shipped
+
+- ✅ **fs_refactor write guardrails** (A) — the rename tool was the only writer
+  with no preflight. Now every rewritten file is validated with the tree-sitter
+  syntax check **before any write** (all-or-nothing — a project-wide rename
+  touches many files at once). The exported-symbol delta guardrail is
+  deliberately NOT applied: a rename `Foo→Bar` removes `Foo` by design, so it
+  would block every public rename. Covered by
+  `TestRefactorPreflightBlocksBrokenRewrite`.
+- ✅ **Structured-file preflight (YAML + JSON)** (B) — `preflightStructured`
+  validates `.yaml`/`.yml` (yaml.v3) and `.json` (encoding/json) before write,
+  blocking a malformed config/playbook/skill-frontmatter with a parse error
+  instead of breaking the next reload cryptically. Wired into fs_write, fs_edit
+  (both paths), fs_patch, and fs_refactor. TOML deliberately dropped — no dep
+  and Yagent config is YAML. Covered by `TestPreflightStructuredFiles`.
+- ✅ **Cross-turn read-tool result cache** (C) — pure read tools
+  (grep/glob/index_search/code_references/code_outline/code_slice/
+  code_topology/code_impact/code_unused) memoize results keyed by canonical
+  (tool, args) — key order/whitespace normalized. **Invalidated by any
+  write/destructive tool (and index_repo)**, so a cached answer can never
+  outlive the change that made it stale; network/git/diagnostics excluded.
+  Bounded at 64 entries. Returns a `[cached result]` marker. Distinct from the
+  loop-breaker (which nudges; this answers). Covered by `TestReadResultCache` +
+  `TestDispatchCachesAndInvalidatesReads`.
+- ✅ **`code_unused` dead-symbol candidates** (H) — inverts `index_calls`:
+  exported top-level symbols with zero call sites anywhere (tests are indexed,
+  so test-only symbols are NOT reported). Explicitly labeled **candidates, not
+  truth** — interface implementations and dynamic dispatch produce no call
+  edges, so the model must verify before deleting. Covered by `TestCodeUnused`.
+
+### Skipped (do not re-propose)
+
+- ⚪ **Local fine-tune pipeline / axolotl + QLoRA config** (D) — `export-dataset`
+  already emits OpenAI/ShareGPT/DPO JSONL; the missing piece is a training
+  script/config, which is plumbing rather than agent logic and trains models
+  the project doesn't distribute. A documentation note / `--format axolotl` is a
+  possible future add, but it is not a Yagent runtime feature.
+- ⚪ **Embedding request batching** (E) — **already done** (the proposal's claim
+  was false): `embedChunks` batches 8 chunks/request (index.go) and
+  `client.Embed` sends them in one HTTP call (client.go) under a single
+  SlotLock acquisition.
+- ⚪ **Reasoning cache for retried/identical prompts** (F) — too risky: replaying
+  a stale chain-of-thought alongside fresh content invites incoherent answers,
+  and the loop-guard already re-streams identical context. The 25s→5s win is
+  already captured by `sampling.reasoning_max_tokens`.
+- ⚪ **Adaptive reasoning budget** (G) — a write-vs-read heuristic for the
+  reasoning cap is exactly the kind of tuning that needs real model evidence;
+  `reasoning_max_tokens` is a deliberate manual knob. No quality proof offered.

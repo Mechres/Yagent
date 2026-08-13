@@ -177,3 +177,40 @@ func TestEditWhitespaceNormalizedMatch(t *testing.T) {
 		t.Errorf("ambiguous whitespace match auto-applied: %q", res2)
 	}
 }
+
+func TestPreflightStructuredFiles(t *testing.T) {
+	ws := t.TempDir()
+	reg := NewRegistry(ws, Options{})
+
+	// a malformed YAML write is blocked and never lands on disk
+	res := execTool(t, reg, "fs_write", map[string]any{
+		"path": "cfg.yaml", "content": "server_url: http://x\nskills:\n  write_approval: [unclosed\n",
+	})
+	if !strings.Contains(res, "YAML") {
+		t.Fatalf("bad YAML not blocked: %q", res)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "cfg.yaml")); !os.IsNotExist(err) {
+		t.Error("bad YAML file was written")
+	}
+
+	// a malformed JSON edit is blocked
+	writeFile(t, ws, "data.json", "{\"a\": 1}")
+	res2 := execTool(t, reg, "fs_edit", map[string]any{
+		"path": "data.json", "old_string": "{\"a\": 1}", "new_string": "{\"a\": }",
+	})
+	if !strings.Contains(res2, "JSON") {
+		t.Fatalf("bad JSON edit not blocked: %q", res2)
+	}
+	data, _ := os.ReadFile(filepath.Join(ws, "data.json"))
+	if !strings.Contains(string(data), "{\"a\": 1}") {
+		t.Errorf("bad JSON edit was written: %q", data)
+	}
+
+	// valid YAML still writes
+	res3 := execTool(t, reg, "fs_write", map[string]any{
+		"path": "ok.yaml", "content": "a: 1\nb:\n  - x\n",
+	})
+	if !strings.Contains(res3, "wrote") {
+		t.Errorf("valid YAML blocked: %q", res3)
+	}
+}

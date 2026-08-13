@@ -216,6 +216,9 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if msg := preflightSyntax(a.Path, a.Content); msg != "" {
 		return "error: " + msg, nil
 	}
+	if msg := preflightStructured(a.Path, a.Content); msg != "" {
+		return "error: " + msg, nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Sprintf("error: create parent dirs: %v", err), nil
 	}
@@ -294,6 +297,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 			if msg := preflightSyntax(a.Path, newContent); msg != "" {
 				return "error: " + msg, nil
 			}
+			if msg := preflightStructured(a.Path, newContent); msg != "" {
+				return "error: " + msg, nil
+			}
 			if msg := preflightSymbols(a.Path, old, newContent); msg != "" {
 				return "error: " + msg, nil
 			}
@@ -310,6 +316,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	}
 	newContent := strings.Replace(old, a.OldString, a.NewString, 1)
 	if msg := preflightSyntax(a.Path, newContent); msg != "" {
+		return "error: " + msg, nil
+	}
+	if msg := preflightStructured(a.Path, newContent); msg != "" {
 		return "error: " + msg, nil
 	}
 	if msg := preflightSymbols(a.Path, old, newContent); msg != "" {

@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/Mechres/Yagent/internal/index"
+	"gopkg.in/yaml.v3"
 )
 
 // preflightSyntax parses a modified source string with tree-sitter and, when it
@@ -24,6 +26,30 @@ func preflightSyntax(path, content string) string {
 	}
 	e := errs[0]
 	return fmt.Sprintf("the change would introduce a syntax error at line %d, col %d (%q) — fix the edit; the file was NOT modified", e.Line, e.Col, e.Text)
+}
+
+// preflightStructured validates YAML/JSON content before it hits disk. The
+// agent regularly writes config/playbook/skill-frontmatter/export files; a
+// malformed one breaks the NEXT reload with a cryptic parse error. Returns ""
+// for non-structured files and valid content.
+func preflightStructured(path, content string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		var node yaml.Node
+		if err := yaml.Unmarshal([]byte(content), &node); err != nil {
+			line := 1
+			if yerr, ok := err.(*yaml.TypeError); ok && len(yerr.Errors) > 0 {
+				return fmt.Sprintf("the change would introduce a YAML problem: %s — fix the edit; the file was NOT modified", yerr.Errors[0])
+			}
+			return fmt.Sprintf("the change would introduce a YAML parse error at line %d: %v — fix the edit; the file was NOT modified", line, err)
+		}
+	case ".json":
+		var raw json.RawMessage
+		if err := json.Unmarshal([]byte(content), &raw); err != nil {
+			return fmt.Sprintf("the change would introduce a JSON error: %v — fix the edit; the file was NOT modified", err)
+		}
+	}
+	return ""
 }
 
 // preflightSymbols is the diff_semantic guardrail: it compares the exported

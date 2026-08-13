@@ -52,7 +52,75 @@ const toolLoopThreshold = 6
 // model (fs_read is excluded — a legit audit reads many files).
 var toolLoopTools = map[string]bool{
 	"glob": true, "grep": true, "index_search": true, "code_slice": true,
-	"code_references": true, "code_impact": true, "shell_exec": true, "web_search": true, "web_fetch": true,
+	"code_references": true, "code_impact": true, "code_unused": true, "shell_exec": true, "web_search": true, "web_fetch": true,
+}
+
+// cacheableReadTools are pure read tools whose result depends only on (tool,
+// args, workspace state) — safe to memoize across calls within a session until
+// a write invalidates the cache. Network tools (web_*), fs_read (already has
+// its own dedup), diagnostics (runs external commands) and git (external state)
+// are deliberately excluded.
+var cacheableReadTools = map[string]bool{
+	"glob": true, "grep": true, "index_search": true, "code_references": true,
+	"code_outline": true, "code_slice": true, "code_topology": true, "code_impact": true,
+	"code_unused": true,
+}
+
+// maxReadCacheEntries bounds the read-tool result cache.
+const maxReadCacheEntries = 64
+
+// cacheReadResult stores a read-tool result under its canonical (tool, args)
+// key, evicting oldest entries when the cache grows too large.
+func (a *Agent) cacheReadResult(tool string, args json.RawMessage, result string) {
+	key := tool + "|" + canonicalArgs(args)
+	a.rcacheMu.Lock()
+	defer a.rcacheMu.Unlock()
+	if a.readCache == nil {
+		a.readCache = map[string]string{}
+	}
+	if len(a.readCache) >= maxReadCacheEntries {
+		// evict one arbitrary entry (map iteration is unordered but bounded)
+		for k := range a.readCache {
+			delete(a.readCache, k)
+			break
+		}
+	}
+	a.readCache[key] = result
+}
+
+// cachedReadResult returns a memoized read-tool result, ok=false on a miss.
+func (a *Agent) cachedReadResult(tool string, args json.RawMessage) (string, bool) {
+	a.rcacheMu.Lock()
+	defer a.rcacheMu.Unlock()
+	if a.readCache == nil {
+		return "", false
+	}
+	v, ok := a.readCache[tool+"|"+canonicalArgs(args)]
+	return v, ok
+}
+
+// invalidateReadCache drops all memoized read results. Called after any
+// write/destructive tool executes (and index_repo) so a cached result can
+// never outlive the change that made it stale.
+func (a *Agent) invalidateReadCache() {
+	a.rcacheMu.Lock()
+	a.readCache = map[string]string{}
+	a.rcacheMu.Unlock()
+}
+
+// canonicalArgs normalizes tool arguments to a stable key string (JSON
+// re-marshaled from decoded values) so semantically identical calls share a
+// cache entry regardless of key order or whitespace.
+func canonicalArgs(args json.RawMessage) string {
+	var v any
+	if err := json.Unmarshal(args, &v); err != nil {
+		return string(args) // not valid JSON: key on the raw bytes
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(args)
+	}
+	return string(b)
 }
 
 // summaryPrompt condenses old history into the running summary (memory.md L1).
@@ -223,6 +291,13 @@ type Agent struct {
 	// Guarded by dedupMu because read-only batches dispatch concurrently.
 	lastCallSig string
 	dedupMu     sync.Mutex
+
+	// readCache memoizes pure read-tool results (grep/glob/index_search/
+	// code_references/code_outline/code_slice/code_topology/code_impact) keyed
+	// by canonical (tool, args). Invalided by any write/destructive tool so a
+	// cached result can never go stale after a change. Bounded LRU-ish map.
+	rcacheMu  sync.Mutex
+	readCache map[string]string
 
 	workspace      string
 	systemPrompt   string
@@ -800,7 +875,7 @@ func RepeatLoop(s string) bool {
 }
 
 // proseToolName matches a known tool name on a line.
-var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|test_runner|index_search|index_repo|code_references|code_slice|code_topology|code_impact|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
+var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|test_runner|index_search|index_repo|code_references|code_slice|code_topology|code_impact|code_unused|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
 
 // intentWord marks a line as the model *planning* a tool call in prose rather
 // than reporting one it already made.
@@ -948,7 +1023,7 @@ var (
 		"skills_list", "skill_view", "consult",
 	}
 	webToolNames    = []string{"web_search", "web_fetch"}
-	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline", "code_topology", "code_impact"}
+	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline", "code_topology", "code_impact", "code_unused"}
 	skillManageName = []string{"skill_manage"}
 )
 
@@ -1588,6 +1663,17 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		a.cfg.OnTool(call)
 	}
 
+	// Read-tool result memoization: a repeated identical pure read (common in
+	// goal mode and verify-don't-trust loops) returns the cached result instead
+	// of re-running. The cache is invalidated by any write below, so it can
+	// never go stale. Distinct from the loop-breaker (which nudges; this
+	// answers).
+	if cacheableReadTools[name] {
+		if cached, ok := a.cachedReadResult(name, call.Function.Arguments); ok {
+			return "[cached result]\n" + cached
+		}
+	}
+
 	result, err := tool.Execute(ctx, call.Function.Arguments)
 	if err != nil {
 		// Only argument-validation failures land here (tool contract).
@@ -1599,6 +1685,9 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 				name, valFails[name], err, name)
 		}
 		return "error: " + err.Error()
+	}
+	if cacheableReadTools[name] && !strings.HasPrefix(result, "error:") {
+		a.cacheReadResult(name, call.Function.Arguments, result)
 	}
 	// Track write/verify state for the deterministic "done" barrier (any write
 	// marks the turn unverified; running workspace_diagnostics clears it) and
@@ -1632,6 +1721,10 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		a.turnReadCalls++
 	} else {
 		a.turnWrote = true
+		// A write may have changed the workspace the read tools query
+		// (files, index, imports) — drop every memoized read result so no
+		// cached answer outlives the change that made it stale.
+		a.invalidateReadCache()
 	}
 	a.mu.Unlock()
 	slog.Debug("tool executed", "tool", name)

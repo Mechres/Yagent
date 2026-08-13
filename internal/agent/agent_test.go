@@ -1003,6 +1003,63 @@ func TestVramPressureDetectAndPrune(t *testing.T) {
 	}
 }
 
+func TestReadResultCache(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{}, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 3, Window: 8000, Reserve: 1000}, ws)
+
+	// canonical key: key order / whitespace in args must share a cache entry
+	a.cacheReadResult("grep", json.RawMessage(`{"pattern":"foo","path":"."}`), "a.go:1")
+	if got, ok := a.cachedReadResult("grep", json.RawMessage("{\"path\":\".\",\"pattern\":\"foo\"}")); !ok || got != "a.go:1" {
+		t.Errorf("cache miss on canonical args: got=%q ok=%t", got, ok)
+	}
+	// different args = different entry
+	if _, ok := a.cachedReadResult("grep", json.RawMessage(`{"pattern":"bar"}`)); ok {
+		t.Error("different args hit the cache")
+	}
+	// invalidate drops everything
+	a.invalidateReadCache()
+	if _, ok := a.cachedReadResult("grep", json.RawMessage(`{"pattern":"foo","path":"."}`)); ok {
+		t.Error("cache survived invalidation")
+	}
+}
+
+func TestDispatchCachesAndInvalidatesReads(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "content-xyz\n")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	// grep twice, then a write (which must invalidate), then grep again — the
+	// post-write grep must see the new file.
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "grep", `{"pattern":"content-xyz"}`),
+		toolCall("c2", "grep", `{"pattern":"content-xyz"}`),
+		toolCall("c3", "fs_write", `{"path":"b.txt","content":"content-xyz\n"}`),
+		toolCall("c4", "grep", `{"pattern":"content-xyz"}`),
+		finalContent("found after write"),
+	})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 12, Window: 8000, Reserve: 1000}, ws)
+
+	if _, err := a.Run(context.Background(), "search twice then write then search"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// grep #2 should have hit the cache (result "a.txt:1"), grep #4 after the
+	// write must re-run and see both files.
+	a.mu.RLock()
+	found := false
+	for _, h := range a.history {
+		if h.msg.Role == "tool" && strings.Contains(h.msg.Content, "b.txt") {
+			found = true
+		}
+	}
+	a.mu.RUnlock()
+	if !found {
+		t.Error("post-write grep did not see the new file (cache not invalidated)")
+	}
+}
+
 func TestCompactDistillsWholeHistory(t *testing.T) {
 	ws := t.TempDir()
 	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})

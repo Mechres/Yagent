@@ -106,6 +106,21 @@ func (t *refactorTool) Execute(ctx context.Context, raw json.RawMessage) (string
 		return fmt.Sprintf("symbol %q not found in any workspace source file", a.OldName), nil
 	}
 
+	// Pre-flight: every rewritten file must still parse (tree-sitter syntax
+	// check). A rename touches many files at once, so a broken rewrite is
+	// strictly more dangerous than a single edit — validate ALL of them BEFORE
+	// writing any (all-or-nothing). NOTE: the exported-symbol delta guardrail
+	// (preflightSymbols) is intentionally NOT applied here — a rename
+	// Foo->Bar removes Foo by design, so it would block every public rename.
+	for _, c := range changes {
+		if msg := preflightSyntax(c.path, string(c.new)); msg != "" {
+			return fmt.Sprintf("error: %s: %s", c.path, msg), nil
+		}
+		if msg := preflightStructured(c.path, string(c.new)); msg != "" {
+			return fmt.Sprintf("error: %s: %s", c.path, msg), nil
+		}
+	}
+
 	// Apply every rewrite, recording the originals for /undo.
 	for _, c := range changes {
 		if t.undo != nil {

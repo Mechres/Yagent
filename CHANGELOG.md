@@ -2,6 +2,28 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.31 — 2026-08-13
+
+### Added
+- **fs_refactor write guardrails.** Every rewritten file is now validated with
+  the tree-sitter syntax check before any write (all-or-nothing). The
+  exported-symbol delta guardrail is deliberately NOT applied — a rename
+  `Foo→Bar` removes `Foo` by design, so it would block every public rename.
+- **Structured-file preflight.** `.yaml`/`.yml` and `.json` writes are parsed
+  (yaml.v3 / encoding/json) before hitting disk, so a malformed
+  config/playbook/skill-frontmatter breaks the next reload instead of failing
+  cryptically. Wired into fs_write, fs_edit (both paths), fs_patch, fs_refactor.
+- **Cross-turn read-tool result cache.** Pure read tools (grep, glob,
+  index_search, code_references, code_outline, code_slice, code_topology,
+  code_impact, code_unused) memoize results keyed by canonical (tool, args),
+  returning a `[cached result]` marker. Invalidated by any write/destructive
+  tool or index_repo, so a cached answer never outlives the change that made it
+  stale. Bounded at 64 entries.
+- **`code_unused` dead-symbol candidates.** Exported top-level symbols with zero
+  call sites anywhere (tests are indexed, so test-only symbols are excluded).
+  Labeled candidates-not-truth — interface implementations and dynamic dispatch
+  produce no call edges.
+
 ## v0.1.30 — 2026-08-13
 
 ### Added

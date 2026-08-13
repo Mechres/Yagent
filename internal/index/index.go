@@ -387,6 +387,43 @@ type SymbolResult struct {
 	Line int
 }
 
+// DeadSymbol is an exported top-level declaration with zero in-repo callers —
+// a candidate for safe deletion (not proof: interface implementations and
+// dynamic dispatch don't produce index_calls, and tests count as callers).
+type DeadSymbol struct {
+	Path string
+	Name string
+	Kind string
+	Line int
+}
+
+// DeadSymbols lists exported symbols with no call sites anywhere in the
+// indexed workspace. Test references are indexed too, so a symbol used only by
+// tests is NOT dead. This is a candidate list — the caller should present it as
+// "safe to delete" candidates, never as truth.
+func (s *Store) DeadSymbols(ctx context.Context) []DeadSymbol {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT sym.path, sym.name, sym.kind, sym.line
+		FROM index_symbols sym
+		WHERE NOT EXISTS (
+			SELECT 1 FROM index_calls c WHERE c.callee = sym.name
+		)
+		ORDER BY sym.path, sym.line`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []DeadSymbol
+	for rows.Next() {
+		var d DeadSymbol
+		if err := rows.Scan(&d.Path, &d.Name, &d.Kind, &d.Line); err != nil {
+			return out
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 // SearchSymbol finds declarations by exact name, optionally filtered by kind.
 func (s *Store) SearchSymbol(ctx context.Context, name, kind string) ([]SymbolResult, error) {
 	q := `SELECT path, name, kind, line FROM index_symbols WHERE name = ?`

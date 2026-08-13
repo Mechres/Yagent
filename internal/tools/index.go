@@ -308,6 +308,43 @@ func packageDirOf(rel string) string {
 	return rel[:idx]
 }
 
+// ---------- code_unused ----------
+
+// codeUnusedTool lists exported top-level declarations with zero call sites
+// across the indexed workspace — candidates for safe deletion. Tests are
+// indexed, so test-only symbols are NOT reported.
+type codeUnusedTool struct{ store *index.Store }
+
+var codeUnusedSchema = fnSchema("code_unused", "list exported symbols (functions, types) with ZERO call sites anywhere in the indexed workspace — candidates for safe deletion. Tests are indexed too, so a symbol used only by tests is not reported. CANDIDATES not truth: interface implementations and dynamically-dispatched symbols produce no call edges, so verify a symbol is truly unused before deleting it. Requires the code index (run index_repo first)",
+	map[string]any{}, []string{})
+
+func (t *codeUnusedTool) Schema() llm.ToolSchema { return codeUnusedSchema }
+func (t *codeUnusedTool) Risk() RiskLevel        { return RiskReadOnly }
+
+func (t *codeUnusedTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	if err := decodeArgs(raw, &struct{}{}); err != nil {
+		return "", err
+	}
+	if t.store == nil {
+		return "error: code index is not configured for this session", nil
+	}
+	dead := t.store.DeadSymbols(ctx)
+	if len(dead) == 0 {
+		return "no unused exported symbols found (run index_repo first?)", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d candidate(s) with no call sites (verify before deleting — interface impls / dynamic dispatch aren't tracked):\n", len(dead))
+	cur := ""
+	for _, d := range dead {
+		if d.Path != cur {
+			fmt.Fprintf(&b, "%s\n", d.Path)
+			cur = d.Path
+		}
+		fmt.Fprintf(&b, "  %d [%s] %s\n", d.Line, d.Kind, d.Name)
+	}
+	return capResult(b.String(), maxResultBytes), nil
+}
+
 // testFilesFor lists _test.go / test_*.py files in the touched file's package
 // and every caller's package, deduplicated.
 func testFilesFor(ws, touched string, callers map[string][]string) []string {

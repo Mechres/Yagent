@@ -95,3 +95,36 @@ func TestRefactorSkipsBuildDirs(t *testing.T) {
 		t.Error("vendor file was rewritten")
 	}
 }
+
+func TestRefactorPreflightBlocksBrokenRewrite(t *testing.T) {
+	ws := t.TempDir()
+	// Renaming `func` to a valid identifier can't break syntax on its own, so
+	// use a rename that WOULD corrupt a file: replace a keyword-like symbol
+	// name with something that leaves broken syntax in one file. Here `fn` is
+	// the identifier and the rewrite target is safe, but a broken pre-existing
+	// file must still be caught (all-or-nothing).
+	writeFile(t, ws, "good.go", "package pkg\nfunc fn() int { return 1 }\n")
+	// A file with a tree-sitter ERROR node already (unclosed string) that ALSO
+	// contains the symbol — the rename would touch it, and preflight must block
+	// the whole operation (all-or-nothing) rather than rewrite a broken file.
+	writeFile(t, ws, "broken.go", "package pkg\nvar fn = \"unterminated\n")
+	ub := undo.New()
+	tool := &refactorTool{ws: ws, undo: ub}
+	res, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"old_name": "fn", "new_name": "renamedFn"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "syntax error") {
+		t.Fatalf("broken rewrite not blocked: %q", res)
+	}
+	// all-or-nothing: good.go must NOT have been written
+	content, _ := os.ReadFile(filepath.Join(ws, "good.go"))
+	if !strings.Contains(string(content), "func fn()") {
+		t.Errorf("good.go was modified despite the block: %q", content)
+	}
+	// undo recorded nothing (no writes happened)
+	ub.EndTurn()
+	if ub.CanUndo() {
+		t.Error("undo should be empty when no writes happened")
+	}
+}

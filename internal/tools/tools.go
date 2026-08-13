@@ -163,6 +163,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		reg["index_search"] = &indexSearchTool{store: opts.Index}
 		reg["code_references"] = &codeReferencesTool{store: opts.Index}
 		reg["code_impact"] = &codeImpactTool{store: opts.Index, ws: r.workspace}
+		reg["code_unused"] = &codeUnusedTool{store: opts.Index}
 	}
 	if opts.Web != nil {
 		reg["web_search"] = &webSearchTool{client: opts.Web}

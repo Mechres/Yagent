@@ -203,6 +203,55 @@ func TestHelper(t *testing.T) { _ = helper(1) }
 	}
 }
 
+func TestCodeUnused(t *testing.T) {
+	ts := indexEmbedServer(t)
+	defer ts.Close()
+	ws := t.TempDir()
+	// dead: used nowhere. alive: called. tested: used only by a test (NOT dead).
+	writeFile(t, ws, "pkg/a.go", `package pkg
+
+// deadFunc is never called anywhere.
+func deadFunc() int { return 1 }
+
+// aliveFunc is called by main below.
+func aliveFunc() int { return 2 }
+`)
+	writeFile(t, ws, "pkg/b.go", `package pkg
+
+// testedFunc is only referenced from the test file — must NOT be reported.
+func testedFunc() int { return 3 }
+`)
+	writeFile(t, ws, "pkg/main.go", `package pkg
+
+func main() { _ = aliveFunc() }
+`)
+	writeFile(t, ws, "pkg/a_test.go", `package pkg
+
+func TestX(t *testing.T) { _ = testedFunc() }
+`)
+	idx, err := index.Open(ws, t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(ws, Options{Index: idx})
+	if got := skillExec(t, reg, "index_repo", map[string]any{}); !strings.Contains(got, "indexed 4 files") {
+		t.Fatalf("index_repo = %q", got)
+	}
+	got := skillExec(t, reg, "code_unused", map[string]any{})
+	if !strings.Contains(got, "deadFunc") {
+		t.Errorf("deadFunc not reported as unused: %q", got)
+	}
+	if strings.Contains(got, "aliveFunc") {
+		t.Errorf("aliveFunc wrongly reported as unused: %q", got)
+	}
+	if strings.Contains(got, "testedFunc") {
+		t.Errorf("test-only symbol wrongly reported as unused: %q", got)
+	}
+	if !strings.Contains(got, "candidate") {
+		t.Errorf("missing candidate framing: %q", got)
+	}
+}
+
 func TestCodeOutline(t *testing.T) {
 	ws := t.TempDir()
 	writeFile(t, ws, "pkg/one.go", `package pkg
