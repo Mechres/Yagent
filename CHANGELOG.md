@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.38 — 2026-08-13
+
+### Added
+- **Golden evals 26–29.** The fake-server regression suite now locks in the
+  v0.1.32–35 deterministic fixes: GoalGate (refuses DONE on a failing build and
+  forces a fix round), fs_patch bad-hunk (structured error, file untouched),
+  web_fetch scheme guard (rejects `file://`), and GoalMemorize (round facts
+  persist to L3 memory). The harness Task gained `goal_gate`, `goal_memorize`
+  and the `memory_contains` assertion.
+
 ## v0.1.37 — 2026-08-13
 
 ### Added

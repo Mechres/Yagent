@@ -933,3 +933,25 @@ files driving real tool code. 15 findings. Disposition:
 The report's `go test ./...` "fails only on the QA harness tests" is expected —
 those throwaway `*_test.go` files asserted the broken behavior and were not
 part of the shipped tree.
+
+## Golden-eval expansion for the v0.1.32–v0.1.35 deterministic fixes (2026-08-13)
+
+The golden eval suite (testdata/evals) stopped at 25 (convergence nudge), but
+v0.1.32–35 shipped several deterministic behaviors that were unit-tested yet
+not locked into the fake-server regression net. Added:
+
+- **26-goal-gate** — the GoalGate refuses a DONE verdict while go vet still
+  fails (undefined fmt), feeds the error back, and forces a second round that
+  fixes the import. Harness gained `goal_gate`.
+- **27-fs-patch-bad-hunk** — a malformed fs_patch hunk (start past EOF, only
+  additions) returns an error naming the hunk start instead of panicking; the
+  file is untouched.
+- **28-web-fetch-scheme-guard** — web_fetch rejects `file://` before any
+  request ("unsupported scheme").
+- **29-goal-memorize** — goal rounds persist touched-path facts to L3 memory.
+  Harness gained `goal_memorize` and the `memory_contains` assertion (searches
+  the eval's vector store after the run).
+
+The eval harness Task now exposes `goal_gate`, `goal_memorize` and
+`memory_contains`, so future goal-loop/memory behavior can be locked in the
+same way. All evals run offline against scripted servers (no network).

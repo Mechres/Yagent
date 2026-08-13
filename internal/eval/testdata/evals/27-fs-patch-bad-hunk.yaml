@@ -1,0 +1,15 @@
+name: fs-patch-bad-hunk
+description: v0.1.35 — a malformed fs_patch hunk returns an error instead of panicking the process
+files:
+  a.txt: |
+    line1
+    line2
+    line3
+input: patch a.txt to inject a line
+steps:
+  - tool_call: {name: fs_patch, args: '{"patch":"--- a/a.txt\n+++ b/a.txt\n@@ -9999,0 +1,1 @@\n+injected\n"}'}
+  - answer: the patch was rejected, let me fix it
+assert:
+  tool_results_contain: ["9999"]
+  file_not_contains:
+    - {path: a.txt, text: injected}

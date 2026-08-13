@@ -1,0 +1,9 @@
+name: web-fetch-scheme-guard
+description: v0.1.35 — web_fetch rejects non-http(s) schemes before any request (SSRF hardening)
+web: true
+input: fetch the local /etc/passwd file
+steps:
+  - tool_call: {name: web_fetch, args: '{"url":"file:///etc/passwd"}'}
+  - answer: it was rejected because only http/https URLs are allowed
+assert:
+  tool_results_contain: ["unsupported scheme"]

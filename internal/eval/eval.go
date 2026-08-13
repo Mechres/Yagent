@@ -57,6 +57,10 @@ type Task struct {
 	DenyFirst int `yaml:"deny_first"`
 	// VerifyWrites enables the deterministic verify-don't-trust barrier.
 	VerifyWrites bool `yaml:"verify_writes"`
+	// GoalGate refuses a DONE verdict while workspace_diagnostics still fails.
+	GoalGate bool `yaml:"goal_gate"`
+	// GoalMemorize persists each goal round's facts to L3 memory.
+	GoalMemorize bool `yaml:"goal_memorize"`
 	// PatchFilter exercises the fs_patch per-hunk approval path: when set, the
 	// harness approves the patch with rewritten args containing only the named
 	// hunk subset ("first_hunk" | "last_hunk"), so the eval can assert that
@@ -104,6 +108,9 @@ type Assertions struct {
 	// contain each text (used for the verify-barrier, prose-nudge and ledger
 	// injections, which appear in the request stream, not in tool results).
 	RequestsContain []string `yaml:"requests_contain"`
+	// MemoryContains requires the L3 memory store (task.Memory) to contain a
+	// searchable memory matching each text (used to lock in GoalMemorize).
+	MemoryContains []string `yaml:"memory_contains"`
 }
 
 // FileAssert is one post-run file-content assertion.
@@ -219,6 +226,8 @@ func Run(t *testing.T, task Task) {
 		IndexAutoInject: false,
 		Summarizer:      summ,
 		VerifyWrites:    task.VerifyWrites,
+		GoalGate:        task.GoalGate,
+		GoalMemorize:    task.GoalMemorize,
 	}, ws)
 
 	inputs := task.Inputs
@@ -309,6 +318,27 @@ func Run(t *testing.T, task Task) {
 		}
 		if !found {
 			t.Errorf("no request contained %q", want)
+		}
+	}
+	for _, want := range task.Assert.MemoryContains {
+		if vs == nil {
+			t.Errorf("memory_contains %q but task.Memory is not enabled", want)
+			continue
+		}
+		mem, err := vs.Search(context.Background(), want, 10)
+		if err != nil {
+			t.Errorf("memory search %q: %v", want, err)
+			continue
+		}
+		found := false
+		for _, m := range mem {
+			if strings.Contains(m.Text, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no memory matches %q (memories: %d)", want, len(mem))
 		}
 	}
 	for _, fa := range task.Assert.FileContains {

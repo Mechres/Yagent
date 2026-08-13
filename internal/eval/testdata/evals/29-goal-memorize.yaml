@@ -1,0 +1,16 @@
+name: goal-memorize
+description: v0.1.33 — goal rounds persist touched-path facts to L3 memory (multi-turn recall)
+goal_memorize: true
+memory: true
+rounds: 2
+files:
+  a.txt: |
+    old content
+goal: replace the contents of a.txt
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"a.txt","content":"new content"}'}
+  - answer: I replaced a.txt with new content
+  - answer: DONE the file is replaced
+assert:
+  memory_contains: ["goal work touched file a.txt"]
+  final_answer_contains: "replaced"
