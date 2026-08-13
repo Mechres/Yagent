@@ -369,6 +369,44 @@ func TestLoadConfigConsultAPIKey(t *testing.T) {
 	}
 }
 
+func TestSummarizerConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarServerURL, "")
+	t.Setenv(EnvVarDataDir, "")
+	t.Setenv(EnvVarModel, "")
+	// default: no summarizer override
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Summarizer.Model != "" {
+		t.Errorf("summarizer should default off, got %+v", cfg.Summarizer)
+	}
+	// from file
+	path := writeConfig(t, "summarizer:\n  server_url: http://laptop:11434\n  model: qwen3:4b\n")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Summarizer.ServerURL != "http://laptop:11434" || cfg.Summarizer.Model != "qwen3:4b" {
+		t.Errorf("summarizer = %+v", cfg.Summarizer)
+	}
+	// /set round-trip
+	if err := Set(path, "summarizer.model", "lfm2.5:2.6b"); err != nil {
+		t.Fatalf("set summarizer.model: %v", err)
+	}
+	reloaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Summarizer.Model != "lfm2.5:2.6b" {
+		t.Errorf("reloaded summarizer = %+v", reloaded.Summarizer)
+	}
+	if cfg.Get("summarizer.model") != "qwen3:4b" {
+		t.Errorf("Get(summarizer.model) = %q", cfg.Get("summarizer.model"))
+	}
+}
+
 func TestSetGeneralAndValidation(t *testing.T) {
 	path := writeConfig(t, "server_url: http://example.test\nmodel: some-model\n")
 	if err := Set(path, "consult.model", "gemini-2.0-flash"); err != nil {

@@ -90,3 +90,7 @@ consult:                      # the `consult` tool (advisor). Disabled until set
   # model: qwen2.5-coder:14b
   # api_key: ""               # for cloud OpenAI-compatible endpoints (opt-in)
   # cmd: ["claude", "-p"]     # OR an installed terminal AI app
+
+# summarizer:                  # offload history condensation (budget + /compact)
+#   server_url: http://laptop:11434   # to a second machine/model (e.g. a laptop).
+#   model: qwen3:4b                   # Default (unset): the main model summarizes.

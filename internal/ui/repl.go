@@ -496,6 +496,7 @@ type chatEnv struct {
 	forkSource     string
 	undo           *undo.Buffer
 	jobs           *jobs.Registry
+	summ           *llm.Client // optional offloaded summarizer (budget + /compact)
 }
 
 // runGoalMode drives the agent autonomously toward a goal: each round runs the
@@ -648,6 +649,18 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		consultClient.BearerToken = cfg.Consult.APIKey
 	}
 
+	// Summarizer: when configured, history condensation (budget + /compact) is
+	// offloaded to a second model/server (e.g. a laptop). The main loop never
+	// uses it for tools, so a small/slow summarizer is safe.
+	var summClient *llm.Client
+	if cfg.Summarizer.Model != "" {
+		summURL := cfg.Summarizer.ServerURL
+		if summURL == "" {
+			summURL = cfg.ServerURL
+		}
+		summClient = llm.NewClient(summURL, cfg.Summarizer.Model)
+	}
+
 	sessionID, initialHistory, initialSummary, forkSource, err := resolveSession(ctx, st, ws, continueID, forkID)
 	if err != nil {
 		return nil, err
@@ -657,6 +670,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		st: st, vs: vs, projVS: projVS, sk: sk, idx: idx, web: webClient,
 		sessionID: sessionID, initialHistory: initialHistory, initialSummary: initialSummary,
 		forkSource: forkSource, undo: undo.New(), jobs: jobs.New(),
+		summ: summClient,
 	}
 	env.registry = tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
@@ -728,6 +742,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		Trace:            trace,
 		VerifyWrites:     true, // deterministic verify-don't-trust "done" gate
 		VramThresholdTPS: cfg.VramThresholdTPS,
+		Summarizer:       env.summ,
 	}, ws)
 }
 

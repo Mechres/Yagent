@@ -2,6 +2,21 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.30 — 2026-08-13
+
+### Added
+- **`summarizer:` config section.** Overrides which model condenses old history
+  (the budget summarizer and `/compact`) — e.g. `summarizer.server_url` +
+  `summarizer.model` pointing at a second machine. Unset = the main model
+  summarizes, so the GPU loop is untouched unless you opt in. Wired via
+  `chatEnv.summ` → `agent.Config.Summarizer`; editable with `/set
+  summarizer.model` / `/set summarizer.server_url`. Live-verified: `/compact`
+  distilled a session through a separate laptop server (qwen3:4b) while the
+  main server was unreachable.
+- **Dev server raised to 32k context with Q8_0 KV** — `-c 32768
+  --cache-type-k q8_0 --cache-type-v q8_0` halves KV VRAM vs f16 (~90 t/s on
+  12 GB); `context_window: 32768` to match.
+
 ## v0.1.29 — 2026-08-13
 
 ### Added

@@ -49,6 +49,9 @@ type Config struct {
 	// Consult points the `consult` tool at a second local model ("advisor")
 	// the agent can ask for guidance. Empty = disabled.
 	Consult ConsultConfig `yaml:"consult"`
+	// Summarizer overrides the history-condensing model (budget + /compact).
+	// Empty = the main model summarizes.
+	Summarizer SummarizerConfig `yaml:"summarizer"`
 	// VramThresholdTPS flags context pressure when a stream's average
 	// generation speed drops below this many tokens/second (0 = off). A slow
 	// stream on a 12 GB card usually means the KV cache spilled out of VRAM;
@@ -105,6 +108,17 @@ type ConsultConfig struct {
 	APIKey string `yaml:"api_key"`
 	// Cmd is a terminal AI app used as the advisor, e.g. ["claude", "-p"].
 	Cmd []string `yaml:"cmd"`
+}
+
+// SummarizerConfig overrides which model condenses old history (the budget
+// summarizer and /compact). Defaults to the main model when unset — use this to
+// offload summarization to a second machine/model. The main loop never uses it
+// for tool calls, so a small/slow summarizer only costs on budget/compact.
+type SummarizerConfig struct {
+	// ServerURL of the summarizer (defaults to server_url when Model is set).
+	ServerURL string `yaml:"server_url"`
+	// Model is the summarizer model name.
+	Model string `yaml:"model"`
 }
 
 // SamplingConfig is the subset of generation parameters forwarded on chat
@@ -440,6 +454,8 @@ func Settings() []SettingKey {
 		{Key: "consult.model", Label: "Consult model"},
 		{Key: "consult.api_key", Label: "Consult API key"},
 		{Key: "consult.cmd", Label: "Consult CLI app (space-separated argv)"},
+		{Key: "summarizer.server_url", Label: "Summarizer server URL (empty = main server)"},
+		{Key: "summarizer.model", Label: "Summarizer model (empty = main model)"},
 	}
 }
 
@@ -500,6 +516,10 @@ func (c *Config) Get(key string) string {
 		return c.Consult.APIKey
 	case "consult.cmd":
 		return strings.Join(c.Consult.Cmd, " ")
+	case "summarizer.server_url":
+		return c.Summarizer.ServerURL
+	case "summarizer.model":
+		return c.Summarizer.Model
 	}
 	return ""
 }
@@ -582,7 +602,8 @@ func validateKey(parts []string, value string) error {
 		"shell.sandbox":      true,
 		"vram_threshold_tps": true,
 		"consult.server_url": true, "consult.model": true, "consult.api_key": true,
-		"consult.cmd": true,
+		"consult.cmd":           true,
+		"summarizer.server_url": true, "summarizer.model": true,
 	}
 	key := strings.Join(parts, ".")
 	if !known[key] {
