@@ -780,6 +780,15 @@ Make it a recorded ritual: scores appended to a baseline file (e.g.
 configured model regresses vs. its recorded baseline. Prevents silently
 shipping a worse model after a sampling/config change.
 
+**Shipped 2026-08-13**: `bench.Baseline` — `yagent bench` records its pass score
+to `<data_dir>/bench-baseline.json` (per model: best + last run, timestamped),
+warns on stderr when the current run is below the model's own best (repeat≥2
+only, so a single flaky run can't overwrite a solid best), and prints the
+baseline at the end. `yagent doctor` reports the recorded baseline and raises a
+WARN when the last run is below best. Covered by `TestBaselineRecordAndRegression`.
+Live-verified: Qwen3VL-8B recorded 6/6; simulating a worse last-run produced the
+doctor WARN with the exact re-check command.
+
 ### T2-1 — Explicit fact extraction into memory during goal runs
 
 Every benched model (Qwythos, Ornith, LFM2.5, Qwopus) is flaky on **multi-turn

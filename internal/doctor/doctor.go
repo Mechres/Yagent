@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mechres/Yagent/internal/bench"
 	"github.com/Mechres/Yagent/internal/config"
 )
 
@@ -153,6 +154,20 @@ func Run(cfg *config.Config) Report {
 		rep.add("consult", StatusInfo, "advisor: terminal app "+cfg.Consult.Cmd[0])
 	} else {
 		rep.add("consult", StatusInfo, "advisor disabled (set consult.* or consult.cmd)")
+	}
+
+	// --- bench regression gate (T1-2) ---
+	if cfg.Model != "" {
+		base := bench.LoadBaseline(cfg.DataDir)
+		if s := base.ScoreString(cfg.Model); s != "" {
+			if reg := base.Regression(cfg.Model); reg != "" {
+				rep.add("bench", StatusWarn, reg)
+			} else {
+				rep.add("bench", StatusPass, "recorded baseline "+s)
+			}
+		} else {
+			rep.add("bench", StatusInfo, "no recorded baseline (run `yagent bench --repeat 3`)")
+		}
 	}
 
 	client := &http.Client{Timeout: timeout}

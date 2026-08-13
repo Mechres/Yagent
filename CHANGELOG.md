@@ -2,6 +2,17 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.36 — 2026-08-13
+
+### Added
+- **Bench regression gate.** `yagent bench` now records its pass score to
+  `<data_dir>/bench-baseline.json` (per-model best + last run, timestamped) and
+  warns when a run is below the model's own best (repeat≥2 only, so a flaky
+  single run can't overwrite a solid best). `yagent doctor` reports the recorded
+  baseline and raises a WARN when the last run is below best — a model or
+  sampling change that silently degrades the agent loop is now caught.
+- Closes **T1-2**, the last open item on the strategic roadmap.
+
 ## v0.1.35 — 2026-08-13
 
 ### Fixed (adversarial-QA audit)

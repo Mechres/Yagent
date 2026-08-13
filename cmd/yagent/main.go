@@ -482,12 +482,25 @@ func runBench(cfg *config.Config, jsonOut bool, repeat int) error {
 	}
 	total := time.Since(start)
 
+	// Regression gate (T1-2): record this run as the model's baseline and warn
+	// when it's below the model's own best — a model/sampling change that
+	// silently degrades the loop should not pass unnoticed. Uses repeat>=2
+	// scores (a single flaky run shouldn't overwrite a solid best).
+	pass := passedRuns(reports)
+	base := bench.LoadBaseline(cfg.DataDir)
+	prevBest, improved := base.Record(cfg.DataDir, cfg.Model, pass, len(tasks)*repeat)
+	_ = improved
+	if repeat >= 2 && prevBest > pass {
+		fmt.Fprintf(os.Stderr, "\n⚠ regression: %q fell from %d/%d to %d/%d — re-run `yagent bench --repeat 3` to confirm before trusting this model\n",
+			cfg.Model, prevBest, len(tasks)*repeat, pass, len(tasks)*repeat)
+	}
+
 	if jsonOut {
 		out := map[string]any{
 			"model":    cfg.Model,
 			"server":   cfg.ServerURL,
 			"repeat":   repeat,
-			"pass":     passedRuns(reports),
+			"pass":     pass,
 			"total":    len(tasks) * repeat,
 			"wall_sec": total.Seconds(),
 			"sampling": client.Sampling,
@@ -513,7 +526,10 @@ func runBench(cfg *config.Config, jsonOut bool, repeat int) error {
 			(time.Duration(r.WallMS) * time.Millisecond).Round(100*time.Millisecond),
 			r.TokensPerSec, think, r.Detail)
 	}
-	fmt.Printf("\n%d/%d run(s) passed · total %s\n", passedRuns(reports), len(tasks)*repeat, total.Round(time.Second))
+	fmt.Printf("\n%d/%d run(s) passed · total %s\n", pass, len(tasks)*repeat, total.Round(time.Second))
+	if s := base.ScoreString(cfg.Model); s != "" {
+		fmt.Printf("baseline for %q: %s\n", cfg.Model, s)
+	}
 	return nil
 }
 
