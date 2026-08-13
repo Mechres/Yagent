@@ -1,0 +1,24 @@
+name: error-fix-hints
+description: v0.1.41 — the goal-gate DONE refusal now carries a language-specific micro-recipe hint
+goal_gate: true
+rounds: 3
+files:
+  go.mod: |
+    module gate
+
+    go 1.22
+  main.go: |
+    package main
+
+    func main() { println("hi") }
+goal: make the code use fmt.Println
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"}'}
+  - answer: I changed main.go to use fmt.Println
+  - answer: DONE the refactor is complete
+  # the gate runs diagnostics, sees "undefined: fmt", and appends a Go hint
+  - tool_call: {name: fs_edit, args: '{"path":"main.go","old_string":"package main\n\nfunc main() {","new_string":"package main\n\nimport \"fmt\"\n\nfunc main() {"}'}
+  - answer: I added the import
+  - answer: DONE now it compiles
+assert:
+  requests_contain: ["HINT (Go): an identifier is undefined"]

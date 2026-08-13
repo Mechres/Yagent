@@ -815,6 +815,10 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.setSetting(rest)
 	case rest == "undo":
 		return h.undoLastTurn()
+	case rest == "undo list":
+		return h.undoList()
+	case strings.HasPrefix(rest, "undo "):
+		return h.undoN(strings.TrimSpace(strings.TrimPrefix(rest, "undo")))
 	case rest == "checkpoint" || strings.HasPrefix(rest, "checkpoint "):
 		return h.handleCheckpoint(rest)
 	case rest == "playbook" || strings.HasPrefix(rest, "playbook "):
@@ -999,6 +1003,50 @@ func (h *skillsHandler) undoLastTurn() (bool, error) {
 	if err != nil {
 		return true, err
 	}
+	for _, e := range entries {
+		fmt.Fprintf(h.w, "  reverted %s\n", e.Path)
+	}
+	return true, nil
+}
+
+// undoList shows the per-turn undo history (/undo list, proposal #6).
+func (h *skillsHandler) undoList() (bool, error) {
+	if h.env == nil || h.env.undo == nil {
+		fmt.Fprintln(h.w, "undo is not available")
+		return true, nil
+	}
+	turns := h.env.undo.Turns()
+	if len(turns) == 0 {
+		fmt.Fprintln(h.w, "no turns to undo")
+		return true, nil
+	}
+	fmt.Fprintln(h.w, "turns (most recent first):")
+	for _, t := range turns {
+		fmt.Fprintln(h.w, "  "+t)
+	}
+	fmt.Fprintln(h.w, "use: /undo <N> to revert the N most recent turns, /undo to revert the last turn")
+	return true, nil
+}
+
+// undoN reverts the N most recent turns (/undo <N>, proposal #6).
+func (h *skillsHandler) undoN(nstr string) (bool, error) {
+	n, err := strconv.Atoi(nstr)
+	if err != nil || n <= 0 {
+		return true, fmt.Errorf("usage: /undo <N> where N is a positive number of turns (see /undo list)")
+	}
+	if h.env == nil || h.env.undo == nil {
+		fmt.Fprintln(h.w, "undo is not available")
+		return true, nil
+	}
+	if !h.env.undo.CanUndo() {
+		fmt.Fprintln(h.w, "nothing to undo")
+		return true, nil
+	}
+	entries, err := h.env.undo.UndoN(n)
+	if err != nil {
+		return true, err
+	}
+	fmt.Fprintf(h.w, "reverted %d turn(s):\n", n)
 	for _, e := range entries {
 		fmt.Fprintf(h.w, "  reverted %s\n", e.Path)
 	}

@@ -992,3 +992,53 @@ Third sweep. Added:
   `compact_history_len`.
 
 36 evals total, all offline against scripted servers.
+
+## agy review batch 2026-08-13 (8 proposals — 4 shipped, 4 rejected)
+
+An agy audit screened against improvement.md. Four implemented (all tested),
+four rejected with reasons (verified against the code, not the prose).
+
+### Shipped
+
+- ✅ **error_fix_hints** (#4) — `errorFixHints` appends deterministic,
+  language-specific micro-recipes to failing diagnostics/test_runner output
+  (Go undefined → index_search+fs_edit; TS cannot-find-name; Rust E0432;
+  Python ModuleNotFound; generic build-failed fallback). Wired into the
+  goalGate DONE-refusal and the verifyBarrier feedback so a looping model gets
+  "do THIS tool call" instead of re-guessing. Covered by `TestErrorFixHints`
+  + eval 40.
+- ✅ **`code_environment`** (#5) — read-only toolchain/env audit: installed
+  compilers/interpreters (go/gcc/rustc/node/python3/pkg-config/bwrap/docker),
+  env flags (CGO_ENABLED/CC/GOFLAGS/…), and native-binding detection (cgo
+  `import "C"`, Rust `extern "C"`, C includes, node-gyp). Tells the model "this
+  is an environment problem, don't edit source" before it wastes turns.
+  Covered by `TestCodeEnvironment` + `TestScanNativeBindings` + eval 41.
+- ✅ **Multi-turn undo** (#6) — `undo.Buffer` already stored turn-indexed
+  entries; added `Turns()`/`Count()`/`UndoN(n)` and the `/undo list` + `/undo
+  <N>` commands (REPL + TUI `/` menu). `/undo list` shows per-turn files;
+  `/undo 3` reverts the 3 most recent turns (all-or-nothing). Covered by
+  `TestUndoListAndUndoN` + `TestUndoNReversesMultiTurnOrder`.
+- ✅ **Subagent-offload nudge** (#8) — when context exceeds 75% of the window
+  during read-only exploration (reads ≥ 6, no write), the loop nudges the model
+  to delegate the remaining exploration to a subagent and keep the main context
+  lean. Distinct from the convergence nudge (which says "deliver"). Covered by
+  `TestSubagentOffloadNudge`.
+
+### Rejected (do not re-propose)
+
+- ⚪ **Strict static-prefix KV-cache layout** (#1) — **false / duplicate.** The
+  static system prompt + workspace rules are already first and byte-identical
+  in `assembleContext`; the dynamic items (L0 index, summary, recall, task
+  state) follow it, so llama.cpp caches the static prefix. Tool schemas are a
+  separate API field, never in the prompt. Same finding as the v0.1.29
+  rejection of KV-cache prefix alignment.
+- ⚪ **Compact schema mode** (#2) — dynamic tool-schema filtering already exists
+  (`activeToolSchemas`, M6.11); stripping parameter *descriptions* adds a
+  tool_help tool + adaptive thresholds for marginal savings and risks confusing
+  small models.
+- ⚪ **fs_diff_preview AST dry-run** (#3) — fs_edit/fs_patch already return
+  `simpleDiff` and the TUI shows colorized diff overlays on approval; an AST
+  "mutation breakdown + shadowing" across 12 grammars is heavy for modest
+  value.
+- ⚪ **/skills distill** (#7) — post-goal playbook distillation + end-of-turn
+  skill creation (5+ tool calls) already cover it.

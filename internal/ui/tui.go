@@ -1903,7 +1903,7 @@ func (m *tuiModel) thinkingBlock() string {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/compact", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/undo", "/sessions",
+		"/exit", "/clear", "/compact", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/undo", "/undo list", "/undo <N>", "/sessions",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}

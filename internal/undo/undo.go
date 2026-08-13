@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -56,6 +57,73 @@ func (b *Buffer) CanUndo() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.turns) > 0
+}
+
+// Turns returns one summary line per completed turn (most recent first), for
+// the /undo list command (proposal #6, 2026-08-13).
+func (b *Buffer) Turns() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]string, 0, len(b.turns))
+	for i := len(b.turns) - 1; i >= 0; i-- {
+		turn := b.turns[i]
+		var paths []string
+		for _, e := range turn {
+			paths = append(paths, e.Path)
+		}
+		out = append(out, fmt.Sprintf("turn %d: %d file(s): %s", i+1, len(turn), strings.Join(paths, ", ")))
+	}
+	return out
+}
+
+// Count returns how many completed turns can be undone.
+func (b *Buffer) Count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.turns)
+}
+
+// UndoN reverts the n most recent completed turns (all of them when n <= 0 or
+// n >= len(turns)) and returns every reverted entry. Unlike UndoLastTurn it
+// never leaves a partial state: entries are only popped after all writes
+// succeed.
+func (b *Buffer) UndoN(n int) ([]Entry, error) {
+	b.mu.Lock()
+	if len(b.turns) == 0 {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("nothing to undo")
+	}
+	if n <= 0 || n > len(b.turns) {
+		n = len(b.turns)
+	}
+	target := len(b.turns) - n
+	revert := b.turns[target:] // all turns from target to end (oldest→newest)
+	// Flatten oldest→newest so writes go back in reverse application order.
+	var flat []Entry
+	for _, turn := range revert {
+		flat = append(flat, turn...)
+	}
+	b.mu.Unlock()
+
+	// Apply in reverse of the original write order (newest write first).
+	for i := len(flat) - 1; i >= 0; i-- {
+		e := flat[i]
+		if e.Old == nil {
+			_ = os.Remove(e.Path)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(e.Path), 0o755); err != nil {
+			return flat, err
+		}
+		if err := os.WriteFile(e.Path, e.Old, 0o644); err != nil {
+			return flat, err
+		}
+	}
+	// All writes succeeded: now drop the reverted turns from the stack.
+	b.mu.Lock()
+	b.turns = b.turns[:target]
+	b.mu.Unlock()
+	return flat, nil
 }
 
 // UndoLastTurn reverts the most recent completed turn's file writes in reverse

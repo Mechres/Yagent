@@ -1448,6 +1448,42 @@ func TestNearCapConvergenceNudge(t *testing.T) {
 	}
 }
 
+func TestSubagentOffloadNudge(t *testing.T) {
+	// Proposal #8 (2026-08-13): heavy read-only exploration at high context
+	// usage must nudge the model to delegate to a subagent instead of reading
+	// more files inline. A tiny window forces >75% usage after a few reads.
+	steps := [][]string{}
+	for i := 0; i < 8; i++ {
+		steps = append(steps, toolCall(fmt.Sprintf("r%d", i), "fs_read", fmt.Sprintf(`{"path":"file%d.txt"}`, i)))
+	}
+	steps = append(steps, finalContent("done"))
+	s := newScriptedLLM(t, steps)
+	ws := t.TempDir()
+	for i := 0; i < 8; i++ {
+		writeWorkspaceFile(t, ws, fmt.Sprintf("file%d.txt", i), "x")
+	}
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	// small window + lots of injected history per read -> context pressure
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 20, Window: 400, Reserve: 40}, ws)
+
+	if _, err := a.Run(context.Background(), "explore all files"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "Context utilization is high") {
+		t.Error("subagent offload nudge not injected")
+	}
+	if !strings.Contains(joined, "subagent(") {
+		t.Error("offload nudge should mention the subagent tool")
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",
@@ -1824,6 +1860,35 @@ func TestMemorizeGoalRoundOnFailedRun(t *testing.T) {
 	}
 	if len(mem) == 0 {
 		t.Fatal("no goal facts memorized after a failed round")
+	}
+}
+
+func TestErrorFixHints(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string // substring that must appear; "" = no hints expected
+	}{
+		{"vet: ./main.go:3:15: undefined: fmt\n", "HINT (Go)"},
+		{"main.go:5:9: cannot use x (type string) as int\n", "HINT (Go)"},
+		{"a.go:4:2: imported and not used: \"fmt\"\n", "HINT (Go)"},
+		{"src/x.ts:2:1 - error TS2304: Cannot find name 'Foo'.\n", "HINT (TS)"},
+		{"error[E0432]: unresolved import `missing`\n", "HINT (Rust)"},
+		{"ModuleNotFoundError: No module named 'requests'\n", "HINT (Python)"},
+		{"# pkg\nFAIL\tpkg [build failed]\n", "HINT:"},
+		{"all checks passed\n", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := errorFixHints(c.in)
+		if c.want == "" {
+			if got != "" {
+				t.Errorf("errorFixHints(%q) = %q, want empty", c.in, got)
+			}
+			continue
+		}
+		if !strings.Contains(got, c.want) {
+			t.Errorf("errorFixHints(%q) missing %q: %q", c.in, c.want, got)
+		}
 	}
 }
 

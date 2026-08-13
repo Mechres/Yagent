@@ -635,11 +635,19 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 			a.mu.Lock()
 			looped, name := a.toolLooped, a.toolLoopName
 			reads, wrote := a.turnReadCalls, a.turnWrote
+			usedNow, limit := a.estTokensLocked(), a.cfg.Window
 			a.mu.Unlock()
 			var nudge string
 			switch {
 			case looped:
 				nudge = fmt.Sprintf("You've called %s many times this turn without converging. Stop exploring — use what you already have and give your final answer now (at most one more targeted call).", name)
+			case reads >= 6 && !wrote && limit > 0 && usedNow*4 > limit*3:
+				// Context-pressure offload (proposal #8, 2026-08-13): heavy
+				// read-only exploration is crowding a >75% full window. Instead
+				// of the model grinding through more reads inline (degrading
+				// reasoning as context fills), push the remaining exploration
+				// into a subagent and keep the main context lean.
+				nudge = fmt.Sprintf("Context utilization is high (%d%%). To preserve context quality for resolution, delegate the remaining code exploration to a subagent: subagent(task: '...', tools: ['fs_read', 'grep', 'index_search']) and use its summary instead of reading files directly.", usedNow*100/limit)
 			case reads >= 12 && !wrote:
 				nudge = "You've done extensive exploration this turn without producing a result. Deliver your final answer now based on what you've already gathered."
 			case i >= a.cfg.MaxIterations-2 && wrote:
@@ -876,7 +884,8 @@ func (a *Agent) goalGateCheck(ctx context.Context) string {
 		return ""
 	}
 	return "Deterministic completion check: the workspace still fails its static check. " +
-		"You reported DONE, but the errors below are unresolved — fix them, then re-verify and report DONE again.\n\n" + result
+		"You reported DONE, but the errors below are unresolved — fix them, then re-verify and report DONE again.\n\n" + result +
+		errorFixHints(result)
 }
 
 // diagnosticsFailed reports whether a workspace_diagnostics result indicates
@@ -898,6 +907,53 @@ func diagnosticsFailed(result string) bool {
 		}
 	}
 	return false
+}
+
+// errorFixHints appends deterministic, language-specific micro-recipes to a
+// diagnostics/test_runner result that still fails. Small local models loop on
+// the same broken fix (re-editing a file instead of adding an import); a
+// concrete "do THIS tool call" hint breaks the loop in one turn instead of
+// three. Returns "" when the output is clean or no recipe matches.
+func errorFixHints(result string) string {
+	if result == "" {
+		return ""
+	}
+	lower := strings.ToLower(result)
+	var hints []string
+	// Go: undefined symbol / missing import.
+	if strings.Contains(lower, "undefined:") || strings.Contains(lower, "undeclared") ||
+		strings.Contains(lower, "not in std") || strings.Contains(lower, "missing import") {
+		hints = append(hints, "HINT (Go): an identifier is undefined — it is usually an unimported package or a typo. Use index_search symbol:<name> to locate the declaration, then add the import with fs_edit; do NOT rewrite the whole file.")
+	}
+	// Go: type mismatch in a use/call.
+	if strings.Contains(lower, "cannot use") || strings.Contains(lower, "type mismatch") ||
+		strings.Contains(lower, "cannot assign") {
+		hints = append(hints, "HINT (Go): a type mismatch — use code_slice on the two types/functions to compare signatures, then fix the call site or the declaration with a targeted fs_edit.")
+	}
+	// Go: unused variable / import (vet warnings).
+	if strings.Contains(lower, "declared and not used") || strings.Contains(lower, "imported and not used") {
+		hints = append(hints, "HINT (Go): unused declaration — remove the unused variable/import with a targeted fs_edit; do not comment it out.")
+	}
+	// TypeScript: cannot find name / missing module.
+	if strings.Contains(lower, "cannot find name") || strings.Contains(lower, "ts2304") {
+		hints = append(hints, "HINT (TS): a name is not defined — likely a missing import or declaration. Use index_search symbol:<name> to find where it is exported, then add the import with fs_edit.")
+	}
+	// Rust: unresolved import/use.
+	if strings.Contains(lower, "unresolved import") || strings.Contains(lower, "e0432") {
+		hints = append(hints, "HINT (Rust): an import does not resolve — the module path or feature is wrong. Use code_topology to see the package layout, then fix the use statement with fs_edit.")
+	}
+	// Python: module not found.
+	if strings.Contains(lower, "modulenotfounderror") || strings.Contains(lower, "no module named") {
+		hints = append(hints, "HINT (Python): an import does not resolve — check the package is installed or the import path is correct (relative vs absolute). Use grep to find where the module is defined, then fix the import with fs_edit.")
+	}
+	// Generic compile failure fallback.
+	if strings.Contains(lower, "build failed") || strings.Contains(lower, "compile error") {
+		hints = append(hints, "HINT: the build failed — the error above names the file and line. Re-read that region with fs_read, apply the smallest correct fix, and re-run the check. Do not guess or rewrite unrelated code.")
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	return "\n\n" + strings.Join(hints, "\n")
 }
 
 // taskLedger renders the compact machine-generated progress anchor (goal =
@@ -1021,6 +1077,7 @@ func (a *Agent) verifyBarrier(ctx context.Context) string {
 	}
 	return "The agent wrote files this turn but did not run workspace_diagnostics. " +
 		"Deterministic verification ran it now; the result is:\n" + result +
+		errorFixHints(result) +
 		"\n\nIf the check found problems, fix them now. Otherwise give your final answer."
 }
 
@@ -1044,7 +1101,7 @@ func RepeatLoop(s string) bool {
 }
 
 // proseToolName matches a known tool name on a line.
-var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|test_runner|index_search|index_repo|code_references|code_slice|code_topology|code_impact|code_unused|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
+var proseToolName = regexp.MustCompile(`\b(fs_read|fs_write|fs_edit|fs_patch|fs_refactor|glob|grep|shell_exec|workspace_diagnostics|test_runner|code_environment|index_search|index_repo|code_references|code_slice|code_topology|code_impact|code_unused|git_status|git_diff|git_log|web_search|web_fetch|memory_save|memory_search|consult|subagent|clarify|plan)\b`)
 
 // intentWord marks a line as the model *planning* a tool call in prose rather
 // than reporting one it already made.
@@ -1192,7 +1249,7 @@ var (
 		"skills_list", "skill_view", "consult",
 	}
 	webToolNames    = []string{"web_search", "web_fetch"}
-	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline", "code_topology", "code_impact", "code_unused"}
+	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline", "code_topology", "code_impact", "code_unused", "code_environment"}
 	skillManageName = []string{"skill_manage"}
 )
 

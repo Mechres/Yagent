@@ -2,6 +2,26 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.41 — 2026-08-13
+
+### Added
+- **error_fix_hints.** Deterministic, language-specific micro-recipes appended
+  to failing diagnostics output (Go undefined → index_search+fs_edit, TS/Rust/
+  Python variants, generic fallback) so a looping model gets "do THIS tool call"
+  instead of re-guessing. Wired into the GoalGate DONE-refusal and the
+  verify-barrier feedback.
+- **`code_environment` tool.** Read-only toolchain/env audit: installed
+  compilers/interpreters, CGO_ENABLED/CC/GOFLAGS flags, and native-binding
+  detection (cgo, extern "C", C includes, node-gyp). Tells the model "this is
+  an environment problem" before it edits source.
+- **Multi-turn undo.** `undo.Buffer` gained `Turns()`/`UndoN(n)`; the `/undo
+  list` command shows per-turn files and `/undo <N>` reverts the N most recent
+  turns all-or-nothing (REPL + TUI).
+- **Subagent-offload nudge.** At >75% context during read-only exploration, the
+  loop nudges the model to delegate the remaining reads to a subagent, keeping
+  the main context lean.
+- Golden evals 40–41 lock in the error-hint and code_environment behavior.
+
 ## v0.1.40 — 2026-08-13
 
 ### Added

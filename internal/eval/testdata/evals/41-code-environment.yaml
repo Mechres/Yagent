@@ -1,0 +1,16 @@
+name: code-environment
+description: v0.1.41 — code_environment audits the toolchain and detects native bindings before the model blames source code
+files:
+  pkg/cgo.go: |
+    package pkg
+
+    // #cgo LDFLAGS: -lm
+    import "C"
+
+    func X() {}
+input: why might this project fail to build?
+steps:
+  - tool_call: {name: code_environment, args: '{}'}
+  - answer: the environment has the toolchain, and this project uses cgo bindings
+assert:
+  tool_results_contain: ["toolchain:", "native bindings:", "pkg/cgo.go"]
