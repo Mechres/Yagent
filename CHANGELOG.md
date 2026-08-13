@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.44 — 2026-08-13
+
+### Fixed
+- **Instruction-echo on every turn.** Qwen3VL was ending each answer with an
+  acknowledgment restating its instructions ("Understood. I will complete tasks
+  directly without unnecessary pauses or confirmations, unless using the
+  clarify tool..."). Added an explicit system-prompt rule forbidding
+  instruction acknowledgment/restatement ("never begin with Understood / I will
+  / OK, I'll"). Verified gone across varied turns.
+
 ## v0.1.43 — 2026-08-13
 
 ### Fixed (found in live use)
