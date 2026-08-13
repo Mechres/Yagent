@@ -1042,3 +1042,13 @@ four rejected with reasons (verified against the code, not the prose).
   value.
 - ⚪ **/skills distill** (#7) — post-goal playbook distillation + end-of-turn
   skill creation (5+ tool calls) already cover it.
+
+## Model-guidance refresh (2026-08-13)
+
+Re-ran `yagent bench --repeat 3` on the current default (Qwen3VL-8B-Instruct,
+Q4_K_M, 32k Q8 KV on :8089): **17/18** — effectively holding the original
+18/18, with the single miss a `fuzzy-path` flake (the documented-flakiest task,
+swings run-to-run). The bench regression gate (v0.1.36) recorded 17/18 as the
+new baseline and produced no regression warning. Verdict: **the default model is
+validated, no change needed** — no newer Qwen3.5/4-family model is worth
+chasing; docs updated to the honest 17/18. Ready for real-world soak.

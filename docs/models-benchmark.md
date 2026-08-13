@@ -47,7 +47,7 @@ run" predate `--repeat` and are indicative only.
 | Model | Size | Pass (×3) | Wall time | Notes |
 |---|---|---|---|---|
 | **Qwopus3.5-9B-coder-Exp** | 9B | 12/18 (10 at temp 0.6, **12 at temp 1.0**) | ~1m40s | Qwen3.5-based agentic coder (Apache-2.0). Its card claims ToolCall-15 100/100 but that **doesn't transfer to our OpenAI-format llama.cpp bench** — grep-find (1/3) and code-locate (1/3) are genuinely poor. **Needs temp 1.0** (its card's testing recipe); multi-turn fixes at temp 1 (3/3). Experimental (`Exp`) build — second-tier, below the keepers. |
-| **Qwen3VL-8B-Instruct** | 8B | **18/18** | ~1m04s | **Best measured overall** — perfect score, fast (3–6s/task), no mandatory thinking. The vision encoder is unused by Yagent, but the Qwen3 text/tool base is excellent. |
+| **Qwen3VL-8B-Instruct** | 8B | **17/18** (18/18 originally; 2026-08-13 refresh) | ~1m05s | **Best measured overall** — fast (3–6s/task), no mandatory thinking. The one miss is a `fuzzy-path` flake (the flakiest task, varies run-to-run). The vision encoder is unused by Yagent, but the Qwen3 text/tool base is excellent. |
 | **Ornith-1.0-9B** | 9B | 16/18 (16, 13–15 on older llama.cpp) | ~1m57s | Qwen3.5-family coding-agent model, MIT. **Fastest per-task measured** (2–4s/task) and `reasoning_content` works perfectly with the thinking display. **edit-verify improved to 3/3 after the llama.cpp rebuild** (b10397) — server-side tool parsing matters. **multi-turn and code-locate stay its weak spots** — reliable second-tier, not a default upgrade. Recommended sampling (top_k 20, rep_penalty 1.05) already applied. |
 | **Qwen3-8B** (non-VL) | 8B | 14/18 | 4m10s | Same base but **thinks by default on llama.cpp** (~500 thinking tokens/task → ~15s each). Capable, but the VL variant is strictly better for Yagent. |
 | **LFM2.5-8B-A1B-UD** (MoE) | 8B | 13/18 | ~1m15s | Decent agentic MoE; its recommended recipe helps (10 → 13/18). **code-locate 0/3** — it guesses instead of locating via a tool. Not a gemma-4-26B rival for Yagent's agent loop, but its raw tool-calling works. |
@@ -62,7 +62,7 @@ run" predate `--repeat` and are indicative only.
 ## Recommended pick
 
 **Qwen3VL-8B-Instruct is the default model and the recommended pick on a 12 GB card**: it scored
-perfectly, is fast, and leaves ample VRAM headroom for context + embeddings.
+17–18/18 across runs, is fast, and leaves ample VRAM headroom for context + embeddings.
 If you want maximum quality and can take the speed hit, `gemma-4-12B`. If you
 need the largest model the card can hold, `gpt-oss-20b` (MoE) with a reduced
 context window.
