@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.46 — 2026-08-13
+
+### Added
+- **C/C++ support in `workspace_diagnostics`.** A project with `.c`/`.cpp`/
+  `.cc`/`.cxx` sources (or a Makefile/CMakeLists) and no higher-level manifest
+  is now detected and checked with a syntax-only compile (`gcc`/`g++`
+  `-fsyntax-only` over all sources — no linking, no build artifacts). C++ picks
+  `g++`; the "no diagnostics configured" message now mentions C/C++.
+  Covered by `TestWorkspaceDiagnosticsDetectC` + `TestDetectDiagnosticsCppPrefersGpp`.
+
 ## v0.1.45 — 2026-08-13
 
 ### Fixed

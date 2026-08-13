@@ -66,3 +66,49 @@ func TestWorkspaceDiagnosticsCommandError(t *testing.T) {
 		t.Errorf("result = %q", res)
 	}
 }
+
+func TestWorkspaceDiagnosticsDetectC(t *testing.T) {
+	ws := t.TempDir()
+	os.MkdirAll(filepath.Join(ws, "src"), 0o755)
+	if err := os.WriteFile(filepath.Join(ws, "src", "main.c"), []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gotName, gotArgs string
+	tool := &diagnosticsTool{
+		ws:       ws,
+		lookPath: func(s string) (string, error) { return "/usr/bin/" + s, nil },
+		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			gotName, gotArgs = name, strings.Join(args, " ")
+			return []byte("no issues"), nil
+		},
+	}
+	res, err := tool.Execute(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "gcc" || !strings.Contains(gotArgs, "-fsyntax-only") {
+		t.Errorf("cmd = %s %s, want gcc -fsyntax-only", gotName, gotArgs)
+	}
+	if !strings.Contains(gotArgs, "main.c") {
+		t.Errorf("args missing source file: %s", gotArgs)
+	}
+	if !strings.Contains(res, "no issues") {
+		t.Errorf("result = %q", res)
+	}
+}
+
+func TestDetectDiagnosticsCppPrefersGpp(t *testing.T) {
+	ws := t.TempDir()
+	os.MkdirAll(filepath.Join(ws, "src"), 0o755)
+	os.WriteFile(filepath.Join(ws, "src", "game.cpp"), []byte("int main() { return 0; }\n"), 0o644)
+	name, args, ok := detectDiagnostics(ws, func(s string) (string, error) { return "/usr/bin/" + s, nil })
+	if !ok {
+		t.Fatal("C++ project not detected")
+	}
+	if name != "g++" {
+		t.Errorf("name = %q, want g++ for a .cpp project", name)
+	}
+	if len(args) < 2 || args[0] != "-fsyntax-only" {
+		t.Errorf("args = %v", args)
+	}
+}

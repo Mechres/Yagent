@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,7 +44,7 @@ func (t *diagnosticsTool) Execute(ctx context.Context, raw json.RawMessage) (str
 	}
 	name, args, ok := detectDiagnostics(t.ws, t.lookPath)
 	if !ok {
-		return "no diagnostics configured for this project (recognized markers: go.mod, package.json+tsconfig, Cargo.toml, pyproject.toml/requirements.txt)", nil
+		return "no diagnostics configured for this project (recognized markers: go.mod, package.json+tsconfig, Cargo.toml, pyproject.toml/requirements.txt, or C/C++ sources)", nil
 	}
 	out, err := t.run(ctx, name, args...)
 	if err != nil {
@@ -128,6 +129,74 @@ func detectDiagnostics(ws string, lookPath func(string) (string, error)) (name s
 		if _, err := lookPath("python3"); err == nil {
 			return "python3", []string{"-m", "compileall", "-q", "."}, true
 		}
+	case hasCProject(ws):
+		// C/C++: a Makefile/CMakeLists or source files with no higher-level
+		// manifest. Run a syntax-only check on every source file with the
+		// matching compiler (no linking, no build artifacts).
+		sources, _ := cSources(ws)
+		if len(sources) == 0 {
+			return "", nil, false // manifest only; nothing to syntax-check
+		}
+		if hasCppSources(ws) {
+			if _, err := lookPath("g++"); err == nil {
+				return "g++", append([]string{"-fsyntax-only"}, sources...), true
+			}
+		}
+		if _, err := lookPath("gcc"); err == nil {
+			return "gcc", append([]string{"-fsyntax-only"}, sources...), true
+		}
+		if _, err := lookPath("cc"); err == nil {
+			return "cc", append([]string{"-fsyntax-only"}, sources...), true
+		}
 	}
 	return "", nil, false
+}
+
+// hasCProject reports whether the workspace looks like a C/C++ project: a
+// Makefile/CMakeLists, or at least one C/C++ source file, with no higher-level
+// manifest (go.mod, Cargo.toml, package.json, pyproject.toml) present.
+func hasCProject(ws string) bool {
+	for _, m := range []string{"Makefile", "makefile", "CMakeLists.txt", "CMakeLists.txt.in"} {
+		if _, err := os.Stat(filepath.Join(ws, m)); err == nil {
+			return true
+		}
+	}
+	sources, err := cSources(ws)
+	return err == nil && len(sources) > 0
+}
+
+// cSources lists .c/.cc/.cpp/.cxx source files under ws (skipping build dirs).
+func cSources(ws string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(ws, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(name))
+		switch ext {
+		case ".c", ".cc", ".cpp", ".cxx":
+			out = append(out, path)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// hasCppSources reports whether any .cpp/.cc/.cxx file exists (to pick g++).
+func hasCppSources(ws string) bool {
+	sources, err := cSources(ws)
+	if err != nil {
+		return false
+	}
+	for _, s := range sources {
+		switch strings.ToLower(filepath.Ext(s)) {
+		case ".cc", ".cpp", ".cxx":
+			return true
+		}
+	}
+	return false
 }
