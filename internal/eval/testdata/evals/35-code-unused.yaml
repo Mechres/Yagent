@@ -1,0 +1,24 @@
+name: code-unused
+description: v0.1.31 — code_unused lists exported symbols with zero call sites (tests count as callers)
+index: true
+files:
+  pkg/a.go: |
+    package pkg
+
+    // deadFn is never called anywhere.
+    func deadFn() int { return 1 }
+
+    // aliveFn is called by main below.
+    func aliveFn() int { return 2 }
+  pkg/main.go: |
+    package pkg
+
+    func main() { _ = aliveFn() }
+input: find unused exported functions
+steps:
+  - tool_call: {name: index_repo, args: '{}'}
+  - tool_call: {name: code_unused, args: '{}'}
+  - answer: deadFn is unused
+assert:
+  tool_results_contain: ["deadFn", "candidate"]
+  tool_results_not_contain: ["aliveFn"]

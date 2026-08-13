@@ -955,3 +955,23 @@ not locked into the fake-server regression net. Added:
 The eval harness Task now exposes `goal_gate`, `goal_memorize` and
 `memory_contains`, so future goal-loop/memory behavior can be locked in the
 same way. All evals run offline against scripted servers (no network).
+
+## Golden-eval expansion round 2 — v0.1.28/v0.1.31 deterministic tools (2026-08-13)
+
+Second sweep of untested deterministic behavior. Added:
+
+- **30-fs-edit-whitespace-align** — fs_edit auto-aligns a tabs-vs-spaces
+  old_string that lands at exactly one span, with the `[auto-aligned whitespace
+  indentation]` marker and file-style indentation preserved.
+- **31-diff-semantic** — fs_edit blocks deleting an exported symbol
+  (diff_semantic), the file keeps PublicAPI.
+- **32-structured-preflight** — a malformed YAML write is blocked before it
+  reaches disk ("YAML" error, file absent).
+- **33-read-tool-cache** — a repeated identical grep returns the
+  `[cached result]` marker (pure-read memoization).
+- **34-fs-refactor-guardrails** — a workspace-wide rename rewrites every file
+  (all-or-nothing preflight) and updates all occurrences.
+- **35-code-unused** — code_unused lists the dead exported symbol but not the
+  live one. Harness gained `tool_results_not_contain` (negative assertion).
+
+32 evals total, all offline against scripted servers.

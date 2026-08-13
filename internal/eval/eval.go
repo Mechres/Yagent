@@ -90,6 +90,9 @@ type Assertions struct {
 	FinalAnswerContains string `yaml:"final_answer_contains"`
 	// ToolResultsContain requires at least one tool result to contain each.
 	ToolResultsContain []string `yaml:"tool_results_contain"`
+	// ToolResultsNotContain requires NO tool result to contain any of these
+	// (used to assert a symbol is genuinely absent from a candidate list).
+	ToolResultsNotContain []string `yaml:"tool_results_not_contain"`
 	// MinToolResults requires at least this many tool executions.
 	MinToolResults int `yaml:"min_tool_results"`
 	// StagedSkills requires exactly this many staged skill writes.
@@ -271,6 +274,13 @@ func Run(t *testing.T, task Task) {
 		}
 		if !found {
 			t.Errorf("no tool result contains %q (results: %d)", want, len(toolResults))
+		}
+	}
+	for _, bad := range task.Assert.ToolResultsNotContain {
+		for _, r := range toolResults {
+			if strings.Contains(r, bad) {
+				t.Errorf("tool result unexpectedly contains %q: %q…", bad, r[:min(len(r), 80)])
+			}
 		}
 	}
 	if task.Assert.NoToolResults && len(toolResults) != 0 {

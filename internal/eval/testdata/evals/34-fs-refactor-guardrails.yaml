@@ -1,0 +1,20 @@
+name: fs-refactor-guardrails
+description: v0.1.31 — fs_refactor pre-flights every rewritten file (all-or-nothing) and renames across files
+files:
+  a.go: |
+    package pkg
+
+    func helper() int { return 1 }
+  b.go: |
+    package pkg
+
+    var x = helper()
+input: rename the helper function to assist across the workspace
+steps:
+  - tool_call: {name: fs_refactor, args: '{"old_name":"helper","new_name":"assist"}'}
+  - answer: I renamed helper to assist
+assert:
+  tool_results_contain: ["renamed helper -> assist"]
+  file_contains:
+    - {path: a.go, text: "func assist()"}
+    - {path: b.go, text: "assist()"}

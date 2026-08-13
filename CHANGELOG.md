@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.39 — 2026-08-13
+
+### Added
+- **Golden evals 30–35.** The fake-server regression suite now locks in the
+  v0.1.28/v0.1.31 deterministic tools: fs_edit whitespace auto-align, the
+  diff_semantic exported-symbol block, structured-file preflight (malformed
+  YAML blocked), the read-tool result cache (`[cached result]`), fs_refactor
+  all-or-nothing guardrails, and code_unused (dead vs live symbol). The harness
+  gained a `tool_results_not_contain` negative assertion. 32 evals total.
+
 ## v0.1.38 — 2026-08-13
 
 ### Added

@@ -1,0 +1,12 @@
+name: read-tool-cache
+description: v0.1.31 — a repeated identical pure read returns a [cached result] marker instead of re-running
+files:
+  a.txt: |
+    content-xyz
+input: search for content-xyz twice
+steps:
+  - tool_call: {name: grep, args: '{"pattern":"content-xyz"}'}
+  - tool_call: {name: grep, args: '{"pattern":"content-xyz"}'}
+  - answer: I found it
+assert:
+  tool_results_contain: ["[cached result]"]

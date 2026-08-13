@@ -1,0 +1,17 @@
+name: fs-edit-whitespace-align
+description: v0.1.28 — fs_edit auto-aligns a whitespace-mismatched old_string (tabs vs spaces) when it matches exactly one span
+files:
+  tabs.go: |
+    package demo
+
+    func f() int {
+    	return 1
+    }
+input: change the return value in f() to 2
+steps:
+  - tool_call: {name: fs_edit, args: '{"path":"tabs.go","old_string":"func f() int {\n    return 1\n}","new_string":"func f() int {\n    return 2\n}"}'}
+  - answer: I updated the return value to 2
+assert:
+  tool_results_contain: ["auto-aligned whitespace"]
+  file_contains:
+    - {path: tabs.go, text: "\treturn 2"}

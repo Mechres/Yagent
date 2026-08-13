@@ -1,0 +1,20 @@
+name: diff-semantic
+description: v0.1.27 — fs_edit blocks a change that would delete an exported symbol
+files:
+  api.go: |
+    package demo
+
+    // PublicAPI is public.
+    func PublicAPI() int {
+    	return 42
+    }
+
+    func helper() int { return 1 }
+input: remove the PublicAPI function
+steps:
+  - tool_call: {name: fs_edit, args: '{"path":"api.go","old_string":"func PublicAPI() int {\n\treturn 42\n}\n\n","new_string":""}'}
+  - answer: it was blocked, PublicAPI is public API
+assert:
+  tool_results_contain: ["exported symbol"]
+  file_contains:
+    - {path: api.go, text: "PublicAPI"}

@@ -1,0 +1,13 @@
+name: structured-preflight
+description: v0.1.31 — a malformed YAML/JSON write is blocked before it reaches disk
+files:
+  existing.yaml: |
+    a: 1
+input: write the playbook config
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"playbook.yaml","content":"phases:\n  - goal: build\n    tools: [unclosed\n"}'}
+  - answer: the write was rejected because the YAML was malformed
+assert:
+  tool_results_contain: ["YAML"]
+  file_not_contains:
+    - {path: playbook.yaml, text: "unclosed"}
