@@ -830,3 +830,71 @@ No new read/write tools, guardrails, exporter formats, the fine-tune pipeline
 verification tools are already CPU/off-GPU). The review batches keep proposing
 these and they are done, covered, or plumbing. The feature surface is
 saturated; the ROI is in the evidence items above.
+
+## Adversarial QA batch (Hermes, 2026-08-13 — 15 findings, 6 fixed / 2 false / 7 not-bugs)
+
+An external QA agent ran an adversarial breakage audit (malformed tool inputs,
+edge workloads, hostile repos, concurrency, persistence) via temporary test
+files driving real tool code. 15 findings. Disposition:
+
+### Fixed (all tested)
+
+- **checkpoint name traversal → workspace wipe** (#13) — `Restore(ws, "../..")`
+  resolved to the workspace itself, `os.Stat` succeeded, and Restore then
+  deleted the whole tree. `Restore` lacked `Save`'s `/\` guard.
+- **checkpoint.Delete traversal → delete outside workspace** (#14) — same root
+  cause. Both now go through `validateName` (rejects separators, `.`/`..`,
+  non-clean paths); `Restore` also requires the snapshot be a real dir before
+  wiping. Covered by `TestRestoreDeleteRejectTraversal`.
+- **fs_patch out-of-range hunk → process panic** (#1) — `applyHunks` sliced
+  `fileLines[:oldStart-1]` with no bounds check; a hunk past EOF with only
+  additions panicked ("slice bounds out of range"), and there was no `recover()`
+  anywhere, so one malformed diff killed the process. Now returns a structured
+  error naming the hunk start. Defense-in-depth: the agent's dispatch wraps
+  every tool Execute in a `recover()` so a tool panic degrades to an error
+  result instead of killing yagent. Covered by `TestFSPatchRejectsOutOfRangeHunk`.
+- **/undo phantom entries from rejected writes** (#5) — fs_write/fs_edit/fs_patch
+  recorded the undo entry BEFORE preflight, so a rejected write left a phantom
+  "revert" (and could re-write a stale version on the next undo). Record now
+  happens after preflight passes, just before the actual write. Covered by
+  `TestRejectedWriteLeavesNoUndoEntry`.
+- **shell_bg ran outside the workspace** (#7) — `jobs.Start` never set
+  `cmd.Dir`, so a background job resolved relative paths against yagent's cwd
+  (only the bwrap path was correct). `StartIn(command, dir)` added; shell_bg
+  passes the workspace. Covered by `TestStartInSetsWorkingDir`.
+- **web_fetch SSRF: no scheme validation** (#2) — `http.NewRequestWithContext`
+  accepted any scheme; `file://...` was handed to the HTTP client. Now only
+  http/https with a host are fetched; other schemes are rejected before any
+  request. Covered by `TestFetchRejectsNonHTTPScheme`.
+
+### False claims (verified — no change)
+
+- **vram_threshold_tps pathological values force-prune a healthy session** (#8)
+  — the claim is backwards: the check is `tps < threshold`, so a *tiny*
+  threshold can't fire (2 t/s > 1e-9), and negatives are already rejected by
+  config validation AND treated as disabled in `detectVramPressure`. Verified
+  with boundary tests.
+- **web_search(negative k) silently accepted** (#3) — `k <= 0` is clamped to
+  the default 5 before searching; that is correct behavior, not a bug.
+
+### Not bugs (confirmed working)
+
+- #6 fs_refactor rewrites strings/comments — documented word-boundary behavior,
+  and the result is surfaced in the tool output.
+- #4 web_fetch returns raw bytes for a binary body — the fetch path is
+  text-oriented but not harmful; not worth changing.
+- #9 /compact on empty session, RunGoal max-rounds, MaxIterations 0/-1 — all
+  degrade safely.
+- #10 adversarial repos (deep nesting, huge files, symlink escapes, case
+  collisions, invalid UTF-8) — all handled correctly (fs_read rejects symlink
+  escapes and binary files).
+- #11 concurrency (16 parallel writes/reads) — race-clean, no corruption.
+- #12 shell_kill mid-run / double-kill / subagent recursion — prompt and safe.
+- #15 persistence (session/memory/skills stores) — hostile inputs rejected,
+  corrupted DB rejected at Open, no injection/wipe.
+
+### QA harness note
+
+The report's `go test ./...` "fails only on the QA harness tests" is expected —
+those throwaway `*_test.go` files asserted the broken behavior and were not
+part of the shipped tree.

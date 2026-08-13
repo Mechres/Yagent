@@ -351,3 +351,29 @@ func TestWebFetchCache(t *testing.T) {
 		t.Errorf("server hits after ClearCache = %d, want 2", requests)
 	}
 }
+
+func TestFetchRejectsNonHTTPScheme(t *testing.T) {
+	c := &Client{http: defaultHTTP(), fetchTimeout: 0}
+	// file://, gopher://, and a URL with no host must be rejected before any
+	// request touches the network/filesystem (adversarial-QA finding #2).
+	for _, bad := range []string{"file:///etc/passwd", "gopher://example.com/x", "http:///nohost"} {
+		got, err := c.Fetch(context.Background(), bad)
+		if err == nil {
+			t.Errorf("Fetch(%q) succeeded: %q", bad, got)
+		}
+		if !strings.Contains(err.Error(), "scheme") && !strings.Contains(err.Error(), "host") {
+			t.Errorf("Fetch(%q) error should explain scheme/host: %v", bad, err)
+		}
+	}
+	// http(s) still works
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><p>ok body</p></body></html>"))
+	}))
+	defer ts.Close()
+	c2 := &Client{http: ts.Client(), fetchTimeout: 0}
+	got, err := c2.Fetch(context.Background(), ts.URL)
+	if err != nil || !strings.Contains(got, "ok body") {
+		t.Errorf("http fetch failed: %v %q", err, got)
+	}
+}

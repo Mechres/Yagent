@@ -67,8 +67,17 @@ type Registry struct {
 // New returns an empty registry.
 func New() *Registry { return &Registry{jobs: map[string]*Job{}} }
 
-// Start launches a command via sh -c in the background.
+// Start launches a command via sh -c in the background, in the workspace
+// directory (the same cwd the interactive shell_exec uses). Fixes finding #7
+// (2026-08-13): without cmd.Dir a background job ran in yagent's process cwd,
+// so relative paths resolved against the wrong directory.
 func (r *Registry) Start(command string) (*Job, error) {
+	return r.StartIn(command, "")
+}
+
+// StartIn launches a command with an explicit working directory ("" = inherit
+// the process cwd).
+func (r *Registry) StartIn(command, dir string) (*Job, error) {
 	id, err := newID()
 	if err != nil {
 		return nil, err
@@ -76,6 +85,7 @@ func (r *Registry) Start(command string) (*Job, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &Job{ID: id, Command: command, Start: time.Now(), cancel: cancel, done: make(chan struct{})}
 	j.proc = exec.CommandContext(ctx, "sh", "-c", command)
+	j.proc.Dir = dir
 	j.proc.Stdout = writer(j.write)
 	j.proc.Stderr = writer(j.write)
 	// Own process group so Kill can terminate descendants too (CommandContext

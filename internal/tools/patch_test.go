@@ -9,6 +9,29 @@ import (
 	"github.com/Mechres/Yagent/internal/undo"
 )
 
+func TestFSPatchRejectsOutOfRangeHunk(t *testing.T) {
+	// Adversarial-QA finding #1 (2026-08-13): a hunk whose start line exceeds
+	// the file length with only additions previously panicked in applyHunks
+	// ("slice bounds out of range"). It must now return a structured error.
+	ws := t.TempDir()
+	writeFile(t, ws, "a.txt", "line1\nline2\nline3\n")
+	reg := NewRegistry(ws, Options{})
+	got := execTool(t, reg, "fs_patch", map[string]any{
+		"patch": "--- a/a.txt\n+++ b/a.txt\n@@ -9999,0 +1,1 @@\n+injected\n",
+	})
+	if strings.Contains(got, "patched") {
+		t.Fatalf("out-of-range hunk was applied: %q", got)
+	}
+	if !strings.Contains(got, "9999") {
+		t.Errorf("error should mention the offending hunk start: %q", got)
+	}
+	// file untouched
+	data, _ := os.ReadFile(filepath.Join(ws, "a.txt"))
+	if !strings.Contains(string(data), "line3") || strings.Contains(string(data), "injected") {
+		t.Errorf("file was modified by a bad hunk: %q", data)
+	}
+}
+
 func TestFSPatchAppliesUnifiedDiff(t *testing.T) {
 	ws, reg := fakeWorkspace(t)
 	writeFile(t, ws, "a.go", "package pkg\n\nfunc old() int {\n    return 1\n}\n")

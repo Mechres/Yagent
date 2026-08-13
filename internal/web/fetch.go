@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -38,8 +39,21 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (string, error) {
 	return text, nil
 }
 
-// fetchNetwork performs the actual HTTP GET + extraction.
+// fetchNetwork performs the actual HTTP GET + extraction. Only http(s) URLs
+// are fetched — other schemes (file://, gopher://, ...) are rejected before
+// any request so a model-provided URL can never touch the local filesystem or
+// a non-HTTP service (adversarial-QA finding #2, 2026-08-13).
 func (c *Client) fetchNetwork(ctx context.Context, rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("fetch %s: invalid URL: %w", rawURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("fetch %s: unsupported scheme %q (only http/https)", rawURL, u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("fetch %s: missing host", rawURL)
+	}
 	timeout := c.fetchTimeout
 	if timeout <= 0 {
 		timeout = 15 * time.Second

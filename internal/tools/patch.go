@@ -72,9 +72,6 @@ func (t *fsPatchTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		if out == string(data) {
 			continue // no effective change
 		}
-		if t.undo != nil {
-			t.undo.Record(full, data)
-		}
 		if msg := preflightSyntax(f.path, out); msg != "" {
 			return fmt.Sprintf("error: %s: %s", f.path, msg), nil
 		}
@@ -83,6 +80,9 @@ func (t *fsPatchTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		}
 		if msg := preflightSymbols(f.path, string(data), out); msg != "" {
 			return fmt.Sprintf("error: %s: %s", f.path, msg), nil
+		}
+		if t.undo != nil {
+			t.undo.Record(full, data)
 		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
@@ -233,6 +233,13 @@ func applyHunks(fileLines []string, hunks []diffHunk) ([]string, error) {
 			if idx >= len(fileLines) || fileLines[idx] != exp {
 				return nil, fmt.Errorf("hunk at line %d does not match the file content", h.oldStart)
 			}
+		}
+		// Sanity-check the hunk position before slicing: a malformed hunk with
+		// only additions and a start far beyond the file would otherwise panic
+		// with "slice bounds out of range" (adversarial-QA finding #1,
+		// 2026-08-13 — a single malformed diff from the model is a DoS).
+		if h.oldStart-1 > len(fileLines) {
+			return nil, fmt.Errorf("hunk starts at line %d but the file has only %d line(s)", h.oldStart, len(fileLines))
 		}
 		before := fileLines[:h.oldStart-1]
 		after := fileLines[h.oldStart-1+len(expected):]

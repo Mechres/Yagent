@@ -2,6 +2,24 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.35 — 2026-08-13
+
+### Fixed (adversarial-QA audit)
+- **Checkpoint name traversal** — `Restore`/`Delete` now validate names like
+  `Save` does, closing a workspace-wipe (Restore `../..`) and an
+  outside-workspace delete (Delete `../../../victim`). `Restore` also requires
+  the snapshot be a real directory before removing anything.
+- **fs_patch out-of-range hunk panic** — a hunk starting past EOF with only
+  additions panicked the process; it now returns a structured error. Every tool
+  execution is additionally wrapped in `recover()` so a tool panic degrades to
+  an error result instead of killing yagent.
+- **/undo phantom entries** — a write rejected by preflight no longer records an
+  undo entry (previously /undo would "revert" a write that never touched disk).
+- **shell_bg working directory** — background jobs now run in the workspace
+  (`jobs.StartIn`), not yagent's process cwd.
+- **web_fetch scheme validation** — non-http(s) URLs (file://, gopher://, …)
+  are rejected before any request (SSRF hardening).
+
 ## v0.1.34 — 2026-08-13
 
 ### Added

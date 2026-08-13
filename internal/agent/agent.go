@@ -1836,7 +1836,19 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		}
 	}
 
-	result, err := tool.Execute(ctx, call.Function.Arguments)
+	// A tool panic must degrade to an error result, never kill the process —
+	// a single malformed input (e.g. a bad fs_patch hunk, adversarial-QA
+	// finding #1) would otherwise take the whole agent down mid-turn.
+	result, err := func() (r string, e error) {
+		defer func() {
+			if p := recover(); p != nil {
+				r = fmt.Sprintf("error: tool %q panicked: %v (internal bug — please report)", name, p)
+				e = nil
+				slog.Error("tool panic recovered", "tool", name, "panic", p)
+			}
+		}()
+		return tool.Execute(ctx, call.Function.Arguments)
+	}()
 	if err != nil {
 		// Only argument-validation failures land here (tool contract).
 		valFails[name]++

@@ -49,9 +49,18 @@ func Save(ws, name string) (string, error) {
 // Restore reverts the workspace to a snapshot: the current tree (minus .git
 // and .yagent) is removed and replaced with the snapshot's contents.
 func Restore(ws, name string) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
 	snap := filepath.Join(ws, dirName, name)
-	if _, err := os.Stat(snap); err != nil {
+	fi, err := os.Stat(snap)
+	if err != nil {
 		return fmt.Errorf("checkpoint %q not found (run /checkpoint list)", name)
+	}
+	// A checkpoint is a directory; a file with the same name must not pass
+	// (a stray file would be copied over the workspace).
+	if !fi.IsDir() {
+		return fmt.Errorf("checkpoint %q is not a directory", name)
 	}
 	// Remove everything except .git and .yagent.
 	entries, err := os.ReadDir(ws)
@@ -88,7 +97,28 @@ func List(ws string) []string {
 
 // Delete removes a snapshot.
 func Delete(ws, name string) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
 	return os.RemoveAll(filepath.Join(ws, dirName, name))
+}
+
+// validateName rejects checkpoint names that could escape the checkpoints dir
+// (path separators and traversal), mirroring the guard Save has always had.
+// Without it, Restore(ws, "../..") resolves to the workspace itself and wipes
+// it, and Delete(ws, "../../../victim") removes a directory outside the
+// workspace (adversarial-QA findings #13/#14, 2026-08-13).
+func validateName(name string) error {
+	if name == "" {
+		return fmt.Errorf("invalid checkpoint name %q", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("invalid checkpoint name %q (must not contain path separators)", name)
+	}
+	if filepath.Clean(name) != name || name == "." || name == ".." {
+		return fmt.Errorf("invalid checkpoint name %q", name)
+	}
+	return nil
 }
 
 func copyTree(src, dst string) error {

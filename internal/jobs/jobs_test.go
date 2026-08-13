@@ -74,3 +74,27 @@ func TestJobsList(t *testing.T) {
 	}
 	r.StopAll()
 }
+
+func TestStartInSetsWorkingDir(t *testing.T) {
+	// Adversarial-QA finding #7 (2026-08-13): a background job previously ran
+	// in yagent's process cwd instead of the workspace. StartIn must set the
+	// working directory so relative paths resolve against the workspace.
+	ws := t.TempDir()
+	if err := os.MkdirAll(ws+"/sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := New()
+	job, err := r.StartIn("pwd", ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Kill(job.ID)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(job.Logs(1<<20), ws) {
+			return // cwd is the workspace
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("job pwd = %q, want workspace %q", job.Logs(1<<20), ws)
+}

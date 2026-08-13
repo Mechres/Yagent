@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Mechres/Yagent/internal/undo"
 )
 
 func TestCodeSlice(t *testing.T) {
@@ -212,5 +214,41 @@ func TestPreflightStructuredFiles(t *testing.T) {
 	})
 	if !strings.Contains(res3, "wrote") {
 		t.Errorf("valid YAML blocked: %q", res3)
+	}
+}
+
+func TestRejectedWriteLeavesNoUndoEntry(t *testing.T) {
+	// Adversarial-QA finding #5 (2026-08-13): a write rejected by preflight
+	// used to record an undo entry anyway, so /undo would "revert" a write
+	// that never touched disk (and could re-write a stale version on the next
+	// undo). The undo entry must only exist for writes that actually landed.
+	ws := t.TempDir()
+	ub := undo.New()
+	writeFile(t, ws, "a.go", "package demo\n\nfunc f() int { return 1 }\n")
+	reg := NewRegistry(ws, Options{Undo: ub})
+
+	// syntax-broken write -> rejected, no undo entry
+	execTool(t, reg, "fs_write", map[string]any{"path": "bad.go", "content": "package demo\nfunc x( {\n"})
+	ub.EndTurn()
+	if ub.CanUndo() {
+		t.Error("rejected write recorded an undo entry")
+	}
+
+	// old_string not found -> rejected, no undo entry
+	ub2 := undo.New()
+	reg2 := NewRegistry(ws, Options{Undo: ub2})
+	execTool(t, reg2, "fs_edit", map[string]any{"path": "a.go", "old_string": "no such text", "new_string": "x"})
+	ub2.EndTurn()
+	if ub2.CanUndo() {
+		t.Error("failed fs_edit recorded an undo entry")
+	}
+
+	// a real successful write -> undo entry present
+	ub3 := undo.New()
+	reg3 := NewRegistry(ws, Options{Undo: ub3})
+	execTool(t, reg3, "fs_write", map[string]any{"path": "good.go", "content": "package demo\n"})
+	ub3.EndTurn()
+	if !ub3.CanUndo() {
+		t.Error("successful write has no undo entry")
 	}
 }

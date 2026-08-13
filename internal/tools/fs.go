@@ -205,6 +205,16 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		return "", err
 	}
 	old, oldErr := os.ReadFile(path)
+	if msg := preflightSyntax(a.Path, a.Content); msg != "" {
+		return "error: " + msg, nil
+	}
+	if msg := preflightStructured(a.Path, a.Content); msg != "" {
+		return "error: " + msg, nil
+	}
+	// Record the undo entry only after preflight passes: a rejected write
+	// never touched disk, so it must not leave a phantom undo entry (finding
+	// #5, 2026-08-13 — /undo would "revert" a write that never happened and
+	// could re-write a stale version on the next undo).
 	if t.undo != nil {
 		// nil Old records "did not exist" so undo can delete the file.
 		if oldErr == nil {
@@ -212,12 +222,6 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		} else {
 			t.undo.Record(path, nil)
 		}
-	}
-	if msg := preflightSyntax(a.Path, a.Content); msg != "" {
-		return "error: " + msg, nil
-	}
-	if msg := preflightStructured(a.Path, a.Content); msg != "" {
-		return "error: " + msg, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Sprintf("error: create parent dirs: %v", err), nil
@@ -275,9 +279,6 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	if err != nil {
 		return fmt.Sprintf("error: %v; re-read the file first with fs_read", err), nil
 	}
-	if t.undo != nil {
-		t.undo.Record(path, data)
-	}
 	old := string(data)
 	n := strings.Count(old, a.OldString)
 	switch n {
@@ -303,6 +304,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 			if msg := preflightSymbols(a.Path, old, newContent); msg != "" {
 				return "error: " + msg, nil
 			}
+			if t.undo != nil {
+				t.undo.Record(path, data)
+			}
 			if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 				return fmt.Sprintf("error: %v", err), nil
 			}
@@ -323,6 +327,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	}
 	if msg := preflightSymbols(a.Path, old, newContent); msg != "" {
 		return "error: " + msg, nil
+	}
+	if t.undo != nil {
+		t.undo.Record(path, data)
 	}
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return fmt.Sprintf("error: %v", err), nil

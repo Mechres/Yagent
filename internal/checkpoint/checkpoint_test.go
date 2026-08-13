@@ -90,3 +90,27 @@ func TestListAndDelete(t *testing.T) {
 		t.Error("restore of missing checkpoint should error")
 	}
 }
+
+func TestRestoreDeleteRejectTraversal(t *testing.T) {
+	// Adversarial-QA findings #13/#14 (2026-08-13): a checkpoint name with
+	// path separators/traversal must be rejected before any filesystem action.
+	// Restore(ws, "../..") previously resolved to the workspace itself and
+	// wiped it; Delete(ws, "../../../victim") removed a directory outside ws.
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "important.txt"), "keep me")
+	write(t, filepath.Join(ws, ".yagent", "checkpoints", "goal", "snap.txt"), "snap")
+
+	for _, bad := range []string{"../..", "a/../..", "..", ".", "a\\b", "x/y"} {
+		if err := Restore(ws, bad); err == nil {
+			t.Errorf("Restore(%q) accepted a traversal name", bad)
+		}
+		if err := Delete(ws, bad); err == nil {
+			t.Errorf("Delete(%q) accepted a traversal name", bad)
+		}
+	}
+
+	// The workspace must be untouched after all rejected calls.
+	if _, err := os.Stat(filepath.Join(ws, "important.txt")); err != nil {
+		t.Errorf("workspace file was affected: %v", err)
+	}
+}

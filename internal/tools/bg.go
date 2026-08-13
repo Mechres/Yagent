@@ -55,7 +55,7 @@ func (t *shellBgTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		}
 		command = "bwrap " + shellQuote(args)
 	}
-	job, err := t.jobs.Start(command)
+	job, err := t.jobs.StartIn(command, t.ws)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
