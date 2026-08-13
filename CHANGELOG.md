@@ -2,6 +2,19 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.33 — 2026-08-13
+
+### Added
+- **`GoalMemorize` — deterministic goal-fact memory.** In goal mode, each round's
+  touched paths, last tool failure, and goal text are persisted to the L3
+  memory store (`memorizeGoalRound`, project preferred, deduped, no LLM call).
+  A **failed** round's failure facts persist too (fixed after verification
+  surfaced that facts were only saved on clean rounds) — so a stalled or
+  interrupted goal leaves searchable memory behind for `--resume-goal` or a
+  future session. UI-enabled.
+- Live-verified: 4 facts saved during a stalled goal round (touched files +
+  the exact syntax error), searchable afterward.
+
 ## v0.1.32 — 2026-08-13
 
 ### Added

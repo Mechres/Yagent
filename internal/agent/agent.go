@@ -249,6 +249,13 @@ type Config struct {
 	// work" failure mode (stress-test finding 2026-08-13). UI-enabled.
 	GoalGate bool
 
+	// GoalMemorize, when enabled, makes RunGoal save each round's deterministic
+	// facts (touched paths, last tool failure) into the L3 memory store after
+	// the round, so long multi-round goals stay oriented without re-reading
+	// history — the model-independent fix for the universal multi-turn recall
+	// weakness. Requires Vectors/ProjectVectors. UI-enabled.
+	GoalMemorize bool
+
 	// Trace, when set, receives a per-section dump of every assembled context
 	// with token estimates (B2, `yagent chat --trace <file>`). The segments sum
 	// to ContextUsage.
@@ -323,6 +330,9 @@ type Agent struct {
 	// the model doesn't have to reconstruct progress from history/summary.
 	touchedPaths  []string
 	lastToolError string
+	// goalFactsSaved dedups L3 goal-fact memories per agent instance so a
+	// multi-round goal doesn't re-save the same fact every round.
+	goalFactsSaved map[string]bool
 
 	// Tool-loop breaker: counts successful exploration-tool calls per turn and
 	// flags when one dominates, so a model stuck re-running glob/shell_exec
@@ -803,6 +813,12 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 	for round := 1; round <= maxRounds; round++ {
 		var err error
 		last, err = a.Run(ctx, goal)
+		// Persist the round's deterministic facts (touched paths, last tool
+		// failure) regardless of whether the round finished cleanly — a failed
+		// round's failure facts are the most valuable ones to remember.
+		if a.cfg.GoalMemorize {
+			a.memorizeGoalRound(ctx)
+		}
 		if err != nil {
 			return last, fmt.Errorf("round %d: %w", round, err)
 		}
@@ -901,6 +917,87 @@ func (a *Agent) taskLedger() string {
 		fmt.Fprintf(&b, "\n- last failure: %s", e)
 	}
 	return b.String()
+}
+
+// memorizeGoalRound persists the round's deterministic facts to the L3 memory
+// store: every touched path and the last tool failure, each as a project-scoped
+// memory (shared with the repo/team). This is the model-independent fix for the
+// universal multi-turn recall weakness — a long goal run no longer relies on the
+// narrative summarizer to remember what changed. No LLM call. Best-effort: a
+// missing/broken store is logged and ignored.
+func (a *Agent) memorizeGoalRound(ctx context.Context) {
+	a.mu.RLock()
+	touched := append([]string(nil), a.touchedPaths...)
+	lastErr := a.lastToolError
+	goal := a.lastGoalText()
+	a.mu.RUnlock()
+	stores := []*memory.VectorStore{a.cfg.ProjectVectors, a.cfg.Vectors}
+	haveStore := false
+	for _, vs := range stores {
+		if vs != nil {
+			haveStore = true
+		}
+	}
+	if !haveStore || len(touched) == 0 && lastErr == "" {
+		return
+	}
+	// Dedup: remember which facts this goal already saved so a multi-round loop
+	// doesn't bloat the store with the same path every round.
+	a.mu.Lock()
+	if a.goalFactsSaved == nil {
+		a.goalFactsSaved = map[string]bool{}
+	}
+	a.mu.Unlock()
+	save := func(text string, importance float64) {
+		a.mu.Lock()
+		if a.goalFactsSaved[text] {
+			a.mu.Unlock()
+			return
+		}
+		a.goalFactsSaved[text] = true
+		a.mu.Unlock()
+		for _, vs := range stores {
+			if vs == nil {
+				continue
+			}
+			if err := vs.Save(ctx, text, "goal", a.cfg.SessionID, importance); err != nil {
+				slog.Debug("goal fact save failed", "text", text, "error", err)
+			}
+			break // save to the first available store (project preferred)
+		}
+	}
+	for _, p := range touched {
+		save(fmt.Sprintf("goal work touched file %s", p), 0.6)
+	}
+	if lastErr != "" {
+		e := strings.TrimSpace(lastErr)
+		if len(e) > 160 {
+			e = e[:160] + "…"
+		}
+		save(fmt.Sprintf("goal attempt failed: %s", e), 0.5)
+	}
+	if goal != "" {
+		save(fmt.Sprintf("goal in progress: %s", truncateText(goal, 120)), 0.7)
+	}
+}
+
+// lastGoalText returns the last user message (goal mode re-sends the goal as a
+// user message every round). Guarded by a.mu — callers hold the lock.
+func (a *Agent) lastGoalText() string {
+	for i := len(a.history) - 1; i >= 0; i-- {
+		if a.history[i].msg.Role == "user" {
+			return a.history[i].msg.Content
+		}
+	}
+	return ""
+}
+
+func truncateText(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // verifyBarrier runs workspace_diagnostics deterministically and returns a user

@@ -1709,6 +1709,85 @@ func TestRunGoalGateCleanBuildPasses(t *testing.T) {
 	}
 }
 
+func TestMemorizeGoalRoundSavesFacts(t *testing.T) {
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	vs, err := memoryOpenVector(t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{}, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 5, Vectors: vs, SessionID: "s1", GoalMemorize: true}, ws)
+
+	a.mu.Lock()
+	a.history = []historyEntry{{msg: llm.Message{Role: "user", Content: "refactor the parser package"}}}
+	a.touchedPaths = []string{"internal/parser/parse.go", "internal/parser/lex.go"}
+	a.lastToolError = "fs_edit: old_string not found in internal/parser/lex.go"
+	a.mu.Unlock()
+
+	a.memorizeGoalRound(context.Background())
+
+	// The facts are persisted and searchable.
+	mem, err := vs.Search(context.Background(), "refactor parser touched file", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, m := range mem {
+		texts = append(texts, m.Text)
+	}
+	joined := strings.Join(texts, "\n")
+	for _, want := range []string{"parse.go", "lex.go", "old_string not found"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("memory missing %q: %s", want, joined)
+		}
+	}
+
+	// Dedup: a second round with the same facts saves nothing new.
+	before := vs.Count()
+	a.memorizeGoalRound(context.Background())
+	after := vs.Count()
+	if after != before {
+		t.Errorf("round 2 re-saved facts: count %d -> %d", before, after)
+	}
+}
+
+func TestMemorizeGoalRoundOnFailedRun(t *testing.T) {
+	// A round that hits max-iterations (Run returns an error) must still
+	// persist its touched paths and last failure — a failed round's failure
+	// facts are the most valuable ones to remember (bug fixed 2026-08-13).
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	vs, err := memoryOpenVector(t.TempDir(), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	// scripted LLM that keeps requesting a failing edit -> max-iterations, and
+	// the edit's tool error sets lastToolError (a fact worth remembering).
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_edit", `{"path":"a.txt","old_string":"x","new_string":"y"}`),
+	})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 2, Vectors: vs, SessionID: "s1", GoalMemorize: true}, ws)
+
+	_, err = a.RunGoal(context.Background(), "find the bug", 2, nil)
+	if err == nil {
+		t.Fatal("expected RunGoal to fail on max-iterations")
+	}
+	// The failure facts must be in memory even though the round errored.
+	mem, err := vs.Search(context.Background(), "find the bug goal touched", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mem) == 0 {
+		t.Fatal("no goal facts memorized after a failed round")
+	}
+}
+
 func TestDiagnosticsFailed(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"", "clean"},

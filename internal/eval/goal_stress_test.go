@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/memory"
 	"github.com/Mechres/Yagent/internal/tools"
 )
 
@@ -39,6 +40,13 @@ func TestLiveGoalStress(t *testing.T) {
 	ws := t.TempDir()
 	writeGoalFixture(t, ws)
 
+	// Real L3 memory against the live server's embedding endpoint so the
+	// GoalMemorize path is verified end-to-end (facts persist + searchable).
+	vs, err := memory.OpenVectorStore(t.TempDir(), client.ServerURL, "embed")
+	if err != nil {
+		t.Fatalf("open vector store: %v", err)
+	}
+
 	reg := tools.NewRegistry(ws, tools.Options{
 		Undo:     nil, // goal mode has no interactive undo; /checkpoint covers it
 		Index:    nil, // no index; the task is code surgery, not search
@@ -48,11 +56,12 @@ func TestLiveGoalStress(t *testing.T) {
 	a := agent.New(client, reg, approver, agent.Config{
 		MaxIterations:   20,
 		Window:          32768,
-		Vectors:         nil,
+		Vectors:         vs,
 		Index:           nil,
 		IndexAutoInject: false,
 		VerifyWrites:    true, // match production goal mode (deterministic done-gate)
 		GoalGate:        true, // refuse DONE while the static check fails (2026-08-13 fix)
+		GoalMemorize:    true, // persist round facts to L3 memory
 	}, ws)
 
 	goal := `Refactor this Go workspace: the type Config currently lives in the package pkg and is
@@ -66,7 +75,6 @@ run workspace_diagnostics so the code is verified to compile, then report DONE.`
 	defer cancel()
 	rounds := 0
 	var last string
-	var err error
 	last, err = a.RunGoal(ctx, goal, 8, func(r int, _ string) { rounds = r })
 
 	// --- measurements ---
@@ -92,6 +100,14 @@ run workspace_diagnostics so the code is verified to compile, then report DONE.`
 	approver.mu.Lock()
 	wroteAnything := approver.writes > 0
 	approver.mu.Unlock()
+	// GoalMemorize: how many round facts landed in L3 memory?
+	memCount := vs.Count()
+	memRecall, _ := vs.Search(ctx, "goal refactor Config touched", 5)
+	var memTexts []string
+	for _, m := range memRecall {
+		memTexts = append(memTexts, m.Text)
+	}
+	_ = memCount
 
 	t.Logf("\n========== RESULT: long-horizon goal stress ==========")
 	t.Logf("goal done (DONE verdict): %v", done)
@@ -104,6 +120,8 @@ run workspace_diagnostics so the code is verified to compile, then report DONE.`
 	t.Logf("test uses new pkg:        %v", testUsesNew)
 	t.Logf("decoy facts intact:       %d/4", factsIntact)
 	t.Logf("wrote any file:           %v", wroteAnything)
+	t.Logf("goal memories saved:      %d", memCount)
+	t.Logf("goal memory recall:       %s", strings.Join(memTexts, " | "))
 	t.Logf("correct (core criteria):  %v", correct)
 	if err != nil {
 		t.Logf("final error: %v", err)

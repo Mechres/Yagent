@@ -742,6 +742,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		Trace:            trace,
 		VerifyWrites:     true, // deterministic verify-don't-trust "done" gate
 		GoalGate:         true, // refuse DONE while the static check fails
+		GoalMemorize:     true, // persist round facts to L3 memory (multi-turn recall)
 		VramThresholdTPS: cfg.VramThresholdTPS,
 		Summarizer:       env.summ,
 	}, ws)

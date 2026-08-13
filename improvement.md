@@ -751,6 +751,27 @@ milder mode — the model finishes all the work but doesn't close with a final
 answer (max-iterations). **C3 remains gated** (the single loop, with the gate,
 is now reliable at this scale).
 
+### T2-1 — Explicit fact extraction into memory during goal runs
+
+Every benched model is flaky on **multi-turn recall** — the #1 repeated
+weakness. `memory_save`/`memory_search` exist but weren't auto-wired into goal
+runs. **Shipped 2026-08-13**: `agent.Config.GoalMemorize` (UI-enabled) — after
+each `RunGoal` round, `memorizeGoalRound` deterministically persists the round's
+touched paths, last tool failure, and goal text into the L3 memory store
+(project preferred, deduped per agent instance so a multi-round goal doesn't
+re-save the same fact). No LLM call — pure extraction from what the round
+actually did. **Bug found during verification**: facts were only saved on
+cleanly-finished rounds; moved the memorize call ahead of the round-error check
+so a *failed* round's failure facts persist too (the most valuable kind). Unit-
+tested (`TestMemorizeGoalRoundSavesFacts`, `TestMemorizeGoalRoundOnFailedRun`).
+
+**Live evidence (Qwen3VL-8B on :8089)**: in a stalled round (import-wiring
+loop, no DONE), the goal facts still persisted — 4 memories saved covering the
+touched files (`main.go`, `pkg/config/config.go`), the goal text, and the exact
+last failure ("syntax error at line 10, col 8 — pkg.config."). Searchable for a
+resumed session (`--resume-goal`) or a later session. The feature does its job
+even when the loop itself doesn't finish.
+
 ### T1-2 — Live-bench regression gate
 
 `yagent bench --repeat 3` is already run informally after every model swap.
