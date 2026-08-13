@@ -2,6 +2,18 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.34 — 2026-08-13
+
+### Added
+- **Session-scoped web-result cache.** `web.Client` caches `web_search` results
+  (keyed by query + k) and `web_fetch` pages (keyed by URL) with a 10-minute
+  TTL, bounded at 64 entries, with `ClearCache()`. Cache hits surface as
+  `[cached results]` / `[cached page]` markers — so identical queries stop
+  re-hitting the slow, rate-limited network.
+- **T3-2 (offload verification to the laptop) rejected on a false premise**: the
+  verification tools are pure CPU `os/exec` subprocesses with no GPU usage, so
+  there is nothing to offload. Recorded in improvement.md with the evidence.
+
 ## v0.1.33 — 2026-08-13
 
 ### Added

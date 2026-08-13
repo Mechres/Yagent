@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,73 @@ type Client struct {
 	providers    []Provider
 	http         *http.Client
 	fetchTimeout time.Duration
+
+	// cache memoizes search results and fetched pages within one client
+	// lifetime (a session), keyed by query / URL, so a repeated identical web
+	// query doesn't re-hit the (slow, rate-limited) network. Bounded + TTL'd.
+	mu    sync.Mutex
+	cache map[string]cacheEntry
+	hits  int // total cache hits (for tool result markers / diagnostics)
+}
+
+type cacheEntry struct {
+	value     string
+	results   []Result
+	expiresAt time.Time
+}
+
+// cacheTTL bounds how long a web result is reused before a re-fetch.
+const cacheTTL = 10 * time.Minute
+
+// maxCacheEntries bounds the web cache (LRU-ish: evict the oldest on overflow).
+const maxCacheEntries = 64
+
+// cached returns the entry for key if present and unexpired.
+func (c *Client) cached(key string) (cacheEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.cache[key]
+	if !ok {
+		return cacheEntry{}, false
+	}
+	if time.Now().After(e.expiresAt) {
+		delete(c.cache, key)
+		return cacheEntry{}, false
+	}
+	c.hits++
+	return e, true
+}
+
+// CacheHits returns how many web results were served from cache this session.
+func (c *Client) CacheHits() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hits
+}
+
+// store caches value under key with a TTL, evicting an arbitrary entry when the
+// cache is full (map iteration is unordered but bounded).
+func (c *Client) store(key string, e cacheEntry) {
+	e.expiresAt = time.Now().Add(cacheTTL)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cache == nil {
+		c.cache = map[string]cacheEntry{}
+	}
+	if len(c.cache) >= maxCacheEntries {
+		for k := range c.cache {
+			delete(c.cache, k)
+			break
+		}
+	}
+	c.cache[key] = e
+}
+
+// ClearCache drops every cached web result (session end / explicit reset).
+func (c *Client) ClearCache() {
+	c.mu.Lock()
+	c.cache = map[string]cacheEntry{}
+	c.mu.Unlock()
 }
 
 // Config selects the backend. Provider is "duckduckgo" (default), "mojeek" or
@@ -98,9 +166,15 @@ func (c *Client) ProviderName() string {
 // Search runs the providers in order, returning the first non-empty result
 // set; a provider that errors or returns nothing is skipped. If every
 // provider searches cleanly but finds nothing, it returns (nil, nil).
+// Identical queries within the cache TTL are served from cache (no network).
 func (c *Client) Search(ctx context.Context, query string, k int) ([]Result, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("query is required")
+	}
+	key := "search:" + query + fmt.Sprintf(":%d", k)
+	if e, ok := c.cached(key); ok {
+		slog.Debug("web search cache hit", "query", query)
+		return e.results, nil
 	}
 	var lastErr error
 	for i, p := range c.providers {
@@ -114,6 +188,7 @@ func (c *Client) Search(ctx context.Context, query string, k int) ([]Result, err
 			if i > 0 {
 				slog.Info("web search fell back", "provider", p.Name())
 			}
+			c.store(key, cacheEntry{results: results})
 			return results, nil
 		}
 	}

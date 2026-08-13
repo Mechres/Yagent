@@ -279,3 +279,75 @@ func TestSearchFallsBack(t *testing.T) {
 		t.Errorf("duckduckgo fallback chain = %d providers, want 3", len(dc.providers))
 	}
 }
+
+// countingProvider counts Search calls so cache hits are provable (no network).
+type countingProvider struct {
+	calls   int
+	results []Result
+}
+
+func (f *countingProvider) Name() string { return "counting" }
+func (f *countingProvider) Search(ctx context.Context, q string, k int) ([]Result, error) {
+	f.calls++
+	return f.results, nil
+}
+
+func TestWebSearchCache(t *testing.T) {
+	p := &countingProvider{results: []Result{{Title: "a", URL: "https://a"}}}
+	c := newClient([]Provider{p})
+
+	for i := 0; i < 3; i++ {
+		res, err := c.Search(context.Background(), "same query", 5)
+		if err != nil || len(res) != 1 {
+			t.Fatalf("Search iter %d: %v", i, err)
+		}
+	}
+	if p.calls != 1 {
+		t.Errorf("provider called %d times, want 1 (cache should serve repeats)", p.calls)
+	}
+	if c.CacheHits() != 2 {
+		t.Errorf("CacheHits = %d, want 2", c.CacheHits())
+	}
+	// different query -> miss
+	if _, err := c.Search(context.Background(), "different query", 5); err != nil {
+		t.Fatal(err)
+	}
+	if p.calls != 2 {
+		t.Errorf("provider calls after new query = %d, want 2", p.calls)
+	}
+	// ClearCache drops everything
+	c.ClearCache()
+	c.Search(context.Background(), "same query", 5)
+	if p.calls != 3 {
+		t.Errorf("provider calls after ClearCache = %d, want 3", p.calls)
+	}
+}
+
+func TestWebFetchCache(t *testing.T) {
+	var requests int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><p>page body content</p></body></html>"))
+	}))
+	defer ts.Close()
+
+	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	for i := 0; i < 3; i++ {
+		got, err := c.Fetch(context.Background(), ts.URL)
+		if err != nil || !strings.Contains(got, "page body") {
+			t.Fatalf("Fetch iter %d: %v %q", i, err, got)
+		}
+	}
+	if requests != 1 {
+		t.Errorf("server hit %d times, want 1 (cache should serve repeats)", requests)
+	}
+	if c.CacheHits() != 2 {
+		t.Errorf("CacheHits = %d, want 2", c.CacheHits())
+	}
+	c.ClearCache()
+	c.Fetch(context.Background(), ts.URL)
+	if requests != 2 {
+		t.Errorf("server hits after ClearCache = %d, want 2", requests)
+	}
+}

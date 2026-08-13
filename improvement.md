@@ -797,6 +797,13 @@ export data). Cache successful `web_search`/`web_fetch` results per session to
 avoid re-fetching identical queries and soften rate limits. Small, contained,
 deterministic.
 
+**Shipped 2026-08-13**: `web.Client` gained a session-scoped cache — search
+results keyed by `(query, k)`, fetched pages keyed by URL, TTL 10 minutes,
+bounded at 64 entries, `ClearCache()` for reset. Cache hits surface as
+`[cached results]` / `[cached page]` markers in the tool output. Covered by
+`TestWebSearchCache` + `TestWebFetchCache` (counting providers / hit counters,
+no network).
+
 ### T3-2 — Offload verification to the second machine
 
 Consult + summarizer already run on the laptop. Extend the same pattern to
@@ -804,9 +811,22 @@ output-heavy *verification* (`test_runner`, `workspace_diagnostics` results are
 generated on the GPU host today): one config knob to run them on the offload
 server, freeing the GPU slot. Same `summarizer:`-style wiring.
 
+**Rejected 2026-08-13 — false premise.** `workspace_diagnostics` and
+`test_runner` never touch the GPU: both run local CPU subprocesses via
+`os/exec` (`go vet`/`go test`/`tsc`/`cargo check`) with zero references to the
+LLM client or SlotLock (verified: no `llm.Client`/`acquireSlot` in either file).
+There is no GPU slot to free — those commands are off-GPU by nature. The real
+GPU contention is already solved by SlotLock (serializes inference) plus the
+v0.1.30 summarizer/consult offloads (which move actual GPU work to the laptop).
+Building T3-2 would require syncing the workspace + a full toolchain to the
+laptop for the marginal benefit of freeing desktop *CPU*, which is not the
+bottleneck on a GPU-bound workflow. Do not re-propose without a concrete GPU
+usage in these tools.
+
 ### Explicitly NOT next
 
-No new read/write tools, guardrails, exporter formats, or the fine-tune
-pipeline (D) — the review batches keep proposing these and they are done,
-covered, or plumbing. The feature surface is saturated; the ROI is in the
-evidence items above.
+No new read/write tools, guardrails, exporter formats, the fine-tune pipeline
+(D), or the verification-offload (T3-2, rejected on a false premise — the
+verification tools are already CPU/off-GPU). The review batches keep proposing
+these and they are done, covered, or plumbing. The feature surface is
+saturated; the ROI is in the evidence items above.

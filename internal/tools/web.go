@@ -48,14 +48,19 @@ func (t *webSearchTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	if t.client == nil {
 		return "error: web search is not configured", nil
 	}
+	hitsBefore := t.client.CacheHits()
 	results, err := t.client.Search(ctx, a.Query, a.K)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
+	cached := t.client.CacheHits() > hitsBefore
 	if len(results) == 0 {
 		return "no results found", nil
 	}
 	var b strings.Builder
+	if cached {
+		b.WriteString("[cached results]\n")
+	}
 	for i, r := range results {
 		fmt.Fprintf(&b, "%d. %s\n   %s\n   %s\n", i+1, r.Title, r.URL, r.Snippet)
 	}
@@ -90,9 +95,13 @@ func (t *webFetchTool) Execute(ctx context.Context, raw json.RawMessage) (string
 	if t.client == nil {
 		return "error: web fetch is not configured", nil
 	}
+	hitsBefore := t.client.CacheHits()
 	text, err := t.client.Fetch(ctx, a.URL)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
+	}
+	if t.client.CacheHits() > hitsBefore {
+		return "[cached page]\n" + text, nil
 	}
 	return text, nil
 }

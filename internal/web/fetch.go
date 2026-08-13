@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -21,8 +22,24 @@ const (
 
 // Fetch GETs a URL (15s timeout, redirect limit 5) and returns a readable
 // text rendering of the page, capped at maxFetchText. Scripts, styles, nav
-// and other chrome are stripped.
+// and other chrome are stripped. Repeated fetches of the same URL within the
+// cache TTL are served from cache (no network).
 func (c *Client) Fetch(ctx context.Context, rawURL string) (string, error) {
+	key := "fetch:" + rawURL
+	if e, ok := c.cached(key); ok {
+		slog.Debug("web fetch cache hit", "url", rawURL)
+		return e.value, nil
+	}
+	text, err := c.fetchNetwork(ctx, rawURL)
+	if err != nil {
+		return "", err
+	}
+	c.store(key, cacheEntry{value: text})
+	return text, nil
+}
+
+// fetchNetwork performs the actual HTTP GET + extraction.
+func (c *Client) fetchNetwork(ctx context.Context, rawURL string) (string, error) {
 	timeout := c.fetchTimeout
 	if timeout <= 0 {
 		timeout = 15 * time.Second
