@@ -130,9 +130,14 @@ func detectDiagnostics(ws string, lookPath func(string) (string, error)) (name s
 			return "python3", []string{"-m", "compileall", "-q", "."}, true
 		}
 	case hasCProject(ws):
-		// C/C++: a Makefile/CMakeLists or source files with no higher-level
-		// manifest. Run a syntax-only check on every source file with the
-		// matching compiler (no linking, no build artifacts).
+		// C/C++: prefer the project's own build system (CMake build dir or
+		// Makefile) — it knows the include paths and the correct compiler, so
+		// diagnostics reflect the real build. Bare gcc -fsyntax-only on all
+		// sources is only a fallback for projects with no build system at all
+		// (it false-errors on real projects that rely on CMake include dirs).
+		if cmd, args, ok := cBuildCheck(ws, lookPath); ok {
+			return cmd, args, ok
+		}
 		sources, _ := cSources(ws)
 		if len(sources) == 0 {
 			return "", nil, false // manifest only; nothing to syntax-check
@@ -150,6 +155,57 @@ func detectDiagnostics(ws string, lookPath func(string) (string, error)) (name s
 		}
 	}
 	return "", nil, false
+}
+
+// cBuildCheck prefers a real build over a bare syntax pass. It looks for, in
+// order: an existing cmake build dir (build/, cmake-build-*/), a CMakeLists.txt
+// (configure+build into build/), or a Makefile. Returns ok=false when none is
+// usable, so the caller falls back to gcc -fsyntax-only.
+func cBuildCheck(ws string, lookPath func(string) (string, error)) (string, []string, bool) {
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	// An existing cmake build dir has a configured Makefile — build it.
+	if buildDir, ok := cmakeBuildDir(ws); ok {
+		if _, err := lookPath("cmake"); err == nil {
+			return "cmake", []string{"--build", buildDir, "-j"}, true
+		}
+		if _, err := lookPath("make"); err == nil {
+			return "make", []string{"-C", buildDir, "-j"}, true
+		}
+	}
+	// CMakeLists.txt but no build dir yet: configure into build/ then build.
+	if _, err := os.Stat(filepath.Join(ws, "CMakeLists.txt")); err == nil {
+		if _, err := lookPath("cmake"); err == nil {
+			buildDir := filepath.Join(ws, "build")
+			// Only use it if already configured; otherwise configuring takes a
+			// long time and may need flags the tool can't know. Prefer the
+			// existing build dir above; here we reconfigure only when build/
+			// exists but wasn't caught (e.g. no CMakeCache yet).
+			if _, err := os.Stat(filepath.Join(buildDir, "CMakeCache.txt")); err == nil {
+				return "cmake", []string{"--build", buildDir, "-j"}, true
+			}
+		}
+	}
+	// A plain Makefile.
+	if _, err := os.Stat(filepath.Join(ws, "Makefile")); err == nil {
+		if _, err := lookPath("make"); err == nil {
+			return "make", []string{"-j"}, true
+		}
+	}
+	return "", nil, false
+}
+
+// cmakeBuildDir finds an existing configured CMake build directory (build/,
+// cmake-build-debug/, cmake-build-release/) with a CMakeCache.
+func cmakeBuildDir(ws string) (string, bool) {
+	for _, d := range []string{"build", "cmake-build-debug", "cmake-build-release", "cmake-build"} {
+		p := filepath.Join(ws, d)
+		if _, err := os.Stat(filepath.Join(p, "CMakeCache.txt")); err == nil {
+			return d, true
+		}
+	}
+	return "", false
 }
 
 // hasCProject reports whether the workspace looks like a C/C++ project: a

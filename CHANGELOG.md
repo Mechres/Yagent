@@ -2,6 +2,19 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.47 — 2026-08-13
+
+### Fixed
+- **C/C++ diagnostics respect the project's build system.** Bare
+  `gcc -fsyntax-only` on all sources produced false "missing header" errors
+  for real CMake/Make projects that rely on include dirs, which misled the
+  model into inventing header files. `workspace_diagnostics` now prefers the
+  actual build — `cmake --build <existing build dir>` (build/,
+  cmake-build-*), `make -C <dir>` or a plain `make` — and only falls back to
+  `gcc/g++ -fsyntax-only` for projects with no build system. Live-verified on a
+  real CMake game project: reports the actual compile errors instead of fake
+  missing headers. Covered by `TestDetectDiagnosticsPrefersBuildSystem`.
+
 ## v0.1.46 — 2026-08-13
 
 ### Added

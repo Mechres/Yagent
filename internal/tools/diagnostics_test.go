@@ -112,3 +112,30 @@ func TestDetectDiagnosticsCppPrefersGpp(t *testing.T) {
 		t.Errorf("args = %v", args)
 	}
 }
+
+func TestDetectDiagnosticsPrefersBuildSystem(t *testing.T) {
+	// A CMake project with an existing configured build dir must use
+	// `cmake --build build` (real compile), NOT bare gcc -fsyntax-only which
+	// false-errors on missing include dirs (2026-08-13 real-use finding).
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "CMakeLists.txt"), []byte("cmake_minimum_required(VERSION 3.16)\nproject(x)\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "main.cpp"), []byte("int main() { return 0; }\n"), 0o644)
+	os.MkdirAll(filepath.Join(ws, "build"), 0o755)
+	os.WriteFile(filepath.Join(ws, "build", "CMakeCache.txt"), []byte("x"), 0o644)
+
+	name, args, ok := detectDiagnostics(ws, func(s string) (string, error) { return "/usr/bin/" + s, nil })
+	if !ok {
+		t.Fatal("CMake project not detected")
+	}
+	if name != "cmake" || len(args) < 3 || args[0] != "--build" {
+		t.Errorf("got %s %v, want cmake --build <dir> -j", name, args)
+	}
+	// A bare Makefile also wins over the syntax pass.
+	ws2 := t.TempDir()
+	os.WriteFile(filepath.Join(ws2, "Makefile"), []byte("all:\n"), 0o644)
+	os.WriteFile(filepath.Join(ws2, "main.c"), []byte("int main(void) { return 0; }\n"), 0o644)
+	name2, _, ok2 := detectDiagnostics(ws2, func(s string) (string, error) { return "/usr/bin/" + s, nil })
+	if !ok2 || name2 != "make" {
+		t.Errorf("Makefile project = %q (%v), want make", name2, ok2)
+	}
+}
