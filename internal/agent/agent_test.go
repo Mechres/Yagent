@@ -1469,6 +1469,40 @@ func TestNearCapConvergenceNudge(t *testing.T) {
 	}
 }
 
+func TestFailedWriteLoopNudge(t *testing.T) {
+	// Real-use loop (2026-08-13): the model repeatedly attempts the same
+	// fs_edit with a wrong old_string, interleaving fs_read between attempts
+	// (which defeats the consecutive dedup). After N identical failures the
+	// loop must nudge the model to re-read the exact text.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "main.cpp", "int main() { return 0; }\n")
+	steps := [][]string{}
+	for i := 0; i < 5; i++ {
+		steps = append(steps,
+			toolCall(fmt.Sprintf("r%d", i), "fs_read", `{"path":"main.cpp"}`),
+			toolCall(fmt.Sprintf("e%d", i), "fs_edit", `{"path":"main.cpp","old_string":"int main() { returrn 0; }","new_string":"int main() { return 0; }"}`),
+		)
+	}
+	steps = append(steps, finalContent("done"))
+	s := newScriptedLLM(t, steps)
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 20}, ws)
+
+	if _, err := a.Run(context.Background(), "fix the typo in main.cpp"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "failed repeatedly") {
+		t.Error("failed-write loop nudge not injected")
+	}
+}
+
 func TestSubagentOffloadNudge(t *testing.T) {
 	// Proposal #8 (2026-08-13): heavy read-only exploration at high context
 	// usage must nudge the model to delegate to a subagent instead of reading

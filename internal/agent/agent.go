@@ -48,6 +48,10 @@ const maxValidationFails = 3
 // in one turn trigger the tool-loop breaker nudge.
 const toolLoopThreshold = 6
 
+// maxFailedWriteLoops is how many identical failed fs_edit/fs_write/fs_patch
+// calls in one turn trigger the failed-write loop nudge.
+const maxFailedWriteLoops = 4
+
 // toolLoopTools are the exploration tools whose repeated use signals a stuck
 // model (fs_read is excluded — a legit audit reads many files).
 var toolLoopTools = map[string]bool{
@@ -333,6 +337,10 @@ type Agent struct {
 	// goalFactsSaved dedups L3 goal-fact memories per agent instance so a
 	// multi-round goal doesn't re-save the same fact every round.
 	goalFactsSaved map[string]bool
+	// failedWriteSig counts identical failed fs_edit/fs_write calls per turn so
+	// a model looping on the same broken edit (interleaved re-reads defeat the
+	// consecutive dedup) gets nudged instead of grinding to max-iterations.
+	failedWriteSig map[string]int
 
 	// Tool-loop breaker: counts successful exploration-tool calls per turn and
 	// flags when one dominates, so a model stuck re-running glob/shell_exec
@@ -506,6 +514,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	a.toolLoopName = ""
 	a.turnReadCalls = 0
 	a.turnWrote = false
+	a.failedWriteSig = map[string]int{}
 	a.mu.Unlock()
 
 	for i := 0; i < a.cfg.MaxIterations; i++ {
@@ -636,9 +645,27 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 			looped, name := a.toolLooped, a.toolLoopName
 			reads, wrote := a.turnReadCalls, a.turnWrote
 			usedNow, limit := a.estTokensLocked(), a.cfg.Window
+			var failTool string
+			for sig, n := range a.failedWriteSig {
+				if n >= maxFailedWriteLoops {
+					// extract the tool name from "fs_edit {...}"
+					if i := strings.IndexByte(sig, ' '); i > 0 {
+						failTool = sig[:i]
+					} else {
+						failTool = sig
+					}
+					break
+				}
+			}
 			a.mu.Unlock()
 			var nudge string
 			switch {
+			case failTool != "":
+				// Failed-write loop (2026-08-13, real use): the same edit keeps
+				// failing — typically old_string not found — and the model
+				// re-reads + retries the identical broken call. Nudge it to
+				// read the EXACT text and stop repeating.
+				nudge = fmt.Sprintf("The same %s call has failed repeatedly this turn. Stop repeating it. Re-read the exact region with fs_read (copy the precise text, including whitespace), then retry ONCE with the corrected old_string — or use fs_write to replace the whole file if the change is large.", failTool)
 			case looped:
 				nudge = fmt.Sprintf("You've called %s many times this turn without converging. Stop exploring — use what you already have and give your final answer now (at most one more targeted call).", name)
 			case reads >= 6 && !wrote && limit > 0 && usedNow*4 > limit*3:
@@ -1974,6 +2001,22 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	}
 	if cacheableReadTools[name] && !strings.HasPrefix(result, "error:") {
 		a.cacheReadResult(name, call.Function.Arguments, result)
+	}
+	// Failed-edit loop detection: the model keeps re-attempting the same broken
+	// fs_edit/fs_write (interleaved fs_reads defeat the consecutive dedup, and
+	// fs_edit isn't in toolLoopTools). Count identical failed write signatures
+	// this turn so the loop can nudge instead of grinding to max-iterations.
+	if (name == "fs_edit" || name == "fs_write" || name == "fs_patch") && strings.HasPrefix(result, "error:") {
+		a.mu.Lock()
+		if a.failedWriteSig == nil {
+			a.failedWriteSig = map[string]int{}
+		}
+		a.failedWriteSig[sig]++
+		n := a.failedWriteSig[sig]
+		a.mu.Unlock()
+		if n >= maxFailedWriteLoops {
+			slog.Info("failed-write loop detected", "tool", name, "attempts", n)
+		}
 	}
 	// Track write/verify state for the deterministic "done" barrier (any write
 	// marks the turn unverified; running workspace_diagnostics clears it) and

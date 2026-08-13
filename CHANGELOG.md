@@ -2,6 +2,18 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.48 — 2026-08-14
+
+### Fixed
+- **Failed-edit loop detector.** A model repeatedly attempting the same broken
+  `fs_edit`/`fs_write`/`fs_patch` (wrong `old_string`, typically a whitespace
+  or text mismatch) no longer grinds to max-iterations. Interleaved `fs_read`s
+  defeated the consecutive-call dedup, and `fs_edit` wasn't in the tool-loop
+  breaker set. Now: after 4 identical failed write signatures in a turn, the
+  agent nudges the model to re-read the exact region and retry once with the
+  corrected text (or use fs_write for a full replace). Covered by
+  `TestFailedWriteLoopNudge` — found in real use (a Tetris-in-C++ session).
+
 ## v0.1.47 — 2026-08-13
 
 ### Fixed
