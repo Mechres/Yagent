@@ -1547,6 +1547,35 @@ func TestSummarizerFallbackToMain(t *testing.T) {
 	}
 }
 
+func TestStripInstructionEcho(t *testing.T) {
+	cases := []struct{ in, want string }{
+		// real answer + trailing acknowledgment filler -> answer only
+		{"Hello! How can I assist you today?Understood. I will proceed without unnecessary pauses or requests for confirmation unless explicitly required.",
+			"Hello! How can I assist you today?"},
+		{"Here is the fix.Let me know if you'd like to explore these ideas further!",
+			"Here is the fix."},
+		{"The parser is in internal/parser. I hope this helps!",
+			"The parser is in internal/parser."},
+		// no filler -> unchanged
+		{"Just 4.", "Just 4."},
+		{"I moved Config into pkg/config and updated the imports.", "I moved Config into pkg/config and updated the imports."},
+		// filler only -> empty (nothing but filler)
+		{"Understood. I will complete tasks directly without pausing for confirmation.", ""},
+		// URLs / domains must NOT be split by the sentence boundary detector
+		{"gfx1031 is supported (source: https://example.com/rocm).Let me know if you need more.",
+			"gfx1031 is supported (source: https://example.com/rocm)."},
+		{"it costs 1.5 dollars. I will proceed without pausing.", "it costs 1.5 dollars."},
+		{"Hello! What would you like me to work on?Understood. Proceeding with the task without requiring user input unless explicitly needed.",
+			"Hello! What would you like me to work on?"},
+	}
+	for _, c := range cases {
+		got := stripInstructionEcho(c.in)
+		if got != c.want {
+			t.Errorf("stripInstructionEcho(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",

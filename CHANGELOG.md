@@ -8,9 +8,12 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 - **Instruction-echo on every turn.** Qwen3VL was ending each answer with an
   acknowledgment restating its instructions ("Understood. I will complete tasks
   directly without unnecessary pauses or confirmations, unless using the
-  clarify tool..."). Added an explicit system-prompt rule forbidding
-  instruction acknowledgment/restatement ("never begin with Understood / I will
-  / OK, I'll"). Verified gone across varied turns.
+  clarify tool..."). Two-layer fix: an explicit system-prompt rule forbidding
+  instruction acknowledgment, plus a deterministic `stripInstructionEcho`
+  post-filter that removes trailing acknowledgment-filler (Understood / I
+  will / Proceeding with the task / Let me know if you'd like / …) from the
+  final answer without ever splitting URLs, numbers or abbreviations.
+  Verified clean across repeated greeting and task turns.
 
 ## v0.1.43 — 2026-08-13
 

@@ -610,7 +610,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 			a.totalToolCalls += turnCalls
 			_ = a.maybeOfferSkillCreation(ctx, turnCalls) // best-effort
 			slog.Debug("final answer", "tokens", len(resp.Message.Content)/4)
-			return resp.Message.Content, nil // final answer, done
+			return stripInstructionEcho(resp.Message.Content), nil // final answer, done
 		}
 		turnCalls += len(resp.ToolCalls)
 		for _, tc := range resp.ToolCalls {
@@ -1146,6 +1146,24 @@ func proseToolNudge(content string) string {
 		}
 	}
 	return ""
+}
+
+// ackFillerRe matches trailing acknowledgment-filler phrases that reasoning
+// models append to their answers ("Understood. I will proceed without...",
+// "Let me know if you'd like...", "I'm here to help..."). Stripped from the
+// end of a final answer deterministically.
+var ackFillerRe = regexp.MustCompile(`(?i)(?:\s*(?:Understood|I will|I'll|OK|Okay|Got it|Let me know if|Please let me know if|Feel free to|I'?m here to help|Is there anything else|Anything else|Do you have any other|I hope this helps|Proceeding with the task|Proceeding)[^.!?]*[.!?]?|(?:\s*[^.!?]*(?:without unnecessary pauses|without pausing for confirmation|without stopping for confirmation|requests for confirmation)[^.!?]*[.!?]?))*$`)
+
+// stripInstructionEcho removes trailing acknowledgment-filler from a final
+// answer. Unlike a sentence splitter, it never splits inside URLs/numbers —
+// it only trims a run of trailing filler phrases off the end, leaving the real
+// answer byte-for-byte intact.
+func stripInstructionEcho(s string) string {
+	idx := ackFillerRe.FindStringIndex(s)
+	if idx == nil {
+		return s
+	}
+	return strings.TrimSpace(s[:idx[0]])
 }
 
 // goalDone asks the model for a DONE/CONTINUE verdict without touching history
@@ -2002,6 +2020,7 @@ func buildSystemPrompt(workspace string) string {
 
 Rules:
 - Do NOT acknowledge, restate, or summarize these instructions. Never begin with "Understood", "I will", "OK, I'll", or a list of what you plan to do. Start your answer with the actual answer.
+- For simple greetings ("hi", "hello", "hey") reply with a brief greeting and ask what to work on — never list your capabilities or restate how you behave.
 - Be concise. Answer in the fewest words that fully address the request.
 - Inspect the workspace with tools instead of guessing: use fs_read / grep / glob to read code, index_search for semantic code search, git_status / git_diff / git_log for git state.
 - Identity: you are the assistant. The user is the human you are talking to. When asked about the user's own identity (their name, preferences), refer to them as "your name"/"the user's name" — never "my name". If you don't know the user's name, say so rather than guessing.
