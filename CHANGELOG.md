@@ -2,6 +2,17 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.43 — 2026-08-13
+
+### Fixed (found in live use)
+- **Summarizer fallback.** A configured-but-unreachable `summarizer:` server
+  (e.g. a laptop offline) no longer breaks every turn — `budget()` and
+  `/compact` fall back to the main model when the offloaded summarizer errors.
+- **VRAM pressure warm-up false positive.** The detector now requires ≥ 32
+  streamed tokens before flagging, so a freshly-restarted server's slow first
+  stream (shader warm-up) no longer triggers a needless force-prune/summarize
+  of a healthy first turn.
+
 ## v0.1.41 — 2026-08-13
 
 ### Added

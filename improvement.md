@@ -1052,3 +1052,21 @@ swings run-to-run). The bench regression gate (v0.1.36) recorded 17/18 as the
 new baseline and produced no regression warning. Verdict: **the default model is
 validated, no change needed** — no newer Qwen3.5/4-family model is worth
 chasing; docs updated to the honest 17/18. Ready for real-world soak.
+
+## 2026-08-13 real-use bugfix: dead summarizer broke every turn
+
+Two bugs found in real use (first messages in a fresh session):
+
+1. **Configured-but-unreachable summarizer broke every turn.** The `summarizer:`
+   section points at the laptop; when it's offline (no route to host), budget()
+   failed hard with "summarize history: chat stream failed" — there was NO
+   fallback to the main model. Fixed: budget() and /compact now fall back to
+   the main model when the offloaded summarizer errors (the summarizer is an
+   optimization, not a dependency). Covered by `TestSummarizerFallbackToMain`.
+2. **VRAM pressure false-positive on warm-up.** A freshly-restarted server
+   streams the first answer slowly (shader warm-up, ~1.4 t/s), which set the
+   pressure flag (`tps < 5`), which forced budget() to summarize a healthy
+   first turn — which then hit the dead laptop. Fixed: `detectVramPressure`
+   requires ≥ 32 streamed tokens before flagging, so a one-line warm-up answer
+   can't trigger pressure (a real KV-spill stall happens on sustained long
+   generation). Covered by the extended `TestVramPressureDetectAndPrune`.

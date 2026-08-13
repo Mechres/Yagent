@@ -1658,7 +1658,16 @@ func (a *Agent) budget(ctx context.Context) error {
 	}
 	resp, err := a.summ.ChatStream(ctx, prompt, nil, func(string) {}, nil)
 	if err != nil {
-		return fmt.Errorf("summarize history: %w", err)
+		// Fallback: a configured-but-unreachable summarizer (e.g. a laptop that
+		// went offline) must never break the turn — condense with the main model
+		// instead. The summarizer is an optimization, not a dependency.
+		slog.Info("summarizer unreachable, falling back to the main model", "error", err)
+		if a.llm != a.summ {
+			resp, err = a.llm.ChatStream(ctx, prompt, nil, func(string) {}, nil)
+		}
+		if err != nil {
+			return fmt.Errorf("summarize history: %w", err)
+		}
 	}
 	summary := strings.TrimSpace(resp.Message.Content)
 
@@ -1716,7 +1725,15 @@ func (a *Agent) Compact(ctx context.Context) (string, error) {
 	}
 	resp, err := a.summ.ChatStream(ctx, prompt, nil, func(string) {}, nil)
 	if err != nil {
-		return "", fmt.Errorf("compact history: %w", err)
+		// Fallback to the main model when the offloaded summarizer is down
+		// (same guarantee as budget's fallback).
+		slog.Info("compact summarizer unreachable, falling back to the main model", "error", err)
+		if a.llm != a.summ {
+			resp, err = a.llm.ChatStream(ctx, prompt, nil, func(string) {}, nil)
+		}
+		if err != nil {
+			return "", fmt.Errorf("compact history: %w", err)
+		}
 	}
 	ledger := strings.TrimSpace(resp.Message.Content)
 
@@ -1786,6 +1803,14 @@ func (a *Agent) detectVramPressure(start time.Time, tokens, reasoning int) {
 	el := time.Since(start).Seconds()
 	if el < 1.0 {
 		return // too short to measure reliably
+	}
+	// A short, slow stream is NOT evidence of VRAM pressure — a freshly-started
+	// server (shader warm-up) or a one-line answer can stream at 1-2 t/s for a
+	// moment. A real KV-spill stall happens on sustained generation, so require
+	// a meaningful number of tokens before flagging (fixes a false positive
+	// that force-pruned/summarized a healthy first turn).
+	if tokens+reasoning < 32 {
+		return
 	}
 	tps := float64(tokens+reasoning) / el
 	if tps < a.cfg.VramThresholdTPS {

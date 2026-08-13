@@ -104,6 +104,14 @@ func (f *fixedSummaryLLM) ChatStream(ctx context.Context, msgs []llm.Message, to
 	return &llm.Response{Message: llm.Message{Role: "assistant", Content: f.summary}}, nil
 }
 
+// failingSummLLM is a summarizer that always errors (a dead offload server).
+type failingSummLLM struct{ calls int }
+
+func (f *failingSummLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
+	f.calls++
+	return nil, errors.New("summarizer server unreachable")
+}
+
 type stubApprover struct {
 	allow bool
 	n     int
@@ -952,10 +960,23 @@ func TestVramPressureDetectAndPrune(t *testing.T) {
 	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true},
 		Config{MaxIterations: 5, Window: 8000, Reserve: 1000, VramThresholdTPS: 5.0}, ws)
 
-	// A slow stream (few tokens over a long wall time) must flag pressure.
-	a.detectVramPressure(time.Now().Add(-10*time.Second), 20, 10) // 3 t/s < 5
+	// A slow stream (enough tokens over a long wall time) must flag pressure.
+	a.detectVramPressure(time.Now().Add(-10*time.Second), 70, 30) // 100/10=10 t/s > 5: not flagged
+	if a.ContextPressure() {
+		t.Fatal("10 t/s flagged VRAM pressure")
+	}
+	// a genuinely slow, sustained stream: 40 tokens over 20s = 2 t/s < 5
+	a.detectVramPressure(time.Now().Add(-20*time.Second), 40, 0)
 	if !a.ContextPressure() {
-		t.Fatal("slow stream did not flag VRAM pressure")
+		t.Fatal("slow sustained stream did not flag VRAM pressure")
+	}
+	// a tiny stream (warm-up / one-liner) must NOT flag even if slow
+	a.mu.Lock()
+	a.pressure = false
+	a.mu.Unlock()
+	a.detectVramPressure(time.Now().Add(-10*time.Second), 10, 0) // 1 t/s but < 32 tokens
+	if a.ContextPressure() {
+		t.Fatal("tiny slow stream flagged VRAM pressure (warm-up false positive)")
 	}
 
 	// A fast stream clears nothing but never flags.
@@ -1481,6 +1502,48 @@ func TestSubagentOffloadNudge(t *testing.T) {
 	}
 	if !strings.Contains(joined, "subagent(") {
 		t.Error("offload nudge should mention the subagent tool")
+	}
+}
+
+func TestSummarizerFallbackToMain(t *testing.T) {
+	// A configured-but-unreachable summarizer (e.g. a laptop that went offline)
+	// must not break the turn — budget() falls back to the main model (2026-08-13
+	// bugfix: every turn errored with "summarize history: connection refused").
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	main := &fixedSummaryLLM{summary: "main-model summary"}
+	fail := &failingSummLLM{}
+	a := New(main, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 3, Window: 8000, Reserve: 1000, Summarizer: fail}, ws)
+
+	// Force budget to summarize: history over the limit even AFTER tool-output
+	// pruning (assistant turns aren't pruned, so they keep it over).
+	a.mu.Lock()
+	big := strings.Repeat("tool result line with padding for budget overflow\n", 2500)
+	a.history = []historyEntry{
+		{msg: llm.Message{Role: "user", Content: "turn 1"}},
+		{msg: llm.Message{Role: "tool", Content: big, ToolCallID: "c1"}},
+		{msg: llm.Message{Role: "assistant", Content: strings.Repeat("assistant reasoning padding\n", 1500)}},
+		{msg: llm.Message{Role: "user", Content: "current turn"}},
+	}
+	for i := range a.history {
+		a.history[i].tokens = len(a.history[i].msg.Content) / 4
+	}
+	a.mu.Unlock()
+
+	if err := a.budget(context.Background()); err != nil {
+		t.Fatalf("budget with dead summarizer: %v", err)
+	}
+	if fail.calls != 1 {
+		t.Errorf("summarizer calls = %d, want 1 (attempted first)", fail.calls)
+	}
+	if main.calls != 1 {
+		t.Errorf("main-model fallback calls = %d, want 1", main.calls)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.runningSummary != "main-model summary" {
+		t.Errorf("running summary = %q, want the main-model fallback summary", a.runningSummary)
 	}
 }
 
