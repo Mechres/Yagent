@@ -1638,6 +1638,97 @@ func TestActiveToolSchemasFilters(t *testing.T) {
 	}
 }
 
+func TestRunGoalGateRefusesDoneOnFailingBuild(t *testing.T) {
+	// The gate is unit-testable without a live model: a real diagnostics tool
+	// (go.mod present) against a broken workspace returns failures, so a DONE
+	// verdict must be refused. Round 2 actually FIXES the file via fs_edit
+	// (real tool), so the gate then accepts DONE.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module gate\n\ngo 1.22\n")
+	writeWorkspaceFile(t, ws, "main.go", "package main\nimport \"nonexistent/pkg\"\nfunc main() {}\n")
+
+	s := newScriptedLLM(t, [][]string{
+		finalContent("I moved the code"),
+		finalContent("DONE the refactor is complete"),
+		toolCall("c1", "fs_edit", `{"path":"main.go","old_string":"import \"nonexistent/pkg\"\n","new_string":""}`),
+		finalContent("I fixed the import"),
+		finalContent("DONE now it compiles"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, GoalGate: true}, ws)
+
+	var rounds []int
+	answer, err := a.RunGoal(context.Background(), "move Config to pkg/config", 5, func(r int, _ string) {
+		rounds = append(rounds, r)
+	})
+	if err != nil {
+		t.Fatalf("RunGoal: %v", err)
+	}
+	// Round 1 declared DONE but the build failed -> gate refused, round 2 ran,
+	// actually fixed the import, and the gate accepted the new DONE.
+	if len(rounds) < 2 {
+		t.Errorf("gate did not force a second round: rounds=%v", rounds)
+	}
+	if answer != "I fixed the import" {
+		t.Errorf("answer = %q", answer)
+	}
+	data, _ := os.ReadFile(filepath.Join(ws, "main.go"))
+	if strings.Contains(string(data), "nonexistent") {
+		t.Errorf("main.go was not actually fixed: %q", data)
+	}
+}
+
+func TestRunGoalGateCleanBuildPasses(t *testing.T) {
+	// A workspace that passes diagnostics (empty main package) must NOT be
+	// gated: DONE is accepted on round 1.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module gate\n\ngo 1.22\n")
+	writeWorkspaceFile(t, ws, "main.go", "package main\nfunc main() {}\n")
+
+	s := newScriptedLLM(t, [][]string{
+		finalContent("done it"),
+		finalContent("DONE all good"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, GoalGate: true}, ws)
+
+	var rounds []int
+	answer, err := a.RunGoal(context.Background(), "do something", 5, func(r int, _ string) {
+		rounds = append(rounds, r)
+	})
+	if err != nil {
+		t.Fatalf("RunGoal: %v", err)
+	}
+	if len(rounds) != 1 {
+		t.Errorf("clean build should pass on round 1, got rounds=%v", rounds)
+	}
+	if answer != "done it" {
+		t.Errorf("answer = %q", answer)
+	}
+}
+
+func TestDiagnosticsFailed(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", "clean"},
+		{"go vet: no issues\n", "clean"},
+		{"main.go:6:2: package stress/pkg is not in std\n", "fail"},
+		{"FAIL\texample/x [build failed]\n", "fail"},
+		{"# stress\nmain.go:3:8: undefined: fmt\n", "fail"},
+		{"exit status 1\n", "fail"},
+		{"no diagnostics configured for this project\n", "clean (handled by caller)"},
+	}
+	for _, c := range cases {
+		if c.want == "fail" && !diagnosticsFailed(c.in) {
+			t.Errorf("diagnosticsFailed(%q) = false, want true", c.in)
+		}
+		if c.want == "clean" && diagnosticsFailed(c.in) {
+			t.Errorf("diagnosticsFailed(%q) = true, want false", c.in)
+		}
+	}
+}
+
 func TestRunGoalDoneFirstRound(t *testing.T) {
 	s := newScriptedLLM(t, [][]string{
 		finalContent("I fixed the build"),

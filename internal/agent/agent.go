@@ -241,6 +241,14 @@ type Config struct {
 	// it; tests leave it off.
 	VerifyWrites bool
 
+	// GoalGate, when enabled, makes RunGoal refuse a DONE verdict while the
+	// workspace still fails its static check: after the model says DONE, the
+	// agent deterministically runs workspace_diagnostics and, on failure, feeds
+	// the errors back and forces another round instead of accepting the verdict.
+	// This catches the small-model "declared done but narrated the remaining
+	// work" failure mode (stress-test finding 2026-08-13). UI-enabled.
+	GoalGate bool
+
 	// Trace, when set, receives a per-section dump of every assembled context
 	// with token estimates (B2, `yagent chat --trace <file>`). The segments sum
 	// to ContextUsage.
@@ -806,10 +814,67 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 			return last, nil // can't verify (server hiccup); stop cleanly
 		}
 		if done {
+			// Deterministic completion gate: a DONE verdict is a proposal, not
+			// truth. Re-run the static check and refuse DONE while the
+			// workspace still fails it — the model may have *narrated* the
+			// remaining work ("let's update the imports…") without doing it.
+			// Feed the actual errors back and force another round.
+			if a.cfg.GoalGate {
+				if verify := a.goalGateCheck(ctx); verify != "" {
+					if _, aerr := a.appendMessage(ctx, llm.Message{Role: "user", Content: verify}); aerr != nil {
+						return last, aerr
+					}
+					continue // DONE refused; next round must fix the failures
+				}
+			}
 			return last, nil
 		}
 	}
 	return last, fmt.Errorf("goal not achieved after %d rounds", maxRounds)
+}
+
+// goalGateCheck runs workspace_diagnostics and returns a DONE-refusal message
+// when the workspace fails its static check, or "" when the check is clean or
+// unavailable (no tool / no project / no failures). Deterministic — the model
+// can't talk its way out of a failing build.
+func (a *Agent) goalGateCheck(ctx context.Context) string {
+	tool, ok := a.registry.Get("workspace_diagnostics")
+	if !ok {
+		return ""
+	}
+	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		return ""
+	}
+	if result == "" || strings.Contains(result, "no diagnostics configured") {
+		return ""
+	}
+	if !diagnosticsFailed(result) {
+		return ""
+	}
+	return "Deterministic completion check: the workspace still fails its static check. " +
+		"You reported DONE, but the errors below are unresolved — fix them, then re-verify and report DONE again.\n\n" + result
+}
+
+// diagnosticsFailed reports whether a workspace_diagnostics result indicates
+// actual failures (compile/lint errors) rather than a clean or empty run.
+func diagnosticsFailed(result string) bool {
+	for _, ln := range strings.Split(result, "\n") {
+		t := strings.TrimSpace(ln)
+		if t == "" {
+			continue
+		}
+		// error/failure markers: "x.go:12:3: ...", "FAIL", "Error:", "cannot",
+		// "undefined", "error[", a "exit status" tail, "missing", "undeclared".
+		if strings.Contains(t, "FAIL") || strings.HasPrefix(t, "error:") ||
+			strings.Contains(t, ": error") || strings.Contains(t, ": undefined") ||
+			strings.Contains(t, "cannot find package") || strings.Contains(t, "cannot use") ||
+			strings.Contains(t, "not in std") || strings.Contains(t, "exit status") ||
+			strings.Contains(t, "undeclared") || strings.Contains(t, "missing import") {
+			return true
+		}
+	}
+	return false
 }
 
 // taskLedger renders the compact machine-generated progress anchor (goal =

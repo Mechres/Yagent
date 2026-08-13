@@ -2,6 +2,22 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.32 — 2026-08-13
+
+### Added
+- **`GoalGate` — deterministic completion gate for goal mode.** `RunGoal`
+  refuses a DONE verdict while `workspace_diagnostics` still reports a failing
+  build/lint (`diagnosticsFailed`), feeding the errors back and forcing another
+  round. A model can no longer "declare DONE while narrating the remaining
+  work". UI-enabled (mirrors VerifyWrites).
+- **Long-horizon goal stress-test.** `TestLiveGoalStress` (opt-in
+  `YAGENT_LIVE_EVAL=1`) runs a scripted multi-file refactor goal and measures
+  DONE verdict, rounds, wall time, package/import/test correctness, and decoy
+  fact preservation. The evidence harness for the C3/M7 gating question.
+- Measured on Qwen3VL-8B: full-refactor correctness went **1/5 → 3/3** after
+  the gate, and DONE-too-early went 2/5 → 0. C3 (structured subagent returns)
+  stays gated.
+
 ## v0.1.31 — 2026-08-13
 
 ### Added

@@ -672,3 +672,120 @@ shipped (syntax-only on refactor, cache invalidation, candidates-not-truth).
 - ⚪ **Adaptive reasoning budget** (G) — a write-vs-read heuristic for the
   reasoning cap is exactly the kind of tuning that needs real model evidence;
   `reasoning_max_tokens` is a deliberate manual knob. No quality proof offered.
+
+## Strategic roadmap (2026-08-13, self-generated — evidence-gated direction)
+
+The project is feature-complete: every M1–M7 milestone and all post-M6 review
+batches are shipped. The remaining backlog (C3 structured subagent returns, M7
+deeper orchestration) is deliberately gated on evidence. The highest-value next
+work is therefore (a) producing that evidence, and (b) fixing the one
+limitation that repeats across every model benched. Ordered by leverage:
+
+### T1-1 — Long-horizon goal stress-test (decides the C3/M7 roadmap)
+
+The backlog question is: *is the single loop the bottleneck on real multi-file
+work?* The eval harness is fake-server and the live bench measures single-turn
+tool basics — neither answers it. Build a **scripted autonomous run**: one
+multi-file refactor goal over a real repo, checkpointed, `--rounds 8`, with the
+live-fidelity pattern applied (N facts buried in decoy prose, recall measured
+after the run). The outcome either closes C3 permanently ("single loop is not
+the bottleneck at this scale") or finally un-gates it with a concrete failure
+case. This single experiment decides the remaining roadmap.
+
+**Shipped 2026-08-13**: `TestLiveGoalStress` (`internal/eval/goal_stress_test.go`,
+opt-in `YAGENT_LIVE_EVAL=1`). Fixture: a Go module where `Config` must move
+from `pkg` into a new `pkg/config` package, with `main.go` + tests re-wired,
+plus 4 decoy note files carrying facts the refactor must not clobber. The agent
+runs `RunGoal(goal, 8, …)` with VerifyWrites on (production config) and the
+harness measures GOAL DONE / rounds / wall time / new-package-exists / imports
+rewired / decoy facts intact / "wrote any file". The last metric matters: a
+DONE with zero writes is a **hallucinated completion**.
+
+**First evidence (Qwen3VL-8B Q4 on :8089, `--repeat`-style fresh runs):**
+
+| run | rounds | wall | new pkg | imports rewired | wrote any file | correct |
+|---|---|---|---|---|---|---|
+| 1 (VerifyWrites off — harness bug, not valid) | 1 | 29s | ✗ | ✗ | **✗ (claimed done, wrote nothing)** | ✗ |
+| 2 (VerifyWrites on) | 1 | 6m24s | ✓ | ✗ | ✓ | ✗ |
+| 3 (VerifyWrites on, fresh) | 1 | 29s | ✓ | ✓ | ✓ | ✓ |
+| 4 | 0 | 40s | ✓ | ✗ | ✓ | ✗ |
+| 5 | 1 | 11m35s | ✓ | ✗ | ✓ | ✗ |
+| 6 | 0 | 3m39s | ✗ | ✗ | ✓ | ✗ |
+
+**Verdict (N=5 valid, firmed up):** the single loop **fails 4/5** real multi-file
+refactors at this scale, and the failure is *not* "can't start" — `wrote any
+file` is true in every valid run. The recurring failure mode is **completion**:
+the model creates the new package, then either **loops on the import wiring
+until max-iterations** (runs 4, 6 — `rounds: 0`, no final answer) or **declares
+DONE while narrating the remaining work** (runs 2, 5). The single success
+(run 3) completed in 29s. Both failure modes slip past the existing nudges
+because the final answer either *mentions* the pending work in prose (DONE path)
+or never settles (loop path). **C3 stays gated** — a subagent would not fix
+DONE-too-early or an import-wiring loop — but the stress-test gives a **concrete
+actionable gap**: goal mode needs a deterministic completion check that refuses
+DONE while the build/test still fails and breaks the import-loop with a targeted
+nudge (e.g. "the old import still exists in main.go — run fs_edit on that file
+now, not another plan"). Next: run the loop with that fix and re-measure.
+
+**Fix shipped 2026-08-13 — `GoalGate`** (`agent.Config.GoalGate`, UI-enabled,
+mirrors VerifyWrites): in `RunGoal`, after the model's DONE verdict, the agent
+deterministically re-runs `workspace_diagnostics`; if the workspace still fails
+its static check (`diagnosticsFailed` — compile/lint error markers), the DONE is
+**refused**, the errors are fed back, and another round is forced. The model
+cannot talk its way out of a failing build. Unit-tested
+(`TestRunGoalGateRefusesDoneOnFailingBuild`, `TestRunGoalGateCleanBuildPasses`,
+`TestDiagnosticsFailed`).
+
+**Post-fix re-measure (Qwen3VL-8B on :8089, GoalGate on):**
+
+| run | rounds | wall | new pkg | imports rewired | correct |
+|---|---|---|---|---|---|
+| 1 | 1 | 29s | ✓ | ✓ | ✓ |
+| 2 | 0 | 35s | ✓ | ✓ | ✓ (did all work; hit max-iterations without emitting a final answer) |
+| 3 | 1 | 32s | ✓ | ✓ | ✓ |
+
+**Before vs after:** full-refactor correctness **1/5 → 3/3**; imports rewired
+**1/5 → 3/3**; DONE-too-early **2/5 → 0**. The gate eliminated the
+declared-DONE-before-finishing failure entirely. The one remaining miss is a
+milder mode — the model finishes all the work but doesn't close with a final
+answer (max-iterations). **C3 remains gated** (the single loop, with the gate,
+is now reliable at this scale).
+
+### T1-2 — Live-bench regression gate
+
+`yagent bench --repeat 3` is already run informally after every model swap.
+Make it a recorded ritual: scores appended to a baseline file (e.g.
+`docs/bench-baselines.md` or a JSON sidecar), and `yagent doctor` warns when the
+configured model regresses vs. its recorded baseline. Prevents silently
+shipping a worse model after a sampling/config change.
+
+### T2-1 — Explicit fact extraction into memory during goal runs
+
+Every benched model (Qwythos, Ornith, LFM2.5, Qwopus) is flaky on **multi-turn
+recall** — the #1 repeated weakness, and it's model-independent.
+`memory_save`/`memory_search` exist but are not *auto-wired*: a long goal run
+relies on the narrative summarizer. Add a deterministic hook: after each goal
+round, extract `path:key` facts (touched files, decisions, failures) into
+`memory_save` entries, injected cheaply next round. This targets the one
+weakness no tool/guardrail currently addresses.
+
+### T3-1 — Web-result cache (bounded, TTL'd)
+
+DDG scraping is slow and occasionally times out (a timeout appears in the DPO
+export data). Cache successful `web_search`/`web_fetch` results per session to
+avoid re-fetching identical queries and soften rate limits. Small, contained,
+deterministic.
+
+### T3-2 — Offload verification to the second machine
+
+Consult + summarizer already run on the laptop. Extend the same pattern to
+output-heavy *verification* (`test_runner`, `workspace_diagnostics` results are
+generated on the GPU host today): one config knob to run them on the offload
+server, freeing the GPU slot. Same `summarizer:`-style wiring.
+
+### Explicitly NOT next
+
+No new read/write tools, guardrails, exporter formats, or the fine-tune
+pipeline (D) — the review batches keep proposing these and they are done,
+covered, or plumbing. The feature surface is saturated; the ROI is in the
+evidence items above.
