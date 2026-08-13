@@ -2,6 +2,18 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.49 — 2026-08-14
+
+### Fixed
+- **Goal mode no longer freezes on a write tool.** An autonomous goal/playbook
+  run is unattended, but the REPL approver prompted for a y/n on stdin when the
+  model called a write/destructive tool mid-round — so the terminal appeared
+  frozen and the run hung until `pkill -9`. Goal and playbook runs now always
+  auto-approve writes (the goal checkpoint + `/undo` are the rollback safety
+  net), and `AskUser` is left unset so `clarify`/`plan` aren't offered in an
+  autonomous run. Verified live: a goal doing `fs_write` completes cleanly
+  with no prompt and no hang.
+
 ## v0.1.48 — 2026-08-14
 
 ### Fixed

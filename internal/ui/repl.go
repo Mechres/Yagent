@@ -359,11 +359,13 @@ func runPlaybookMode(ctx context.Context, client *llm.Client, cfg *config.Config
 	w := os.Stdout
 	reader := bufio.NewReader(os.Stdin)
 	ap := newToggleableApprover(&replApprover{reader: reader, writer: w})
-	ap.SetYOLO(yolo)
+	// Autonomous playbook runs are unattended: always auto-approve writes
+	// (the per-phase checkpoint is the rollback safety net). No AskUser, so
+	// clarify/plan aren't offered mid-run.
+	ap.SetYOLO(true)
 	if yolo {
 		env.registry.SetSkillsWriteApproval(false)
 	}
-	env.registry.SetAskUser(replAskUser(reader, w))
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
 		func(delta string) {
@@ -508,11 +510,16 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 	w := os.Stdout
 	reader := bufio.NewReader(os.Stdin)
 	ap := newToggleableApprover(&replApprover{reader: reader, writer: w})
-	ap.SetYOLO(yolo)
+	// Autonomous goal runs are unattended: a write tool mid-round must not
+	// block on an interactive y/n (the terminal appears frozen and the run
+	// hangs until the user pkill -9s it). Always auto-approve writes — the
+	// goal checkpoint and /undo provide the rollback safety net. AskUser is
+	// left unset so clarify/plan aren't offered (no interactive handoff in
+	// an autonomous run).
+	ap.SetYOLO(true)
 	if yolo {
 		env.registry.SetSkillsWriteApproval(false)
 	}
-	env.registry.SetAskUser(replAskUser(reader, w))
 	ag := newAgent(client, cfg, env, ap,
 		func(delta string) { _, _ = io.WriteString(w, delta) },
 		func(delta string) {
