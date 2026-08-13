@@ -126,6 +126,17 @@ type Registry struct {
 	skills    *skills.Store
 }
 
+// skillsDirs joins the skills store's SKILL.md roots ("|"-separated) so the fs
+// write tools can recognize model writes to the skills store and route them
+// through the skills gate instead of the generic y/n prompt. Empty when no
+// skills store is configured.
+func skillsDirs(sk *skills.Store) string {
+	if sk == nil {
+		return ""
+	}
+	return strings.Join(sk.SkillDirs(), "|")
+}
+
 // NewRegistry builds the M2+ tool set scoped to workspace.
 func NewRegistry(workspace string, opts Options) *Registry {
 	r := &Registry{
@@ -135,8 +146,8 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	}
 	reg := map[string]Tool{
 		"fs_read":               &fsReadTool{ws: r.workspace},
-		"fs_write":              &fsWriteTool{ws: r.workspace, undo: opts.Undo},
-		"fs_edit":               &fsEditTool{ws: r.workspace, undo: opts.Undo},
+		"fs_write":              &fsWriteTool{ws: r.workspace, undo: opts.Undo, skillsDir: skillsDirs(opts.Skills)},
+		"fs_edit":               &fsEditTool{ws: r.workspace, undo: opts.Undo, skillsDir: skillsDirs(opts.Skills)},
 		"fs_patch":              &fsPatchTool{ws: r.workspace, undo: opts.Undo},
 		"fs_refactor":           &refactorTool{ws: r.workspace, undo: opts.Undo},
 		"code_outline":          &codeOutlineTool{ws: r.workspace},

@@ -1912,6 +1912,11 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	if tool.Risk() != tools.RiskReadOnly {
 		if sg, ok := tool.(interface{ SelfGated() bool }); ok && sg.SelfGated() {
 			// skills gate inside the tool
+		} else if sgf, ok := tool.(interface{ SelfGatedFor(json.RawMessage) bool }); ok && sgf.SelfGatedFor(call.Function.Arguments) {
+			// A write targeting the skills store (SKILL.md under .yagent/skills
+			// or the global skills dir) is governed by the skills gate, not the
+			// generic y/n prompt — the model creating a skill via fs_write must
+			// not prompt any more than skill_manage does.
 		} else {
 			appr, err := a.approver.Approve(ctx, call, tool.Risk())
 			if err != nil {

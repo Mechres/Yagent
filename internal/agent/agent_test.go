@@ -1747,6 +1747,53 @@ func TestMemorySaveSelfGated(t *testing.T) {
 	}
 }
 
+func TestSkillFsWriteSelfGated(t *testing.T) {
+	// The model may create a SKILL.md via fs_write directly into the skills
+	// dir — that write is governed by the skills gate, so it must NOT hit the
+	// generic y/n approver (2026-08-13: fs_write into .yagent/skills prompted).
+	ws := t.TempDir()
+	sk, err := skills.Open(filepath.Join(ws, "data"), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_write", `{"path":".yagent/skills/my-skill/SKILL.md","content":"---\nname: my-skill\ndescription: test\n---\n## Procedure\n1. do it\n"}`),
+		finalContent("done"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{Skills: sk, SkillsWriteApproval: true})
+	ap := &stubApprover{allow: true}
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, ap,
+		Config{MaxIterations: 5, Skills: sk}, ws)
+
+	if _, err := a.Run(context.Background(), "create a skill my-skill"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if ap.n != 0 {
+		t.Errorf("fs_write to skills dir prompted for approval %d times, want 0", ap.n)
+	}
+	// the file actually landed
+	data, err := os.ReadFile(filepath.Join(ws, ".yagent", "skills", "my-skill", "SKILL.md"))
+	if err != nil || !strings.Contains(string(data), "my-skill") {
+		t.Errorf("SKILL.md not written: %v", err)
+	}
+
+	// a NON-skill fs_write still prompts
+	s2 := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_write", `{"path":"notes.txt","content":"hello"}`),
+		finalContent("done"),
+	})
+	reg2 := tools.NewRegistry(ws, tools.Options{Skills: sk, SkillsWriteApproval: true})
+	ap2 := &stubApprover{allow: true}
+	a2 := New(llm.NewClient(s2.ts.URL, "test-model"), reg2, ap2,
+		Config{MaxIterations: 5, Skills: sk}, ws)
+	if _, err := a2.Run(context.Background(), "write notes.txt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if ap2.n != 1 {
+		t.Errorf("plain fs_write prompted %d times, want 1 (should still approve)", ap2.n)
+	}
+}
+
 func TestActiveToolSchemasFilters(t *testing.T) {
 	ws := t.TempDir()
 	sk, err := skills.Open(ws, ws)

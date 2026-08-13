@@ -2,6 +2,17 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.45 — 2026-08-13
+
+### Fixed
+- **Skill creation via fs_write/fs_edit no longer prompts for approval.** The
+  model sometimes writes a SKILL.md directly into the skills store instead of
+  via `skill_manage`; those writes hit the generic y/n approver. Writes whose
+  target path is inside a skills root (`.yagent/skills` or the global skills
+  dir) are now recognized via a path-aware `SelfGatedFor` and governed by the
+  skills gate (apply vs stage) — matching `skill_manage`. Non-skill writes
+  still prompt. Covered by `TestSkillFsWriteSelfGated`.
+
 ## v0.1.44 — 2026-08-13
 
 ### Fixed

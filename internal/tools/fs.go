@@ -183,8 +183,9 @@ func isBinary(data []byte) bool {
 // ---------- fs_write ----------
 
 type fsWriteTool struct {
-	ws   string
-	undo *undo.Buffer
+	ws        string
+	undo      *undo.Buffer
+	skillsDir string // when set, writes under it are self-gated (SKILL.md)
 }
 
 type fsWriteArgs struct {
@@ -194,6 +195,13 @@ type fsWriteArgs struct {
 
 func (t *fsWriteTool) Schema() llm.ToolSchema { return fsWriteSchema }
 func (t *fsWriteTool) Risk() RiskLevel        { return RiskWrite }
+
+// SelfGatedFor reports whether this write targets the skills store — a
+// SKILL.md written by the model is governed by the skills gate (apply vs
+// stage), not the generic y/n prompt, mirroring skill_manage.
+func (t *fsWriteTool) SelfGatedFor(args json.RawMessage) bool {
+	return pathInSkillsDir(t.ws, t.skillsDir, args)
+}
 
 func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var a fsWriteArgs
@@ -239,8 +247,9 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 // ---------- fs_edit ----------
 
 type fsEditTool struct {
-	ws   string
-	undo *undo.Buffer
+	ws        string
+	undo      *undo.Buffer
+	skillsDir string
 }
 
 type fsEditArgs struct {
@@ -251,6 +260,11 @@ type fsEditArgs struct {
 
 func (t *fsEditTool) Schema() llm.ToolSchema { return fsEditSchema }
 func (t *fsEditTool) Risk() RiskLevel        { return RiskWrite }
+
+// SelfGatedFor reports whether this edit targets the skills store.
+func (t *fsEditTool) SelfGatedFor(args json.RawMessage) bool {
+	return pathInSkillsDir(t.ws, t.skillsDir, args)
+}
 
 func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var a fsEditArgs
@@ -338,6 +352,47 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 		return fmt.Sprintf("note: path %q was resolved to %s\nedited %s:\n%s", resolved, filepath.Base(path), a.Path, simpleDiff(old, newContent, 100)), nil
 	}
 	return fmt.Sprintf("edited %s:\n%s", a.Path, simpleDiff(old, newContent, 100)), nil
+}
+
+// pathInSkillsDir reports whether the write/edit args target a path inside the
+// skills store (the project dir .yagent/skills or the configured skillsDir). A
+// model writing a SKILL.md there is governed by the skills gate, so the
+// generic y/n approval is skipped. skillsDirs is a "|"-joined list of roots.
+func pathInSkillsDir(ws, skillsDirs string, raw json.RawMessage) bool {
+	if skillsDirs == "" {
+		return false
+	}
+	var a struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.Path == "" {
+		return false
+	}
+	full, err := resolvePath(ws, a.Path)
+	if err != nil {
+		return false
+	}
+	absTarget, err := filepath.Abs(full)
+	if err != nil {
+		return false
+	}
+	for _, dir := range strings.Split(skillsDirs, "|") {
+		if dir == "" {
+			continue
+		}
+		absSkill, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(absSkill, absTarget)
+		if err != nil {
+			continue
+		}
+		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return true
+		}
+	}
+	return false
 }
 
 // nearestLineHint finds the line in content most similar to the target string

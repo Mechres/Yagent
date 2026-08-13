@@ -79,6 +79,13 @@ func (s *Store) pendingRoot() string { return filepath.Join(s.dataDir, "pending"
 // Dir returns the store's data directory.
 func (s *Store) Dir() string { return s.dataDir }
 
+// SkillDirs returns the roots where SKILL.md files actually live (project
+// first, then global). Used to recognize model writes to the skills store via
+// fs_write/fs_edit so they are governed by the skills gate, not a y/n prompt.
+func (s *Store) SkillDirs() []string {
+	return []string{s.projectDir, s.globalRoot()}
+}
+
 // readRoots lists the roots in shadow order (project first).
 func (s *Store) readRoots() []string {
 	return []string{s.projectDir, s.globalRoot()}
