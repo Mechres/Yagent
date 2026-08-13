@@ -52,6 +52,7 @@ run" predate `--repeat` and are indicative only.
 | **Qwen3-8B** (non-VL) | 8B | 14/18 | 4m10s | Same base but **thinks by default on llama.cpp** (~500 thinking tokens/task → ~15s each). Capable, but the VL variant is strictly better for Yagent. |
 | **LFM2.5-8B-A1B-UD** (MoE) | 8B | 13/18 | ~1m15s | Decent agentic MoE; its recommended recipe helps (10 → 13/18). **code-locate 0/3** — it guesses instead of locating via a tool. Not a gemma-4-26B rival for Yagent's agent loop, but its raw tool-calling works. |
 | **LFM2.5-2.6B** | 2.6B | 13/18 | ~1m44s | Surprisingly capable for 1.7 GB — passes tool-json/fuzzy/code-locate/grep-find; but **loops re-reading instead of delivering on edit-verify and multi-turn** (a genuine instruction-following weakness, not a misconfiguration — raw `tool_calls` emission is correct). Good for weak hardware / simple tasks. |
+| **MiniCPM5-1B** | 1B | **7/18** | 10m41s | Q8, `-Thinking` variant. **Below the small-model floor** — slower than the 2.6B/3B Q4s (0.3–1.6 t/s from heavy thinking) and loops badly (multi-turn hit a 400 after looping past n_ctx; edit-verify/fuzzy-path hit max-iterations). Recall weak (multi-turn 0/3). 1B is at the edge of tool-calling regardless of quant; the capability is the limit, not Q8 vs Q4. |
 | **gemma-4-12B** | 12B | 18/18 (single run) | 63.6 s | Strongest quality; slowest (heavy reasoning). Best "capable" pick if speed doesn't matter. |
 | **fable-qwen2.5-3b-agentic** | 3B | 18/18 (single run) | 12.5 s | Fast and agentic-tuned; great for simple/weak hardware. Tiny model — long or deep tasks still strain it. |
 | **gpt-oss-20b** | 20B MoE | 14/18 | 2m12s | Good; tight VRAM fit (11.6 GB) so run a reduced `n_ctx`; weaker on recall/glob. |
@@ -103,6 +104,7 @@ sampling:
 | Model | Sampling | Reasoning cap |
 |---|---|---|
 | Qwen3VL-8B | default (0.6 / 0.95) | — |
+| MiniCPM5-1B | default | 512 (its heavy thinking is the speed killer) |
 | Qwopus3.5-9B-coder-Exp | **temperature 1.0** (its card's recipe), top_k 20, rep_penalty 1.05 | 1024 |
 | Ornith-1.0-9B | default (0.6 / 0.95); top_k 20, rep_penalty 1.05 | 1024 (recommended — reasoning model, already fast) |
 | fable-qwen2.5-3b | default (0.6 / 0.95) | — |
