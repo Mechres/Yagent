@@ -19,6 +19,7 @@ import (
 
 	"github.com/Mechres/Yagent/internal/agent"
 	"github.com/Mechres/Yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/jobs"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
 	"github.com/Mechres/Yagent/internal/skills"
@@ -51,6 +52,15 @@ type Task struct {
 	Rounds int    `yaml:"rounds"`
 	// Subagent wires the subagent tool to a child agent (M7).
 	Subagent bool `yaml:"subagent"`
+	// Jobs enables the background-process tools (shell_bg / shell_logs /
+	// shell_kill).
+	Jobs bool `yaml:"jobs"`
+	// Compact runs a.Compact (the /compact session-ledger distillation) after
+	// the turn, so the eval can assert the distilled ledger was produced.
+	Compact bool `yaml:"compact"`
+	// CompactHistoryLen, when Compact is set, asserts the history length after
+	// compaction (a full distill leaves only the current user turn).
+	CompactHistoryLen int `yaml:"compact_history_len"`
 
 	// DenyFirst denies the first N write/destructive approvals (the model
 	// must recover from a user saying no). 0 = allow everything.
@@ -191,6 +201,9 @@ func Run(t *testing.T, task Task) {
 		wc, _ = web.New(web.Config{Provider: "searxng", SearxngURL: webTS.URL})
 		opts.Web = wc
 	}
+	if task.Jobs {
+		opts.Jobs = jobs.New()
+	}
 
 	reg := tools.NewRegistry(ws, opts)
 	client := llm.NewClient(llmServer.URL, "test-model")
@@ -252,7 +265,19 @@ func Run(t *testing.T, task Task) {
 			}
 		}
 	}
+	if task.Compact {
+		note, cerr := a.Compact(context.Background())
+		if cerr != nil {
+			t.Fatalf("Compact: %v", cerr)
+		}
+		if note == "" {
+			t.Error("Compact returned an empty note")
+		}
+	}
 	history := a.History()
+	if task.Compact && task.CompactHistoryLen > 0 && len(history) != task.CompactHistoryLen {
+		t.Errorf("history after compact = %d messages, want %d", len(history), task.CompactHistoryLen)
+	}
 	var toolResults []string
 	for _, m := range history {
 		if m.Role == "tool" {

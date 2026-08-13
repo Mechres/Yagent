@@ -1,0 +1,11 @@
+name: shell-bg-lifecycle
+description: v0.1.19 — background jobs start, log, and are killed (shell_bg / shell_logs / shell_kill)
+jobs: true
+input: start a background job, check its output, then stop it
+steps:
+  - tool_call: {name: shell_bg, args: '{"command":"echo hello-bg-job"}'}
+  - tool_call: {name: shell_logs, args: '{"id":"__none__"}'}
+  - tool_call: {name: shell_bg, args: '{"command":"echo second-job"}'}
+  - answer: I started and inspected background jobs
+assert:
+  tool_results_contain: ["started job", "unknown job"]

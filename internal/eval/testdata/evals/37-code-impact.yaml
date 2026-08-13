@@ -1,0 +1,23 @@
+name: code-impact
+description: v0.1.29 — code_impact computes the change radius of a symbol before an edit (callers + covering tests)
+index: true
+files:
+  pkg/helper.go: |
+    package pkg
+
+    func helper(x int) int { return x }
+  pkg/a.go: |
+    package pkg
+
+    func caller() { _ = helper(1) }
+  pkg/helper_test.go: |
+    package pkg
+
+    func TestHelper(t *testing.T) { _ = helper(1) }
+input: what would break if I change the helper function?
+steps:
+  - tool_call: {name: index_repo, args: '{}'}
+  - tool_call: {name: code_impact, args: '{"path":"pkg/helper.go","symbol":"helper"}'}
+  - answer: pkg/a.go calls helper and pkg/helper_test.go covers it
+assert:
+  tool_results_contain: ["pkg/a.go", "helper_test.go"]

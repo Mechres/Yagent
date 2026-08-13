@@ -975,3 +975,20 @@ Second sweep of untested deterministic behavior. Added:
   live one. Harness gained `tool_results_not_contain` (negative assertion).
 
 32 evals total, all offline against scripted servers.
+
+## Golden-eval expansion round 3 — structural tools, jobs, /compact (2026-08-13)
+
+Third sweep. Added:
+
+- **36-code-topology** — code_topology renders the package import DAG from
+  import statements (module path, per-package edges) with no index needed.
+- **37-code-impact** — code_impact computes the change radius of a symbol
+  (caller file + covering test file) after index_repo.
+- **38-shell-bg-lifecycle** — background jobs start (`started job`), an unknown
+  id returns `unknown job`. Harness gained `jobs` (wires a jobs.Registry).
+- **39-compact-ledger** — /compact distills the conversation via the
+  summarizer; the harness runs `a.Compact` after the turn and asserts the
+  history length shrank to the current turn only. Harness gained `compact` and
+  `compact_history_len`.
+
+36 evals total, all offline against scripted servers.

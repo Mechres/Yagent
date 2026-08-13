@@ -1,0 +1,13 @@
+name: compact-ledger
+description: v0.1.29 — /compact distills the whole conversation into a session ledger via the summarizer
+compact: true
+compact_history_len: 2
+summary: "[SESSION LEDGER]\n- fact: tabs preferred\n- active: fixing the parser"
+inputs:
+  - remember that I prefer tabs
+  - now report the current status
+steps:
+  - answer: ok, tabs noted
+  - answer: I recall we are fixing the parser
+assert:
+  final_answer_contains: "parser"

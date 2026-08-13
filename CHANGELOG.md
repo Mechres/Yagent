@@ -2,6 +2,15 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.40 — 2026-08-13
+
+### Added
+- **Golden evals 36–39.** The fake-server regression suite now covers
+  code_topology (package import DAG), code_impact (change radius), the shell_bg
+  job lifecycle, and /compact (session ledger via the summarizer with history
+  shrunk to the current turn). The harness gained `jobs`, `compact` and
+  `compact_history_len` toggles. 36 evals total.
+
 ## v0.1.39 — 2026-08-13
 
 ### Added

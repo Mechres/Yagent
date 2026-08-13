@@ -1,0 +1,32 @@
+name: code-topology
+description: v0.1.28 — code_topology renders the package import DAG from import statements (no index needed)
+files:
+  go.mod: |
+    module example.com/acme
+
+    go 1.22
+  internal/agent/agent.go: |
+    package agent
+
+    import "example.com/acme/internal/llm"
+
+    func New() {}
+  internal/llm/llm.go: |
+    package llm
+
+    func X() {}
+  cmd/yagent/main.go: |
+    package main
+
+    import (
+        "example.com/acme/internal/agent"
+        "example.com/acme/internal/llm"
+    )
+
+    func main() { _ = agent.New; _ = llm.X }
+input: what is the package structure of this workspace?
+steps:
+  - tool_call: {name: code_topology, args: '{}'}
+  - answer: agent depends on llm, and cmd/yagent depends on both
+assert:
+  tool_results_contain: ["module example.com/acme", "internal/agent -> internal/llm", "cmd/yagent -> internal/agent, internal/llm"]
