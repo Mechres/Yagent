@@ -1409,6 +1409,45 @@ func TestConvergenceNudge(t *testing.T) {
 	}
 }
 
+func TestNearCapConvergenceNudge(t *testing.T) {
+	// Residual stress-test failure (2026-08-13): the model does all the work
+	// (writes a file) but keeps requesting tools until the iteration cap — it
+	// never emits the closing answer. With a small MaxIterations, the loop must
+	// nudge it to stop and summarize (a write happened, so the read-only
+	// convergence nudge never fires).
+	steps := [][]string{
+		toolCall("w1", "fs_write", `{"path":"a.txt","content":"new content"}`),
+		toolCall("r1", "fs_read", `{"path":"a.txt"}`),
+		toolCall("r2", "fs_read", `{"path":"a.txt"}`),
+		toolCall("r3", "grep", `{"pattern":"content"}`),
+		finalContent("done the work"),
+	}
+	s := newScriptedLLM(t, steps)
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	// MaxIterations 5: the near-cap branch (i >= 5-2=3) fires after the grep
+	// dispatches, before the final answer.
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	answer, err := a.Run(context.Background(), "update the file and verify")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "done the work" {
+		t.Errorf("final answer = %q", answer)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "near the iteration limit") {
+		t.Error("near-cap convergence nudge not injected")
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",

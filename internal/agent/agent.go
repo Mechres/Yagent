@@ -642,6 +642,13 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 				nudge = fmt.Sprintf("You've called %s many times this turn without converging. Stop exploring — use what you already have and give your final answer now (at most one more targeted call).", name)
 			case reads >= 12 && !wrote:
 				nudge = "You've done extensive exploration this turn without producing a result. Deliver your final answer now based on what you've already gathered."
+			case i >= a.cfg.MaxIterations-2 && wrote:
+				// Residual stress-test failure (2026-08-13): the model does ALL
+				// the work — writes files, updates imports — then keeps
+				// requesting tools (re-reading, narrating "let me update…")
+				// until the iteration cap. It never emits the closing answer.
+				// Nudge it to stop and summarize what it changed.
+				nudge = "You've made the changes and are near the iteration limit. Stop making further tool calls — give your final answer now, summarizing exactly what you changed and that the task is complete."
 			}
 			if nudge != "" {
 				toolLoopNudged = true

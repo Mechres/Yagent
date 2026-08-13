@@ -772,6 +772,32 @@ last failure ("syntax error at line 10, col 8 — pkg.config."). Searchable for 
 resumed session (`--resume-goal`) or a later session. The feature does its job
 even when the loop itself doesn't finish.
 
+### T1-3 — Residual goal-loop failure: work done but no final answer
+
+After GoalGate, the stress-test still showed a residual: runs that do ALL the
+work (write files, update imports) then keep requesting tools until
+max-iterations without emitting the closing answer (stress runs 2/4/6, and
+post-gate run 2). The read-only convergence nudge never fired because it
+requires `reads >= 12 && !wrote` — a model that *wrote* but won't stop looping
+was invisible to it.
+
+**Shipped 2026-08-13**: a **near-cap convergence nudge** in `agent.Run` — when
+the loop is within 2 iterations of `MaxIterations` AND the turn has written a
+file, the model is nudged: "You've made the changes and are near the iteration
+limit. Stop making further tool calls — give your final answer now, summarizing
+exactly what you changed." Fires once per turn. Covered by
+`TestNearCapConvergenceNudge`.
+
+**Re-measure (Qwen3VL-8B on :8089, post-nudge, N=3):** 2/3 fully correct
+(runs 1 & 3, 38s and 11m41s); run 2 did new-pkg + main.go but looped on the
+test file to max-iterations. Run 1's 11m41s case is the win — a run that
+previously died at max-iterations was rescued by the nudge and closed with
+DONE. Net: no regression, and the nudge rescues stalled runs that the model
+would otherwise abandon. The residual (import/edit-wiring loop on a specific
+file) is a model-level behavior the single nudge can't fully break — C3 stays
+gated; if it recurs across runs, a follow-up is a loop-counter per specific
+file rather than per tool.
+
 ### T1-2 — Live-bench regression gate
 
 `yagent bench --repeat 3` is already run informally after every model swap.

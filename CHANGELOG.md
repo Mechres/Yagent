@@ -2,6 +2,17 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.37 — 2026-08-13
+
+### Added
+- **Near-cap convergence nudge.** When a goal turn is within 2 iterations of
+  `MaxIterations` and the model has written files, the agent nudges it to stop
+  making tool calls and close with a final answer. Targets the residual
+  stress-test failure — runs that do all the work but never emit the closing
+  answer (the read-only convergence nudge only fired on write-free turns).
+  Live-measured on Qwen3VL-8B: rescued a previously-doomed 11m41s stall into a
+  clean DONE; no regression (2/3 fully correct, matching the gate-only rate).
+
 ## v0.1.36 — 2026-08-13
 
 ### Added
