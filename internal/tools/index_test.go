@@ -282,6 +282,34 @@ func (s *Store) Get(i int) string { return s.data[i] }
 	}
 }
 
+func TestSubagentSchemaArrayTypes(t *testing.T) {
+	// agy #2: tasks/tools must be declared as string arrays, not strings — a
+	// grammar-constrained backend (llama.cpp GBNF) enforces the schema type and
+	// would reject a real array against a "string" declaration.
+	tool := &subagentTool{ws: t.TempDir()}
+	props := tool.Schema().Function.Parameters["properties"].(map[string]any)
+	for _, key := range []string{"tasks", "tools"} {
+		p, ok := props[key].(map[string]any)
+		if !ok {
+			t.Fatalf("%s param missing: %v", key, props[key])
+		}
+		if p["type"] != "array" {
+			t.Errorf("%s type = %v, want array", key, p["type"])
+		}
+		items, ok := p["items"].(map[string]any)
+		if !ok || items["type"] != "string" {
+			t.Errorf("%s items = %v, want {type:string}", key, p["items"])
+		}
+	}
+	// task and role stay strings
+	for _, key := range []string{"task", "role"} {
+		p := props[key].(map[string]any)
+		if p["type"] != "string" {
+			t.Errorf("%s type = %v, want string", key, p["type"])
+		}
+	}
+}
+
 func TestSubagentParallel(t *testing.T) {
 	var mu sync.Mutex
 	active := 0

@@ -337,9 +337,10 @@ type Agent struct {
 	// goalFactsSaved dedups L3 goal-fact memories per agent instance so a
 	// multi-round goal doesn't re-save the same fact every round.
 	goalFactsSaved map[string]bool
-	// failedWriteSig counts identical failed fs_edit/fs_write calls per turn so
-	// a model looping on the same broken edit (interleaved re-reads defeat the
-	// consecutive dedup) gets nudged instead of grinding to max-iterations.
+	// failedWriteSig counts failed fs_edit/fs_write/fs_patch calls per target
+	// FILE per turn, so a model looping on edits to the same file (with minor
+	// arg variations, interleaved re-reads defeating the consecutive dedup)
+	// gets nudged instead of grinding to max-iterations.
 	failedWriteSig map[string]int
 
 	// Tool-loop breaker: counts successful exploration-tool calls per turn and
@@ -645,27 +646,21 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 			looped, name := a.toolLooped, a.toolLoopName
 			reads, wrote := a.turnReadCalls, a.turnWrote
 			usedNow, limit := a.estTokensLocked(), a.cfg.Window
-			var failTool string
-			for sig, n := range a.failedWriteSig {
+			var failTarget string // the file path (or tool name) that keeps failing
+			for target, n := range a.failedWriteSig {
 				if n >= maxFailedWriteLoops {
-					// extract the tool name from "fs_edit {...}"
-					if i := strings.IndexByte(sig, ' '); i > 0 {
-						failTool = sig[:i]
-					} else {
-						failTool = sig
-					}
+					failTarget = target
 					break
 				}
 			}
 			a.mu.Unlock()
 			var nudge string
 			switch {
-			case failTool != "":
-				// Failed-write loop (2026-08-13, real use): the same edit keeps
-				// failing — typically old_string not found — and the model
-				// re-reads + retries the identical broken call. Nudge it to
-				// read the EXACT text and stop repeating.
-				nudge = fmt.Sprintf("The same %s call has failed repeatedly this turn. Stop repeating it. Re-read the exact region with fs_read (copy the precise text, including whitespace), then retry ONCE with the corrected old_string — or use fs_write to replace the whole file if the change is large.", failTool)
+			case failTarget != "":
+				// Failed-write loop: the model keeps failing to edit the same
+				// file (typically old_string not found) — re-reads + retries
+				// with minor variations. Nudge it to read the EXACT text.
+				nudge = fmt.Sprintf("You have failed to edit %s %d times this turn. Stop repeating. Re-read the exact region with fs_read (copy the precise text, including whitespace), then retry ONCE with the corrected old_string — or use fs_write to replace the whole file if the change is large.", failTarget, maxFailedWriteLoops)
 			case looped:
 				nudge = fmt.Sprintf("You've called %s many times this turn without converging. Stop exploring — use what you already have and give your final answer now (at most one more targeted call).", name)
 			case reads >= 6 && !wrote && limit > 0 && usedNow*4 > limit*3:
@@ -2002,20 +1997,28 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	if cacheableReadTools[name] && !strings.HasPrefix(result, "error:") {
 		a.cacheReadResult(name, call.Function.Arguments, result)
 	}
-	// Failed-edit loop detection: the model keeps re-attempting the same broken
-	// fs_edit/fs_write (interleaved fs_reads defeat the consecutive dedup, and
-	// fs_edit isn't in toolLoopTools). Count identical failed write signatures
-	// this turn so the loop can nudge instead of grinding to max-iterations.
+	// Failed-edit loop detection: the model keeps failing to edit the same file
+	// (interleaved fs_reads defeat the consecutive dedup, fs_edit isn't in
+	// toolLoopTools, and minor arg variations dodge an identical-signature
+	// key). Count failed write calls PER TARGET FILE (agy #6) so the loop can
+	// nudge instead of grinding to max-iterations.
 	if (name == "fs_edit" || name == "fs_write" || name == "fs_patch") && strings.HasPrefix(result, "error:") {
+		var pa struct {
+			Path string `json:"path"`
+		}
+		target := name
+		if json.Unmarshal(call.Function.Arguments, &pa) == nil && pa.Path != "" {
+			target = pa.Path
+		}
 		a.mu.Lock()
 		if a.failedWriteSig == nil {
 			a.failedWriteSig = map[string]int{}
 		}
-		a.failedWriteSig[sig]++
-		n := a.failedWriteSig[sig]
+		a.failedWriteSig[target]++
+		n := a.failedWriteSig[target]
 		a.mu.Unlock()
 		if n >= maxFailedWriteLoops {
-			slog.Info("failed-write loop detected", "tool", name, "attempts", n)
+			slog.Info("failed-write loop detected", "tool", name, "file", target, "attempts", n)
 		}
 	}
 	// Track write/verify state for the deterministic "done" barrier (any write

@@ -333,6 +333,10 @@ func strProp(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
 
+func arrayProp(description string) map[string]any {
+	return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": description}
+}
+
 func intProp(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }

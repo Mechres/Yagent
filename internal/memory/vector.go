@@ -166,6 +166,12 @@ func (v *VectorStore) Search(ctx context.Context, query string, k int) ([]Memory
 	if k <= 0 {
 		k = 5
 	}
+	// Zero-count short-circuit (agy #1): an empty store needs no embedding
+	// request or SlotLock acquisition — clean-slate projects would otherwise
+	// spend a GPU round-trip on every turn for nothing.
+	if v.Count() == 0 {
+		return nil, nil
+	}
 	qvec, err := v.embedOne(ctx, query)
 	if err != nil {
 		return nil, err

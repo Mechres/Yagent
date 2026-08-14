@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Mechres/Yagent/internal/config"
@@ -104,5 +107,34 @@ func TestDoctorBadConfig(t *testing.T) {
 	}
 	if !gotFail {
 		t.Fatalf("bad config not diagnosed: %+v", rep.Checks)
+	}
+}
+
+func TestDoctorProjectToolchain(t *testing.T) {
+	dir := t.TempDir()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+
+	// no project markers -> no toolchain check (nothing to assert on)
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644)
+	cfg := &config.Config{ServerURL: "http://127.0.0.1:1", Model: "m", DataDir: t.TempDir()}
+	rep := Run(cfg)
+	found := false
+	for _, c := range rep.Checks {
+		if c.Name == "toolchain" {
+			found = true
+			if c.Status != StatusPass || !strings.Contains(c.Detail, "go") {
+				t.Errorf("toolchain = %s %s, want PASS with go", c.Status, c.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no toolchain check for a go.mod project: %+v", rep.Checks)
 	}
 }

@@ -1070,3 +1070,31 @@ Two bugs found in real use (first messages in a fresh session):
    requires ≥ 32 streamed tokens before flagging, so a one-line warm-up answer
    can't trigger pressure (a real KV-spill stall happens on sustained long
    generation). Covered by the extended `TestVramPressureDetectAndPrune`.
+
+## agy review batch 2026-08-14 (8 proposals — 6 shipped, 2 rejected)
+
+- ✅ **VectorStore.Search zero-count short-circuit** (#1) — an empty memory
+  store now returns before the embedding request/SlotLock, so clean-slate
+  projects skip a wasted GPU round-trip per turn. Covered by
+  `TestVectorSearchEmptyStoreSkipsEmbed`.
+- ✅ **subagent schema array types** (#2) — `tasks`/`tools` declared as
+  `{"type":"array","items":{"type":"string"}}` (new `arrayProp` helper),
+  matching the `[]string` decode; GBNF-constrained backends no longer reject
+  arrays. Covered by `TestSubagentSchemaArrayTypes`.
+- ✅ **Rust test_runner support** (#3) — `cargo test` for Cargo.toml projects
+  (`cargo test -- <symbol>` for symbol scope). Covered by `TestTestRunnerRust`.
+- ✅ **ambiguous_match line guidance** (#4) — the fs_edit error now lists the
+  exact match line numbers (`matches 2 times at lines 14, 45`) so the model
+  disambiguates in one turn. Covered by `TestFSEdit`.
+- ✅ **doctor project toolchain check** (#5) — `yagent doctor` detects the
+  cwd's project type (go.mod/Cargo.toml/package.json/pyproject) and verifies
+  the matching tool is on PATH, so diagnostics/test_runner never hit a missing
+  binary. Covered by `TestDoctorProjectToolchain`.
+- ✅ **per-file edit stall counter** (#6) — failed write calls are now counted
+  per target FILE (not identical signature), catching the "same file, minor
+  variations" loop from the stress test. Nudge names the file and retry path.
+- ⚪ **code_slice heuristic fallback** (#7) — rejected: a `[heuristic span]`
+  line-window for ungrammar'd files risks the model trusting approximate
+  slices; the audit itself flags the tradeoff. Marginal value.
+- ⚪ **Headless browser / cloud swarms** (#8) — correctly out of scope
+  (single-binary local-first; pure HTML extraction already covers web reading).

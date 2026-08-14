@@ -68,7 +68,7 @@ func (t *testRunnerTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 
 	name, args, _, err := t.detectTestCommand(a)
 	if err != nil {
-		return "no test framework configured for this project (recognized: go test, pytest, vitest/jest)", nil
+		return "no test framework configured for this project (recognized: go test, cargo test, pytest, vitest/jest)", nil
 	}
 	out, err := t.run(ctx, name, args...)
 	if err != nil {
@@ -116,6 +116,21 @@ func (t *testRunnerTool) detectTestCommand(a testRunnerArgs) (name string, args 
 				dir = packageArg(a.Path)
 			}
 			return "go", []string{"test", dir, "-count=1"}, dir, nil
+		}
+	case has("Cargo.toml"):
+		// Rust: cargo test (agy #3) — completes the edit-verify loop for Rust
+		// projects (diagnostics already runs cargo check).
+		if _, err := t.lookPath("cargo"); err != nil {
+			return "", nil, "", err
+		}
+		switch a.Scope {
+		case "symbol":
+			return "cargo", []string{"test", "--", a.Symbol}, a.Symbol, nil
+		case "file":
+			// cargo has no per-file target; run the package tests.
+			return "cargo", []string{"test"}, a.Path, nil
+		default:
+			return "cargo", []string{"test"}, "", nil
 		}
 	case has("pyproject.toml") || has("requirements.txt") || has("setup.py") || has("pytest.ini"):
 		if _, err := t.lookPath("python3"); err != nil {

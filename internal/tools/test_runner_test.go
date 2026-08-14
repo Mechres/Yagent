@@ -91,6 +91,42 @@ func TestTestRunnerPythonFileScope(t *testing.T) {
 	}
 }
 
+func TestTestRunnerRust(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "Cargo.toml"), []byte("[package]\nname = \"game\"\nversion = \"0.1.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gotCmd string
+	tool := newTestRunnerTool(t, ws)
+	tool.runCmd = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		gotCmd = name + " " + strings.Join(args, " ")
+		return []byte("test result: ok. 1 passed; 0 failed\n"), nil
+	}
+	// symbol scope -> cargo test -- <symbol>
+	res, err := tool.Execute(context.Background(), []byte(`{"scope":"symbol","symbol":"physics"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotCmd, "cargo test -- physics") {
+		t.Errorf("symbol cmd = %q, want cargo test -- physics", gotCmd)
+	}
+	if !strings.Contains(res, "1 passed") {
+		t.Errorf("result = %q", res)
+	}
+	// package scope -> cargo test
+	gotCmd = ""
+	res2, err := tool.Execute(context.Background(), []byte(`{"scope":"package"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotCmd, "cargo test") || strings.Contains(gotCmd, "-- physics") {
+		t.Errorf("package cmd = %q", gotCmd)
+	}
+	if !strings.Contains(res2, "1 passed") {
+		t.Errorf("package result = %q", res2)
+	}
+}
+
 func TestTestRunnerValidation(t *testing.T) {
 	ws := t.TempDir()
 	tool := newTestRunnerTool(t, ws)

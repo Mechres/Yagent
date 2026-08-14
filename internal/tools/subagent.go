@@ -73,8 +73,8 @@ type subagentArgs struct {
 var subagentSchema = fnSchema("subagent", "delegate a self-contained, context-heavy subtask (e.g. research across several web pages, auditing a diff, exploring a large directory) to an isolated read-only subagent. It runs in its own context and returns a concise summary — use it to keep long investigations out of the main conversation. Provide either 'task' or 'tasks' (an array, run in parallel). Optionally pass 'tools' to scope each subagent to a subset of the read-only tools (e.g. [\"web_search\",\"web_fetch\"] for research-only, [\"grep\",\"fs_read\",\"index_search\"] for code exploration); default is the full read-only set. Optionally pass 'role' for a preset profile: architect, auditor, test-engineer, docs-writer (sets a focused system prompt, a default tool subset and sampling).",
 	map[string]any{
 		"task":  strProp("the subtask to complete; be specific about what to return"),
-		"tasks": strProp("multiple subtasks to run in parallel subagents (optional)"),
-		"tools": strProp("restrict each subagent to this subset of read-only tools (optional; default = all read-only tools)"),
+		"tasks": arrayProp("multiple subtasks to run in parallel subagents (optional)"),
+		"tools": arrayProp("restrict each subagent to this subset of read-only tools (optional; default = all read-only tools)"),
 		"role":  strProp("preset role: architect, auditor, test-engineer, docs-writer (optional)"),
 	},
 	[]string{})

@@ -2,6 +2,24 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.50 — 2026-08-14
+
+### Added
+- **Empty memory store short-circuit** — VectorStore.Search returns before the
+  embedding request/SlotLock when the store has 0 entries (clean-slate
+  projects skip a wasted GPU round-trip per turn).
+- **subagent schema array types** — `tasks`/`tools` are now declared as string
+  arrays (GBNF-safe), matching the `[]string` decode.
+- **Rust test_runner** — `cargo test` for Cargo.toml projects, with symbol
+  scope (`cargo test -- <symbol>`).
+- **fs_edit ambiguous-match line guidance** — the error lists the exact match
+  line numbers so the model disambiguates in one turn.
+- **doctor project toolchain check** — verifies the cwd project's tool (go,
+  cargo, node, python) is on PATH so diagnostics never hit a missing binary.
+- **Per-file edit-stall counter** — failed write calls keyed by target file,
+  so a model looping on the same file (minor variations) is nudged to re-read
+  the exact text.
+
 ## v0.1.49 — 2026-08-14
 
 ### Fixed

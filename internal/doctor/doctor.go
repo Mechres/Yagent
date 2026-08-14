@@ -81,6 +81,46 @@ func (r *Report) Render(w io.Writer) error {
 
 const timeout = 5 * time.Second
 
+// addProjectToolchain inspects the current working directory's project marker
+// files and verifies the matching toolchain binary is on PATH, so
+// workspace_diagnostics / test_runner won't hit a missing tool (agy #5).
+func (r *Report) addProjectToolchain() {
+	ws, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	has := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(ws, rel))
+		return err == nil
+	}
+	check := func(marker string, toolNames []string) {
+		if !has(marker) {
+			return
+		}
+		for _, bin := range toolNames {
+			if _, err := exec.LookPath(bin); err == nil {
+				r.add("toolchain", StatusPass, bin+" available for "+marker)
+				return
+			}
+		}
+		r.add("toolchain", StatusFail, "project uses "+marker+" but none of "+strings.Join(toolNames, ", ")+" is on PATH — workspace_diagnostics/test_runner will error")
+	}
+	switch {
+	case has("go.mod"):
+		check("go.mod", []string{"go"})
+	case has("Cargo.toml"):
+		check("Cargo.toml", []string{"cargo", "rustc"})
+	case has("package.json"):
+		check("package.json", []string{"npx", "node"})
+	case has("pyproject.toml"):
+		check("pyproject.toml", []string{"python3", "python"})
+	case has("requirements.txt"):
+		check("requirements.txt", []string{"python3", "python"})
+	case has("setup.py"):
+		check("setup.py", []string{"python3", "python"})
+	}
+}
+
 // Run executes the diagnostics against cfg.
 func Run(cfg *config.Config) Report {
 	var rep Report
@@ -140,6 +180,10 @@ func Run(cfg *config.Config) Report {
 	} else {
 		rep.add("git", StatusPass, "git available")
 	}
+	// Project toolchain (agy #5): detect the cwd's project type and verify the
+	// diagnostic/test tool is on PATH, so the agent never hits a missing
+	// binary (cargo/tsc/ruff/go) when it calls workspace_diagnostics.
+	rep.addProjectToolchain()
 	if cfg.Consult.Model != "" {
 		backend := cfg.Consult.ServerURL
 		if backend == "" {

@@ -1498,7 +1498,7 @@ func TestFailedWriteLoopNudge(t *testing.T) {
 	for _, b := range s.requests {
 		joined += string(b)
 	}
-	if !strings.Contains(joined, "failed repeatedly") {
+	if !strings.Contains(joined, "failed to edit") {
 		t.Error("failed-write loop nudge not injected")
 	}
 }

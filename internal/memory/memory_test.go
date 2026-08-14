@@ -2,6 +2,9 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,6 +201,33 @@ func TestVectorStoreCleanSlate(t *testing.T) {
 	defer vs2.Close()
 	if vs2.Count() != 0 {
 		t.Errorf("count = %d, want 0 after clean slate", vs2.Count())
+	}
+}
+
+func TestVectorSearchEmptyStoreSkipsEmbed(t *testing.T) {
+	// agy #1: an empty memory store must skip the embedding request entirely —
+	// no /v1/embeddings HTTP call, no SlotLock acquisition, on every turn.
+	var requests int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": []any{}})
+	}))
+	defer ts.Close()
+
+	vs, err := OpenVectorStore(filepath.Join(t.TempDir(), "mem"), ts.URL, "test-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vs.Close()
+	if vs.Count() != 0 {
+		t.Fatalf("precondition: store should be empty, count=%d", vs.Count())
+	}
+	if _, err := vs.Search(context.Background(), "anything", 5); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 0 {
+		t.Errorf("embed server received %d request(s) on an empty store, want 0", requests)
 	}
 }
 

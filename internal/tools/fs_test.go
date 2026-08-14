@@ -97,6 +97,11 @@ func TestFSEdit(t *testing.T) {
 	if got := execTool(t, reg, "fs_edit", map[string]any{"path": "doc.txt", "old_string": "alpha", "new_string": "x"}); !strings.Contains(got, "matches 2 times") {
 		t.Errorf("fs_edit ambiguous = %q", got)
 	}
+	// the error must list the match lines (agy #4): "alpha beta alpha" has
+	// alpha at lines 1 and 1 (both on the same line) — so line 1 is expected.
+	if got := execTool(t, reg, "fs_edit", map[string]any{"path": "doc.txt", "old_string": "alpha", "new_string": "x"}); !strings.Contains(got, "at lines 1, 1") {
+		t.Errorf("fs_edit ambiguous missing match lines = %q", got)
+	}
 	// 0 matches → precise error
 	if got := execTool(t, reg, "fs_edit", map[string]any{"path": "doc.txt", "old_string": "gamma", "new_string": "x"}); !strings.Contains(got, "not found") {
 		t.Errorf("fs_edit missing = %q", got)

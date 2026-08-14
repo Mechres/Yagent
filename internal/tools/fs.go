@@ -330,7 +330,7 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	case 1:
 		// proceed
 	default:
-		return errorClass("ambiguous_match", true, []string{"fs_read"}, fmt.Sprintf("old_string matches %d times in %s; include more surrounding context", n, a.Path)), nil
+		return errorClass("ambiguous_match", true, []string{"fs_read"}, fmt.Sprintf("old_string matches %d times in %s%s", n, a.Path, matchLines(old, a.OldString))), nil
 	}
 	newContent := strings.Replace(old, a.OldString, a.NewString, 1)
 	if msg := preflightSyntax(a.Path, newContent); msg != "" {
@@ -393,6 +393,37 @@ func pathInSkillsDir(ws, skillsDirs string, raw json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+// matchLines returns " at lines N, M, K" for every occurrence of target in
+// content (1-based), so an ambiguous_match error tells the model exactly where
+// each match is instead of forcing a blind re-read (agy #4).
+func matchLines(content, target string) string {
+	if target == "" || content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	var nums []int
+	idx := 0
+	for i, ln := range lines {
+		for {
+			pos := strings.Index(ln[idx:], target)
+			if pos < 0 {
+				break
+			}
+			nums = append(nums, i+1)
+			idx += pos + len(target)
+		}
+		idx = 0
+	}
+	if len(nums) == 0 {
+		return ""
+	}
+	strs := make([]string, len(nums))
+	for i, n := range nums {
+		strs[i] = fmt.Sprintf("%d", n)
+	}
+	return " at lines " + strings.Join(strs, ", ")
 }
 
 // nearestLineHint finds the line in content most similar to the target string
