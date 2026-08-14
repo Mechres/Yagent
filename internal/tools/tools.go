@@ -21,6 +21,7 @@ import (
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/jobs"
 	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/mcp"
 	"github.com/Mechres/Yagent/internal/memory"
 	"github.com/Mechres/Yagent/internal/skills"
 	"github.com/Mechres/Yagent/internal/undo"
@@ -100,6 +101,9 @@ type Options struct {
 	Undo *undo.Buffer
 	// ShellSandbox wraps shell_exec in bubblewrap when set to "bwrap".
 	ShellSandbox string
+	// MCP attaches Model Context Protocol servers; each advertised tool is
+	// registered under the server-prefixed name (<server>_<tool>).
+	MCP []*mcp.Client
 	// ReadOnly restricts the registry to read-only tools (used by subagents).
 	ReadOnly bool
 	// Subagent delegates a task to an isolated child agent (M7 v1). The
@@ -198,6 +202,15 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		reg["shell_bg"] = &shellBgTool{jobs: opts.Jobs, sandbox: opts.ShellSandbox, ws: r.workspace}
 		reg["shell_logs"] = &shellLogsTool{jobs: opts.Jobs}
 		reg["shell_kill"] = &shellKillTool{jobs: opts.Jobs}
+	}
+	// MCP servers: each advertised tool is registered as <server>_<tool>. MCP
+	// tools are treated as read-only for the approval gate (their own server
+	// enforces its policy; blocking every call would defeat the point), but a
+	// server's destructiveHint could later gate it.
+	for _, client := range opts.MCP {
+		for _, t := range client.Tools() {
+			reg[mcpToolName(client.Name(), t.Name)] = &mcpTool{client: client, tool: t}
+		}
 	}
 	// Scratchpad: available to everyone, including read-only subagents (its
 	// writes are strictly confined to .yagent/scratch/).
@@ -306,6 +319,19 @@ func (r *Registry) SchemasFor(names []string) []llm.ToolSchema {
 	for _, n := range names {
 		if t, ok := r.tools[n]; ok {
 			out = append(out, t.Schema())
+		}
+	}
+	return out
+}
+
+// MCPToolNames returns the names of tools registered from MCP servers (the
+// server-prefixed set). The agent always offers them so an attached server's
+// capabilities are usable without a domain signal.
+func (r *Registry) MCPToolNames() []string {
+	var out []string
+	for n, t := range r.tools {
+		if _, ok := t.(*mcpTool); ok {
+			out = append(out, n)
 		}
 	}
 	return out

@@ -1866,6 +1866,7 @@ var (
 // this turn.
 func (a *Agent) activeToolSchemas(input string, used map[string]bool) []llm.ToolSchema {
 	names := append([]string(nil), coreToolNames...)
+	names = append(names, a.registry.MCPToolNames()...)
 	if used["web_search"] || used["web_fetch"] || researchSignal(input) {
 		names = append(names, webToolNames...)
 	}

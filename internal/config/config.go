@@ -57,6 +57,9 @@ type Config struct {
 	// Summarizer overrides the history-condensing model (budget + /compact).
 	// Empty = the main model summarizes.
 	Summarizer SummarizerConfig `yaml:"summarizer"`
+	// MCP lists Model Context Protocol servers (external tools) to attach:
+	// name -> {command: [...] (stdio) or url + headers (HTTP), enabled}.
+	MCP map[string]MCPServer `yaml:"mcp"`
 	// VramThresholdTPS flags context pressure when a stream's average
 	// generation speed drops below this many tokens/second (0 = off). A slow
 	// stream on a 12 GB card usually means the KV cache spilled out of VRAM;
@@ -329,6 +332,20 @@ type SummarizerConfig struct {
 	ServerURL string `yaml:"server_url"`
 	// Model is the summarizer model name.
 	Model string `yaml:"model"`
+}
+
+// MCPServer is one Model Context Protocol server to attach. Exactly one of
+// Command (stdio transport: spawn a subprocess) or URL (HTTP transport) is
+// used. Headers are sent on HTTP requests (auth tokens etc.).
+type MCPServer struct {
+	// Command spawns a local MCP server, e.g. ["npx","-y","@modelcontextprotocol/server-everything"].
+	Command []string `yaml:"command"`
+	// URL of a remote MCP server, e.g. "https://mcp.context7.com/mcp".
+	URL string `yaml:"url"`
+	// Headers to send on HTTP requests.
+	Headers map[string]string `yaml:"headers"`
+	// Enabled gates the server; false servers are skipped at startup.
+	Enabled bool `yaml:"enabled"`
 }
 
 // SamplingConfig is the subset of generation parameters forwarded on chat

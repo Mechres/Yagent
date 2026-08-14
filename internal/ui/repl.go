@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Mechres/Yagent/internal/agent"
 	"github.com/Mechres/Yagent/internal/checkpoint"
@@ -22,6 +23,7 @@ import (
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/jobs"
 	"github.com/Mechres/Yagent/internal/llm"
+	"github.com/Mechres/Yagent/internal/mcp"
 	"github.com/Mechres/Yagent/internal/memory"
 	"github.com/Mechres/Yagent/internal/playbook"
 	"github.com/Mechres/Yagent/internal/skills"
@@ -178,6 +180,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		defer env.vs.Close()
 		defer env.projVS.Close()
 		defer env.idx.Close()
+		defer env.closeMCP()
 		goal, err := lastUserMessage(ctx, env)
 		if err != nil || goal == "" {
 			return fmt.Errorf("resume goal: could not find the goal in session %s", opts.ResumeGoal)
@@ -195,6 +198,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		defer env.vs.Close()
 		defer env.projVS.Close()
 		defer env.idx.Close()
+		defer env.closeMCP()
 		return runPlaybookMode(ctx, client, cfg, env, opts.Playbook, opts.YOLO, opts.Trace, opts.Checks)
 	}
 	// Goal mode: autonomous loop toward a goal, then exit.
@@ -207,6 +211,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		defer env.vs.Close()
 		defer env.projVS.Close()
 		defer env.idx.Close()
+		defer env.closeMCP()
 		return runGoalMode(ctx, client, cfg, env, opts.Goal, opts.Rounds, opts.YOLO, opts.Trace, opts.Checks)
 	}
 	// TUI by default on a real terminal; --plain (or piped stdin) falls back
@@ -222,6 +227,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	defer env.vs.Close()
 	defer env.projVS.Close()
 	defer env.idx.Close()
+	defer env.closeMCP()
 	defer env.jobs.StopAll()
 
 	w := os.Stdout
@@ -566,6 +572,9 @@ type chatEnv struct {
 	undo           *undo.Buffer
 	jobs           *jobs.Registry
 	summ           *llm.Client // optional offloaded summarizer (budget + /compact)
+	// mcpClients are connected Model Context Protocol servers whose advertised
+	// tools are registered into the tool registry (server-prefixed names).
+	mcpClients []*mcp.Client
 	// gitEnabled is true when git auto-commit is active (git.auto_commit on AND
 	// the workspace is a git repo): each turn's writes become a real commit and
 	// /undo becomes a git revert (durable, crash-safe). When false, the
@@ -777,6 +786,42 @@ func startBackgroundIndex(ctx context.Context, env *chatEnv, sink func(string)) 
 	}()
 }
 
+// closeMCP tears down connected MCP server clients (best-effort).
+func (env *chatEnv) closeMCP() {
+	for _, c := range env.mcpClients {
+		_ = c.Close()
+	}
+	env.mcpClients = nil
+}
+
+// connectMCP connects every enabled MCP server from the config (best-effort:
+// a server that fails to connect is logged and skipped, never fatal — the
+// agent must keep working without it).
+func connectMCP(ctx context.Context, cfg *config.Config) []*mcp.Client {
+	var clients []*mcp.Client
+	for name, srv := range cfg.MCP {
+		if !srv.Enabled {
+			continue
+		}
+		if len(srv.Command) == 0 && srv.URL == "" {
+			slog.Warn("mcp server has no command or url", "name", name)
+			continue
+		}
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		client, err := mcp.Connect(cctx, mcp.Config{
+			Name: name, Command: srv.Command, URL: srv.URL, Headers: srv.Headers,
+		})
+		cancel()
+		if err != nil {
+			slog.Warn("mcp server failed to connect", "name", name, "error", err)
+			continue
+		}
+		clients = append(clients, client)
+		slog.Info("mcp server connected", "name", name, "tools", len(client.Tools()))
+	}
+	return clients
+}
+
 // newChatEnv opens all stores and builds the agent runtime shared by the
 // plain REPL and the TUI.
 func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID string) (*chatEnv, error) {
@@ -847,7 +892,8 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		st: st, vs: vs, projVS: projVS, sk: sk, idx: idx, web: webClient,
 		sessionID: sessionID, initialHistory: initialHistory, initialSummary: initialSummary,
 		forkSource: forkSource, undo: undo.New(), jobs: jobs.New(),
-		summ: summClient,
+		summ:       summClient,
+		mcpClients: connectMCP(ctx, cfg),
 	}
 	env.gitEnabled = cfg.AutoCommitGit && gitops.IsRepo(ws)
 	env.registry = tools.NewRegistry(ws, tools.Options{
@@ -863,6 +909,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		Jobs:                env.jobs,
 		ShellSandbox:        cfg.Shell.Sandbox,
 		SkillsWriteApproval: cfg.Skills.WriteApproval,
+		MCP:                 env.mcpClients,
 	})
 	return env, nil
 }

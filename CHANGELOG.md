@@ -2,6 +2,28 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.73 — 2026-08-15
+
+### Added
+- **MCP support** (borrowed from opencode) — `internal/mcp` is a minimal Model
+  Context Protocol client so users can attach external tool servers without
+  forking:
+  - JSON-RPC 2.0 over **stdio** (spawn a local command) or **HTTP** POST
+    (remote server, SSE-frame tolerant).
+  - initialize handshake, `tools/list`, `tools/call`.
+  - Config `mcp:` section: `name: {command: [...], enabled}` for local servers,
+    or `{url, headers, enabled}` for remote ones. A failed server logs and
+    skips — never blocks the session.
+  - Each advertised tool is registered as `<server>_<tool>` via a
+    `tools.mcpTool` adapter (JSON Schema → our tool schema, keeping only the
+    keywords the tool-grammar builder accepts) and always offered by
+    `activeToolSchemas`.
+  - Clients are torn down with the session.
+- **Fix found live** — the stdio child was spawned with `CommandContext` bound
+  to the connect-timeout context and was killed when it cancelled (`broken
+  pipe`); it now lives until `Close()`.
+- config.example.yaml documents the `mcp:` section.
+
 ## v0.1.72 — 2026-08-15
 
 ### Added

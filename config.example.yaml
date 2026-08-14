@@ -126,3 +126,15 @@ consult:                      # the `consult` tool (advisor). Disabled until set
 # Equivalent CLI: yagent chat --plain  then  /model 2 deepseek-chat
 # Keys can also be set in the TUI (/model confirm, or /key) and are stored in
 # this file's api_key field; /key clear removes them again.
+
+# MCP servers (Model Context Protocol): attach external tools without forking.
+# Each advertised tool is registered as <server>_<tool> and always offered.
+# Use a stdio command (spawn a local server) or a remote URL + headers.
+# mcp:
+#   context7:
+#     command: ["npx", "-y", "@modelcontextprotocol/server-everything"]
+#     enabled: true
+#   gitlab:
+#     url: "https://gitlab.example.com/mcp"
+#     headers: {"Authorization": "Bearer {env:GITLAB_TOKEN}"}
+#     enabled: true
