@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -291,5 +292,121 @@ func TestSmokeBehavioralStepsExpectFail(t *testing.T) {
 	}
 	if !strings.Contains(res, "runtime_smoke FAIL") || !strings.Contains(res, "missing") {
 		t.Errorf("expected FAIL citing the missing text, got: %s", res)
+	}
+}
+
+func TestSmokeStrictStepsRejectsNoAssertion(t *testing.T) {
+	// A model gaming the gate: steps with no expect at all would always PASS.
+	// Strict validation must refuse them — a probe without assertions proves
+	// nothing.
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "main.py"), []byte(`print("hi")`), 0o644)
+	tool := &smokeTool{ws: ws}
+	res, err := tool.Execute(context.Background(), []byte(`{"steps":[
+		{"input":"x"},
+		{"input":"y"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "runtime_smoke FAIL") || !strings.Contains(res, "expect") {
+		t.Errorf("no-assertion steps must be refused, got: %s", res)
+	}
+}
+
+func TestSmokeJSGameLoadsAndDOMState(t *testing.T) {
+	// A browser JS game (canvas + DOM). The node shim must load it, run its
+	// onload, dispatch scripted keys, and expose the score via DOM state so a
+	// behavioral step can assert it.
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "game.js"), []byte(`
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const score = document.getElementById("score");
+let s = 0;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") s++;
+  score.textContent = "Score: " + s;
+});
+window.onload = () => { score.textContent = "Score: 0"; };
+`), 0o644)
+	tool := &smokeTool{ws: ws}
+	// crash-only: must PASS (the game loads and runs under the shim)
+	res, err := tool.Execute(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "runtime_smoke PASS") {
+		t.Errorf("JS game should pass crash smoke, got: %s", res)
+	}
+	// behavioral: pressing ArrowRight increments the DOM score
+	res, err = tool.Execute(context.Background(), []byte(`{"steps":[
+		{"args":["ArrowRight","ArrowRight"],"expect":"Score: 2"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "runtime_smoke PASS") {
+		t.Errorf("JS DOM-state expect should pass, got: %s", res)
+	}
+}
+
+func TestSmokeJSGameThrowsOnLoad(t *testing.T) {
+	// A JS game that crashes on load (undefined reference) must FAIL — the
+	// shim surfaces the uncaught exception as a crash.
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "game.js"), []byte(`
+const canvas = document.getElementById("game");
+canvas.width = 400;
+const missing = null;
+missing.x = 1; // TypeError at load
+`), 0o644)
+	tool := &smokeTool{ws: ws}
+	res, err := tool.Execute(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "runtime_smoke FAIL") {
+		t.Errorf("throwing JS game should FAIL smoke, got: %s", res)
+	}
+}
+
+func TestSmokeJSGamingVector(t *testing.T) {
+	// The snake game's growth bug: `list`-style behavior is DOM state; but the
+	// KEY vector is a game that dies on first food silently (gameOver(), no
+	// throw). A behavioral expect on the score that never reaches 1 catches it.
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	ws := t.TempDir()
+	// snake that increments the score ONLY when it reaches food at x=40, but a
+	// bug makes it die before eating (score stuck at 0).
+	os.WriteFile(filepath.Join(ws, "game.js"), []byte(`
+const score = document.getElementById("score");
+let x = 0, s = 0;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") x += 20;
+  if (x >= 100) { s++; score.textContent = "Score: " + s; return; }
+  if (x > 120) { gameOver(); } // never reached -> bug
+});
+window.onload = () => { score.textContent = "Score: 0"; };
+function gameOver() {}
+`), 0o644)
+	tool := &smokeTool{ws: ws}
+	res, err := tool.Execute(context.Background(), []byte(`{"steps":[
+		{"args":["ArrowRight","ArrowRight","ArrowRight","ArrowRight","ArrowRight","ArrowRight"],"expect":"Score: 1"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The bug means the score never advances -> FAIL (caught behaviorally).
+	if !strings.Contains(res, "runtime_smoke FAIL") {
+		t.Errorf("snake-growth bug should FAIL the behavioral probe, got: %s", res)
 	}
 }

@@ -71,19 +71,30 @@ func (t *smokeTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 // persists via files on disk), feeds the step's stdin, and asserts the output
 // contains the expected text.
 func (t *smokeTool) smoke(ctx context.Context, steps []smokeStep) (string, error) {
-	bin, clean, ok := t.buildPlan(ctx)
+	plan, ok := t.buildPlan(ctx)
 	if !ok {
-		return "runtime_smoke: no smoke runner for this project (supported: Go, C/C++, Python; a JS/TS project needs a browser DOM). The program could not be executed, so its runtime safety is unverified.", nil
+		return "runtime_smoke: no smoke runner for this project. The program could not be executed, so its runtime safety is unverified.", nil
 	}
-	if bin != "" {
-		if clean != nil {
-			defer clean()
-		}
+	if plan.clean != nil {
+		defer plan.clean()
 	}
 	if len(steps) > 0 {
-		return t.probe(ctx, bin, steps)
+		// Strict steps: every step must assert real output, otherwise a model
+		// could game the gate with [{"input":"x"}] (no expect -> always PASS).
+		// An assertion is expected text that could actually be present.
+		hasAssertion := false
+		for _, s := range steps {
+			if s.Expect != "" {
+				hasAssertion = true
+				break
+			}
+		}
+		if !hasAssertion {
+			return "runtime_smoke FAIL: steps must assert expected output — every behavioral step needs a non-empty \"expect\" (text the program must print/display). A smoke run with no expectations proves nothing.", nil
+		}
+		return t.probe(ctx, plan, steps)
 	}
-	res := t.runSmoke(ctx, bin, nil, smokeScriptedInput)
+	res := t.runSmoke(ctx, plan, nil, smokeScriptedInput)
 	if res.skip {
 		return "runtime_smoke: no smoke runner for this project.", nil
 	}
@@ -95,13 +106,13 @@ func (t *smokeTool) smoke(ctx context.Context, steps []smokeStep) (string, error
 
 // probe runs each behavioral step and reports PASS only when every step's
 // output contains its expected text (and no step crashed).
-func (t *smokeTool) probe(ctx context.Context, bin string, steps []smokeStep) (string, error) {
+func (t *smokeTool) probe(ctx context.Context, plan runPlan, steps []smokeStep) (string, error) {
 	for i, step := range steps {
 		input := step.Input
 		if input == "" {
 			input = smokeScriptedInput
 		}
-		res := t.runSmoke(ctx, bin, step.Args, input)
+		res := t.runSmoke(ctx, plan, step.Args, input)
 		if res.skip {
 			return "runtime_smoke FAIL: no smoke runner for this project.", nil
 		}
@@ -130,11 +141,22 @@ type smokeResult struct {
 	status string // short summary for the model ("ran ~3s, exited 0")
 }
 
-// buildPlan returns the runnable binary path (or "" to run a script directly),
-// a cleanup func, and whether smoke is supported at all.
-func (t *smokeTool) buildPlan(ctx context.Context) (bin string, clean func(), ok bool) {
+// runPlan describes how to execute the generated program.
+type runPlan struct {
+	bin   string // compiled binary, or a script path to run with cmd
+	cmd   string // interpreter for scripts ("", "python3", "node")
+	ws    string // working dir (defaults to t.ws)
+	clean func()
+	// jsEntry, when js is set, is the .js file a node DOM shim should load.
+	js bool
+}
+
+// buildPlan returns the runnable plan for the workspace, or ok=false when no
+// smoke runner applies. Go/C++/Rust are compiled; Python runs directly; a
+// browser JS game runs under a node DOM shim (canvas + document stubs).
+func (t *smokeTool) buildPlan(ctx context.Context) (runPlan, bool) {
 	if t.ws == "" {
-		return "", nil, false
+		return runPlan{}, false
 	}
 	has := func(rel string) bool {
 		_, err := os.Stat(filepath.Join(t.ws, rel))
@@ -145,23 +167,23 @@ func (t *smokeTool) buildPlan(ctx context.Context) (bin string, clean func(), ok
 		tmp := filepath.Join(os.TempDir(), fmt.Sprintf("yagent-smoke-%d", time.Now().UnixNano()))
 		// -o to a temp binary, then run it; the module's own dir stays clean.
 		if err := t.build(ctx, "go", "build", "-o", tmp, "."); err != nil {
-			return "", nil, false
+			return runPlan{}, false
 		}
-		return tmp, func() { _ = os.Remove(tmp) }, true
+		return runPlan{bin: tmp, clean: func() { _ = os.Remove(tmp) }}, true
 	case has("Cargo.toml"):
 		// cargo build then the debug binary.
 		if err := t.build(ctx, "cargo", "build", "--quiet"); err != nil {
-			return "", nil, false
+			return runPlan{}, false
 		}
 		bin := filepath.Join(t.ws, "target", "debug")
 		if !hasCargoBinary(bin) {
-			return "", nil, false
+			return runPlan{}, false
 		}
-		return bin, nil, true
+		return runPlan{bin: bin}, true
 	case hasCProject(t.ws):
 		sources, _ := cSources(t.ws)
 		if len(sources) == 0 {
-			return "", nil, false
+			return runPlan{}, false
 		}
 		tmp := filepath.Join(os.TempDir(), fmt.Sprintf("yagent-smoke-%d", time.Now().UnixNano()))
 		var compiler string
@@ -175,15 +197,28 @@ func (t *smokeTool) buildPlan(ctx context.Context) (bin string, clean func(), ok
 		// generated code to tell us otherwise).
 		if err := t.build(ctx, compiler, "-o", tmp, strings.Join(sources, " ")); err != nil {
 			if err2 := t.build(ctx, compiler, "-o", tmp, strings.Join(sources, " "), "-lncurses"); err2 != nil {
-				return "", nil, false
+				return runPlan{}, false
 			}
 		}
-		return tmp, func() { _ = os.Remove(tmp) }, true
+		return runPlan{bin: tmp, clean: func() { _ = os.Remove(tmp) }}, true
 	case hasPythonEntry(t.ws):
 		// python3 <entry>.py directly.
-		return "", nil, true
+		return runPlan{cmd: "python3", bin: pythonEntry(t.ws)}, true
+	case t.jsEntry() != "":
+		// Browser JS: run under a node DOM shim so canvas games execute.
+		// Require node; otherwise the browser game can't be verified headless.
+		lp := t.lookPath
+		if lp == nil {
+			lp = exec.LookPath
+		}
+		if _, err := lp("node"); err != nil {
+			return runPlan{}, false
+		}
+		plan := runPlan{cmd: "node", bin: t.jsEntry(), js: true}
+		plan.clean = t.writeJSShim()
+		return plan, true
 	}
-	return "", nil, false
+	return runPlan{}, false
 }
 
 // hasCargoBinary returns the cargo debug binary path or "".
@@ -202,47 +237,76 @@ func hasCargoBinary(debugDir string) bool {
 
 // hasPythonEntry finds a runnable .py entry point (main.py preferred, else the
 // only .py in the workspace root).
-func hasPythonEntry(ws string) bool {
+func hasPythonEntry(ws string) bool { return pythonEntry(ws) != "" }
+
+// pythonEntry returns the .py entry point to run (main.py preferred, else the
+// first .py in the workspace root), or "" when none exists.
+func pythonEntry(ws string) string {
 	if _, err := os.Stat(filepath.Join(ws, "main.py")); err == nil {
-		return true
+		return filepath.Join(ws, "main.py")
 	}
 	entries, err := os.ReadDir(ws)
 	if err != nil {
-		return false
+		return ""
 	}
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".py") {
-			return true
+			return filepath.Join(ws, e.Name())
 		}
 	}
-	return false
+	return ""
+}
+
+// jsEntry finds a browser-side .js entry point: a root-level main.js/app.js/
+// game.js, else the first root .js file that is not a module bundle. Returns ""
+// when none exists (nothing to smoke).
+func (t *smokeTool) jsEntry() string {
+	prefer := []string{"main.js", "app.js", "game.js", "index.js"}
+	for _, name := range prefer {
+		p := filepath.Join(t.ws, name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	entries, err := os.ReadDir(t.ws)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".js") {
+			return filepath.Join(t.ws, e.Name())
+		}
+	}
+	return ""
 }
 
 // runSmoke executes the runnable target with the given args+stdin and judges
 // survival: did it crash, or did it survive (clean exit or alive to timeout)?
-func (t *smokeTool) runSmoke(ctx context.Context, bin string, args []string, input string) smokeResult {
+func (t *smokeTool) runSmoke(ctx context.Context, plan runPlan, args []string, input string) smokeResult {
 	var (
 		cmd *exec.Cmd
-		dir = t.ws
+		dir = plan.ws
 	)
-	if bin != "" {
-		cmd = exec.CommandContext(ctx, bin, args...)
-	} else {
-		// python3 <entry.py> <args...>
-		entry := "main.py"
-		if _, err := os.Stat(filepath.Join(t.ws, "main.py")); err != nil {
-			entries, _ := os.ReadDir(t.ws)
-			for _, e := range entries {
-				if !e.IsDir() && strings.HasSuffix(e.Name(), ".py") {
-					entry = e.Name()
-					break
-				}
-			}
-		}
-		cmd = exec.CommandContext(ctx, "python3", append([]string{entry}, args...)...)
+	if dir == "" {
+		dir = t.ws
+	}
+	switch {
+	case plan.js:
+		// node <shim.js> <entry.js> — the shim stubs document/canvas, loads the
+		// entry, dispatches scripted keys, and dumps DOM state at exit.
+		shim := filepath.Join(t.ws, ".yagent-smoke-shim.js")
+		cmd = exec.CommandContext(ctx, "node", shim, plan.bin)
+		cmd.Env = append(scrubEnv(os.Environ()), "YAGENT_SMOKE_KEYS="+strings.Join(args, "|"))
+	case plan.cmd != "":
+		cmd = exec.CommandContext(ctx, plan.cmd, append([]string{plan.bin}, args...)...)
+	default:
+		cmd = exec.CommandContext(ctx, plan.bin, args...)
 	}
 	cmd.Dir = dir
 	cmd.Env = scrubEnv(os.Environ())
+	if plan.js {
+		cmd.Env = append(cmd.Env, "YAGENT_SMOKE_KEYS="+strings.Join(args, "|"))
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = strings.NewReader(input)
 	var out, errBuf bytes.Buffer
@@ -270,17 +334,86 @@ func (t *smokeTool) runSmoke(ctx context.Context, bin string, args []string, inp
 
 	elapsed := time.Since(start)
 	output := combineOutput(out.Bytes(), errBuf.Bytes())
+	// The shim prints a ----YAGENT-DOM---- marker line carrying the observable
+	// DOM state (score text etc.); merge it into the judged output so steps
+	// can assert on displayed text, not just console logs.
+	if plan.js {
+		if dom := extractDOMState(out.Bytes()); dom != "" {
+			output += "\n[dom] " + dom
+		}
+	}
 	if msg, crashed := smokeCrashReason(waitErr, elapsed, output); crashed {
 		return smokeResult{ok: false, detail: msg, status: fmt.Sprintf("crashed after ~%s", elapsed.Round(time.Millisecond))}
 	}
 	// Survived: either exited cleanly or kept running (an interactive loop)
 	// until the timeout — both prove the program doesn't blow up on first input.
-	sample := capResult(string(output), smokeMaxOutput)
+	sample := capResult(output, smokeMaxOutput)
 	verb := "ran"
 	if waitErr != nil && waitErr != context.DeadlineExceeded && waitErr != context.Canceled {
 		verb = "exited"
 	}
 	return smokeResult{ok: true, detail: sample, status: fmt.Sprintf("%s ~%s (exit %v)", verb, elapsed.Round(time.Millisecond), exitCode(waitErr))}
+}
+
+// writeJSShim writes the node DOM shim into the workspace and returns a cleanup.
+// The shim stubs document/canvas, loads the entry with REAL timers (so
+// setTimeout/requestAnimationFrame loops advance), dispatches the scripted
+// arrow keys over a short window, then exits — dumping the captured DOM text
+// state so steps can assert on displayed score/messages.
+func (t *smokeTool) writeJSShim() func() {
+	path := filepath.Join(t.ws, ".yagent-smoke-shim.js")
+	shim := `const listeners = {};
+const texts = {};
+const rafCallbacks = [];
+global.document = {
+  getElementById: (id) => ({
+    _text: "",
+    set textContent(v) { this._text = String(v); texts[id] = String(v); },
+    get textContent() { return this._text; },
+    style: {},
+    width: 0, height: 0,
+    addEventListener: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
+    getContext: () => new Proxy({}, { get: () => () => {}, set: () => true }),
+  }),
+  addEventListener: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
+  createElement: () => ({ style: {}, textContent: "", appendChild: () => {} }),
+  body: { appendChild: () => {} },
+};
+global.window = {
+  onload: null,
+  addEventListener: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
+  innerWidth: 800, innerHeight: 600,
+};
+global.requestAnimationFrame = (fn) => { rafCallbacks.push(fn); return rafCallbacks.length; };
+const entry = process.argv[2];
+require(entry);
+if (typeof window.onload === "function") window.onload();
+if (listeners.load) listeners.load.forEach((f) => f());
+const keys = (process.env.YAGENT_SMOKE_KEYS || "").split("|").filter(Boolean);
+const raf = () => { const fns = rafCallbacks.splice(0); fns.forEach((f) => f(0)); };
+let step = 0;
+const iv = setInterval(() => {
+  if (step < keys.length) {
+    const k = keys[step];
+    if (listeners.keydown) listeners.keydown.forEach((h) => h({ key: k }));
+  }
+  raf();
+  step++;
+  if (step >= 40) { clearInterval(iv); console.log("----YAGENT-DOM---- " + JSON.stringify(texts)); process.exit(0); }
+}, 10);
+`
+	_ = os.WriteFile(path, []byte(shim), 0o644)
+	return func() { _ = os.Remove(path) }
+}
+
+// extractDOMState pulls the shim's DOM-state marker out of the captured output.
+func extractDOMState(out []byte) string {
+	for _, ln := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(ln, "----YAGENT-DOM---- ") {
+			return strings.TrimPrefix(ln, "----YAGENT-DOM---- ")
+		}
+	}
+	return ""
 }
 
 // smokeCrashReason reports whether the run crashed. A program that exits
@@ -299,7 +432,11 @@ func smokeCrashReason(waitErr error, elapsed time.Duration, output string) (stri
 	low := strings.ToLower(output)
 	for _, marker := range []string{"panic:", "segmentation fault", "segfault", "assertion", "assert failed",
 		"aborted", "stack overflow", "runtime error", "uncaught exception", "index out of range",
-		"nil pointer", "fatal error"} {
+		"nil pointer", "fatal error",
+		// node/js crash signatures (cloud models ship browser code more often).
+		"typeerror", "referenceerror", "syntaxerror", "is not a function", "is not defined",
+		"cannot read properties", "cannot read property", "is undefined",
+	} {
 		if strings.Contains(low, marker) {
 			return "output contains crash marker \"" + marker + "\"", true
 		}

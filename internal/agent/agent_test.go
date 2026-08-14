@@ -2146,6 +2146,56 @@ func TestCodegenSmokeGateBehavioralSteps(t *testing.T) {
 	}
 }
 
+func TestCodegenSmokeNudgesBehavioralSteps(t *testing.T) {
+	// The model writes a working program and crash-smokes it ({} — PASS). The
+	// gate nudges it ONCE to assert real behavior; the model then probes with
+	// steps and the final answer is accepted. Verifies the smokeStepsUsed
+	// nudge fires without a hard refusal loop.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module smoke\n\ngo 1.22\n")
+
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_write", `{"path":"main.go","content":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"}`),
+		// crash-only smoke: PASS (program survives)
+		toolCall("c2", "runtime_smoke", `{}`),
+		// tries to end -> gate nudges to add behavioral steps
+		finalContent("done, the program works"),
+		// model probes with real steps
+		toolCall("c3", "runtime_smoke", `{"steps":[{"expect":"hi"}]}`),
+		finalContent("verified the output"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, Codegen: true}, ws)
+
+	answer, err := a.Run(context.Background(), "build a hello program")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "verified the output" {
+		t.Errorf("answer = %q", answer)
+	}
+	// the nudge must have been fed back (it persists in later request bodies
+	// via history, so >=1 request carrying it proves it fired; the once-per-turn
+	// guarantee is enforced by the nudged flag in the loop itself)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sawNudge := false
+	for _, req := range s.requests {
+		if strings.Contains(string(req), "run only proved the program doesn't crash") {
+			sawNudge = true
+			break
+		}
+	}
+	if !sawNudge {
+		t.Error("behavioral nudge was not fed back")
+	}
+	// and the turn must still have ended with the steps-verified answer
+	if answer != "verified the output" {
+		t.Errorf("answer = %q, want the steps-verified final answer", answer)
+	}
+}
+
 func TestCodegenSmokeGatePassesClean(t *testing.T) {
 	// A program that compiles AND runs cleanly must not be gated: one
 	// write + final answer, no refusal.

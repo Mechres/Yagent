@@ -80,7 +80,7 @@ results, errors-as-data), with two newer conventions:
 | Name | Risk | Notes |
 |---|---|---|
 | `workspace_diagnostics` | RO | detects the project (go.mod/Cargo.toml/package.json+tsconfig/py) and runs `go vet`/`cargo check`/`tsc --noEmit`/eslint/`ruff`/compileall, 120s timeout, fixed commands (no approval) |
-| `runtime_smoke` | RO | codegen-mode companion: builds and briefly runs the generated program (Go/C/C++/Cargo/Python) with scripted stdin, reports PASS or FAIL (panic/segfault/assertion/silent non-zero exit). Optional `steps: [{args, input, expect}]` assert the program *behaves* — fresh process per step, output must contain the expected text (catches dead persistence) |
+| `runtime_smoke` | RO | codegen-mode companion: builds and briefly runs the generated program (Go/C/C++/Cargo/Python + a node DOM shim for browser JS) with scripted stdin, reports PASS or FAIL (panic/segfault/assertion/JS TypeError/silent non-zero exit). Optional `steps: [{args, input, expect}]` assert the program *behaves* — fresh process per step, output or DOM state must contain the expected text (catches dead persistence); steps with no expect are refused |
 | `code_slice` | RO | one declaration's exact span (body + doc comment) via tree-sitter, ~80% cheaper than fs_read on large modules |
 | `code_references` | RO | call graph: who calls a symbol → `path:line` (from the index) |
 | `fs_refactor` | Write | word-boundary symbol rename across source files (build/vendored dirs + binaries skipped), undo-aware, approval-gated |

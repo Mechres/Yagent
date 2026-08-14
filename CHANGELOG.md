@@ -2,6 +2,25 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.62 — 2026-08-14
+
+### Added
+- **JS/DOM headless runner** — `runtime_smoke` now runs browser-side JS games
+  under a node DOM shim (`.yagent-smoke-shim.js`: document/canvas stubs, real
+  timers so game loops advance, scripted arrow-key dispatch, DOM text-state
+  capture via a `----YAGENT-DOM----` marker, and js crash signatures
+  TypeError/ReferenceError/undefined added to `smokeCrashReason`). Closes the
+  Snake gap — the real browser game from the v0.1.58 test drive now loads, runs,
+  dispatches keys, and a behavioral step can assert on the displayed score.
+- **Strict steps validation** — `runtime_smoke` refuses steps with no
+  non-empty `expect`, closing the `[{"input":"x"}]` → always-PASS gaming vector.
+- **Behavioral nudge** — the codegen gate nudges once per turn (tracked via
+  `smokeStepsUsed`) when the model explicitly crash-smoked without steps,
+  asking it to assert real behavior; skipped when the model never smoked (the
+  gate's deterministic crash run is then the verification floor).
+- **Golden eval 47** — codegen-smoke-strict-steps: an assertion-free probe is
+  refused, and the model re-probes with a real expectation.
+
 ## v0.1.61 — 2026-08-14
 
 ### Added

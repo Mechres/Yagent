@@ -1,0 +1,20 @@
+name: codegen-smoke-strict-steps
+description: "v0.1.61 — runtime_smoke rejects steps with no expect (a model gaming the gate with an assertion-free probe), and the gate re-runs the model's own probe"
+codegen: true
+files:
+  go.mod: |
+    module smoke
+
+    go 1.22
+input: build a Go program that prints the numbers 1 2 3
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfor i := 1; i <= 3; i++ {\n\t\tfmt.Println(i)\n\t}\n}\n"}'}
+  # the model tries to game the gate: steps with no expect
+  - tool_call: {name: runtime_smoke, args: '{"steps":[{"args":[]},{"args":[]}]}'}
+  - answer: the program works
+  # strict validation refuses the assertion-free probe and the model re-probes
+  - tool_call: {name: runtime_smoke, args: '{"steps":[{"expect":"3"}]}'}
+  - answer: verified it prints 1 2 3
+assert:
+  requests_contain: ["steps must assert expected output"]
+  final_answer_contains: "verified"

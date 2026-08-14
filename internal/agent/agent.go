@@ -348,6 +348,12 @@ type Agent struct {
 	// a failed behavioral assertion.
 	lastSmokeArgs []byte
 
+	// smokeStepsUsed is true once runtime_smoke ran with behavioral steps this
+	// turn. The gate nudges the model to assert real behavior when it only
+	// crash-smoked after writing files (crash-only proves survival, not
+	// function — a cloud model that can write probes should be asked to).
+	smokeStepsUsed bool
+
 	// Machine-generated progress ledger (goal state anchor): touchedPaths and
 	// lastToolError are injected as a compact TASK STATE block each request so
 	// the model doesn't have to reconstruct progress from history/summary.
@@ -554,6 +560,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	a.turnReadCalls = 0
 	a.turnWrote = false
 	a.smokePassed = false
+	a.smokeStepsUsed = false
 	a.failedWriteSig = map[string]int{}
 	a.recentEdits = nil
 	a.mu.Unlock()
@@ -699,6 +706,26 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 				if wrote && !smoked {
 					if gate := a.smokeGateCheck(ctx); gate != "" {
 						if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: gate}); err != nil {
+							return "", err
+						}
+						continue
+					}
+				}
+				// Codegen behavioral nudge (one shot per turn): the model ran
+				// runtime_smoke itself but never asserted real behavior (no
+				// steps) — a crash-only PASS proves survival, not function. A
+				// cloud model that can write rich probes should be asked to.
+				// Skipped when the model never smoked at all (the gate's
+				// deterministic crash run is then the verification floor).
+				if wrote && !nudged {
+					a.mu.RLock()
+					usedSteps := a.smokeStepsUsed
+					ranSmoke := len(a.lastSmokeArgs) > 0
+					a.mu.RUnlock()
+					if ranSmoke && !usedSteps {
+						nudged = true
+						nudge := "Your runtime_smoke run only proved the program doesn't crash. Prove it BEHAVES too: re-run runtime_smoke with steps that assert real output (e.g. for a todo app: [{\"args\":[\"add\",\"buy milk\"],\"expect\":\"buy milk\"},{\"args\":[\"list\"],\"expect\":\"buy milk\"}]; for a counter: [{\"expect\":\"3\"}]). A program that compiles and runs but doesn't do its job is still broken."
+						if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: nudge}); err != nil {
 							return "", err
 						}
 						continue
@@ -2342,6 +2369,12 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		// Record the probe the model used so the gate re-runs the SAME steps
 		// (not a crash-only {} run) at the final answer.
 		a.lastSmokeArgs = append(a.lastSmokeArgs[:0], call.Function.Arguments...)
+		var probe struct {
+			Steps []json.RawMessage `json:"steps"`
+		}
+		if json.Unmarshal(call.Function.Arguments, &probe) == nil && len(probe.Steps) > 0 {
+			a.smokeStepsUsed = true
+		}
 		if strings.HasPrefix(result, "runtime_smoke PASS") {
 			a.smokePassed = true
 		}
