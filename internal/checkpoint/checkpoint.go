@@ -103,6 +103,43 @@ func Delete(ws, name string) error {
 	return os.RemoveAll(filepath.Join(ws, dirName, name))
 }
 
+// Prune deletes user-named snapshots beyond the most recent `keep`, newest
+// first by modification time. The fixed GoalName snapshot is always kept
+// (goal mode overwrites it each round; it never accumulates). Returns the
+// pruned names. keep <= 0 means keep all.
+func Prune(ws string, keep int) ([]string, error) {
+	if keep <= 0 {
+		return nil, nil
+	}
+	dir := filepath.Join(ws, dirName)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil // no checkpoints dir -> nothing to prune
+	}
+	var named []os.DirEntry
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == GoalName {
+			continue
+		}
+		named = append(named, e)
+	}
+	sort.Slice(named, func(i, j int) bool {
+		// newest first by mtime
+		fi, _ := named[i].Info()
+		fj, _ := named[j].Info()
+		return fi.ModTime().After(fj.ModTime())
+	})
+	var pruned []string
+	for _, e := range named[keep:] {
+		name := e.Name()
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			return pruned, fmt.Errorf("prune checkpoint %s: %w", name, err)
+		}
+		pruned = append(pruned, name)
+	}
+	return pruned, nil
+}
+
 // validateName rejects checkpoint names that could escape the checkpoints dir
 // (path separators and traversal), mirroring the guard Save has always had.
 // Without it, Restore(ws, "../..") resolves to the workspace itself and wipes

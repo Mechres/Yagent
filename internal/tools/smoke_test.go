@@ -118,6 +118,27 @@ func TestSmokeToolBuildFailure(t *testing.T) {
 	}
 }
 
+func TestSmokeToolLibraryPackageSkips(t *testing.T) {
+	// A Go LIBRARY package (no func main) builds to a non-executable archive.
+	// Running it would fail with permission denied and mislead the model into
+	// a "sandbox" rabbit hole (found live 2026-08-14). Smoke must skip — the
+	// compile gate covers the library; there is nothing to execute.
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module lib\n\ngo 1.22\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "calc.go"), []byte("package calc\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644)
+	tool := &smokeTool{ws: ws}
+	res, err := tool.Execute(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "no smoke runner") {
+		t.Errorf("library package should skip smoke (no main), got: %s", res)
+	}
+	if strings.Contains(res, "runtime_smoke FAIL") {
+		t.Errorf("library package must not FAIL smoke: %s", res)
+	}
+}
+
 func TestSmokeToolPythonRuns(t *testing.T) {
 	ws := t.TempDir()
 	os.WriteFile(filepath.Join(ws, "main.py"), []byte(`print("py ok")`), 0o644)

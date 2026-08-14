@@ -69,6 +69,8 @@ type Task struct {
 	VerifyWrites bool `yaml:"verify_writes"`
 	// GoalGate refuses a DONE verdict while workspace_diagnostics still fails.
 	GoalGate bool `yaml:"goal_gate"`
+	// TestGate refuses a DONE verdict while the unit tests fail (test_runner).
+	TestGate bool `yaml:"test_gate"`
 	// GoalMemorize persists each goal round's facts to L3 memory.
 	GoalMemorize bool `yaml:"goal_memorize"`
 	// Codegen switches the loop to greenfield-code strategy: whole-file writes,
@@ -246,6 +248,7 @@ func Run(t *testing.T, task Task) {
 		Summarizer:      summ,
 		VerifyWrites:    task.VerifyWrites,
 		GoalGate:        task.GoalGate,
+		TestGate:        task.TestGate,
 		GoalMemorize:    task.GoalMemorize,
 		Codegen:         task.Codegen,
 	}, ws)

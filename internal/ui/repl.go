@@ -29,6 +29,12 @@ import (
 	"github.com/Mechres/Yagent/internal/web"
 )
 
+// checkpointDefaultKeep caps the number of user-named workspace snapshots kept
+// by /checkpoint save (the fixed "goal" snapshot is separate and reused). Old
+// named checkpoints are pruned after each save so .yagent/checkpoints doesn't
+// grow unbounded.
+const checkpointDefaultKeep = 10
+
 // Options tunes the chat UI.
 type Options struct {
 	// Plain forces the streaming REPL instead of the TUI (useful for pipes).
@@ -796,6 +802,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		Trace:            trace,
 		VerifyWrites:     true, // deterministic verify-don't-trust "done" gate
 		GoalGate:         true, // refuse DONE while the static check fails
+		TestGate:         true, // refuse DONE while the unit tests fail
 		GoalMemorize:     true, // persist round facts to L3 memory (multi-turn recall)
 		Codegen:          cfg.Codegen,
 		VramThresholdTPS: cfg.VramThresholdTPS,
@@ -1141,6 +1148,14 @@ func (h *skillsHandler) handleCheckpoint(rest string) (bool, error) {
 			return true, err
 		}
 		fmt.Fprintf(h.w, "  saved checkpoint %s -> %s\n", parts[1], dir)
+		// Retention: keep only the most recent 10 named snapshots (the fixed
+		// "goal" snapshot is separate and reused). Prevents .yagent/checkpoints
+		// from growing unbounded across many /checkpoint save calls.
+		if pruned, perr := checkpoint.Prune(ws, checkpointDefaultKeep); perr != nil {
+			fmt.Fprintf(h.w, "  (warning: could not prune old checkpoints: %v)\n", perr)
+		} else if len(pruned) > 0 {
+			fmt.Fprintf(h.w, "  pruned %d old checkpoint(s): %s\n", len(pruned), strings.Join(pruned, ", "))
+		}
 	case "restore":
 		if len(parts) < 2 {
 			return true, errors.New(usage)

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, path, content string) {
@@ -88,6 +89,52 @@ func TestListAndDelete(t *testing.T) {
 	// restoring a missing checkpoint errors
 	if err := Restore(ws, "nope"); err == nil {
 		t.Error("restore of missing checkpoint should error")
+	}
+}
+
+func TestPruneKeepsRecentNamed(t *testing.T) {
+	// Retention: user-named checkpoints beyond the most recent `keep` are
+	// pruned, while the fixed "goal" snapshot is always kept.
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "f"), "x")
+	base := time.Now()
+	for _, name := range []string{"goal", "one", "two", "three", "four"} {
+		if _, err := Save(ws, name); err != nil {
+			t.Fatal(err)
+		}
+		// age the named snapshots so mtime ordering is deterministic
+		_ = os.Chtimes(filepath.Join(ws, dirName, name), base, base.Add(time.Duration(len(name))*time.Second))
+	}
+	pruned, err := Prune(ws, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 2 { // "one" and "two" are oldest named
+		t.Errorf("pruned = %v, want 2 oldest", pruned)
+	}
+	names := List(ws)
+	// goal always kept + the two newest named remain
+	if len(names) != 3 {
+		t.Errorf("after prune List = %v, want 3 (goal + 2 newest)", names)
+	}
+	found := map[string]bool{}
+	for _, n := range names {
+		found[n] = true
+	}
+	if !found["goal"] {
+		t.Error("goal snapshot must never be pruned")
+	}
+	for _, keep := range []string{"three", "four"} {
+		if !found[keep] {
+			t.Errorf("newest named %q was pruned (want kept)", keep)
+		}
+	}
+}
+
+func TestPruneNoCheckpoints(t *testing.T) {
+	pruned, err := Prune(t.TempDir(), 5)
+	if err != nil || len(pruned) != 0 {
+		t.Errorf("Prune on empty ws = %v, %v; want 0, nil", pruned, err)
 	}
 }
 

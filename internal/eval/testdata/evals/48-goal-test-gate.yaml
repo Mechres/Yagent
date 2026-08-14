@@ -1,0 +1,38 @@
+name: goal-test-gate
+description: "v0.1.63 — RunGoal refuses DONE while unit tests fail: a DONE that compiles but breaks a test is refused until the test passes"
+goal_gate: true
+test_gate: true
+rounds: 3
+files:
+  go.mod: |
+    module testgate
+
+    go 1.22
+  calc.go: |
+    package calc
+
+    func Add(a, b int) int { return a - b }
+  calc_test.go: |
+    package calc
+
+    import "testing"
+
+    func TestAdd(t *testing.T) {
+    	if Add(1, 1) != 2 {
+    		t.Fatal("Add(1,1) != 2")
+    	}
+    }
+goal: make Add correct so the tests pass
+steps:
+  # the model declares DONE without fixing it — the workspace compiles (go vet
+  # passes) but the test fails. The test gate must refuse and feed the failure
+  # back, forcing a second round.
+  - answer: I looked at the code
+  - answer: DONE the code compiles
+  # round 2: the model fixes Add
+  - tool_call: {name: fs_write, args: '{"path":"calc.go","content":"package calc\n\nfunc Add(a, b int) int { return a + b }\n"}'}
+  - answer: fixed Add to add correctly
+  - answer: DONE the tests pass
+assert:
+  requests_contain: ["Deterministic completion check: unit tests FAIL"]
+  final_answer_contains: "fixed Add"

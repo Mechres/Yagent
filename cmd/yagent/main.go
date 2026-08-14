@@ -114,6 +114,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "memory":
+		if err := runMemoryCmd(cfg, args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "export-dataset":
 		fs := flag.NewFlagSet("export-dataset", flag.ContinueOnError)
 		output := fs.String("output", "", "write the dataset to this file (default: stdout)")
@@ -231,7 +236,7 @@ const bashCompletion = `# yagent bash completion — source with: source <(yagen
 _yagent() {
     local cur
     cur="${COMP_WORDS[COMP_CWORD]}"
-    local commands="chat sessions skills doctor completion playbook calibrate bench export-dataset init backup"
+    local commands="chat sessions skills doctor completion playbook calibrate bench export-dataset init backup memory"
     local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo --codegen"
     local skills_cmds="list import"
     local scopes="global project"
@@ -261,7 +266,7 @@ complete -F _yagent yagent
 
 const zshCompletion = `#compdef yagent
 # yagent zsh completion — add this directory to your fpath and symlink to _yagent
-_arguments '1:command:(chat sessions skills doctor completion playbook calibrate bench export-dataset init backup)' '*: :->args'
+_arguments '1:command:(chat sessions skills doctor completion playbook calibrate bench export-dataset init backup memory)' '*: :->args'
 case $words[1] in
   chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--playbook=[run playbook]:name:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' '--codegen[greenfield-code mode]' ;;
   skills) _arguments '1:skill command:(list import)' '*: :->file' ;;
@@ -271,11 +276,12 @@ case $words[1] in
   backup) _arguments '--output=[output directory]:dir:_files -/' ;;
   completion) _arguments '1:shell:(bash zsh)' ;;
   playbook) _arguments '1:command:(list)' ;;
+  memory) _arguments '1:command:(list count search delete export)' ;;
 esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] [--codegen] | yagent sessions [search <q>|export <id>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] [--codegen] | yagent sessions [search <q>|export <id>] | yagent memory [list|count|search <q>|delete <id|--all>|export <file>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 
@@ -698,6 +704,191 @@ func runSessionSearch(cfg *config.Config, query string) error {
 		}
 		fmt.Printf("%s  [%s] %s\n  %s\n", h.SessionID[:8], h.Role, title, h.Snippet)
 	}
+	return nil
+}
+
+// runMemoryCmd inspects, searches, deletes and exports the L3 semantic memory
+// store — the human-side counterpart to the model-facing memory_save/search
+// tools, so a user can audit and prune what the agent remembers.
+func runMemoryCmd(cfg *config.Config, args []string) error {
+	if len(args) == 0 {
+		return runMemoryList(cfg, false, 0)
+	}
+	switch args[0] {
+	case "list":
+		limit := 0
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--limit":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--limit needs a number")
+				}
+				i++
+				n, err := strconv.Atoi(args[i])
+				if err != nil {
+					return fmt.Errorf("--limit needs a number, got %q", args[i])
+				}
+				limit = n
+			default:
+				return fmt.Errorf("unknown option %q (use --limit)", args[i])
+			}
+		}
+		return runMemoryList(cfg, false, limit)
+	case "count":
+		return runMemoryList(cfg, true, 0)
+	case "search":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: yagent memory search <query> [--scope global|project]")
+		}
+		scope := "global"
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--scope" && i+1 < len(args) {
+				i++
+				scope = args[i]
+			}
+		}
+		return runMemorySearch(cfg, args[1], scope)
+	case "delete":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: yagent memory delete <id|--all>")
+		}
+		if args[1] == "--all" {
+			return runMemoryDelete(cfg, "", true)
+		}
+		return runMemoryDelete(cfg, args[1], false)
+	case "export":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: yagent memory export <file>")
+		}
+		return runMemoryExport(cfg, args[1])
+	}
+	return fmt.Errorf("unknown memory command %q (list | count | search | delete | export)", args[0])
+}
+
+// memoryScopeStore opens the global or project vector store. The project store
+// lives under <workspace>/.yagent/memory/.
+func memoryScopeStore(cfg *config.Config, scope string) (*memory.VectorStore, error) {
+	if scope == "project" {
+		ws, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		return memory.OpenProjectVectorStore(filepath.Join(ws, ".yagent", "memory"), cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+	}
+	return memory.OpenVectorStore(cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+}
+
+func runMemoryList(cfg *config.Config, countOnly bool, limit int) error {
+	vs, err := memory.OpenVectorStore(cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+	if err != nil {
+		return err
+	}
+	defer vs.Close()
+	if countOnly {
+		fmt.Printf("memories: %d\n", vs.Count())
+		return nil
+	}
+	mems, err := vs.List(limit)
+	if err != nil {
+		return err
+	}
+	if len(mems) == 0 {
+		fmt.Println("no memories stored")
+		return nil
+	}
+	for _, m := range mems {
+		src := m.Source
+		if src == "" {
+			src = "tool"
+		}
+		fmt.Printf("#%s  [%s] %s\n  %s\n", m.ID, src, shortMemText(m.Text), sourceHint(m.SessionID))
+	}
+	fmt.Printf("\n%d memories (global store)\n", len(mems))
+	return nil
+}
+
+func shortMemText(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > 140 {
+		return s[:140] + "…"
+	}
+	return s
+}
+
+func sourceHint(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	return fmt.Sprintf("(session %s)", sessionID[:min(len(sessionID), 8)])
+}
+
+func runMemorySearch(cfg *config.Config, query, scope string) error {
+	vs, err := memoryScopeStore(cfg, scope)
+	if err != nil {
+		return err
+	}
+	defer vs.Close()
+	mems, err := vs.Search(context.Background(), query, 10)
+	if err != nil {
+		return err
+	}
+	if len(mems) == 0 {
+		fmt.Println("no matching memories")
+		return nil
+	}
+	for _, m := range mems {
+		fmt.Printf("#%s  score=%.2f  %s\n  %s\n", m.ID, m.Score, shortMemText(m.Text), sourceHint(m.SessionID))
+	}
+	return nil
+}
+
+func runMemoryDelete(cfg *config.Config, id string, all bool) error {
+	vs, err := memory.OpenVectorStore(cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+	if err != nil {
+		return err
+	}
+	defer vs.Close()
+	if all {
+		if err := vs.DeleteAll(); err != nil {
+			return err
+		}
+		fmt.Println("all memories deleted")
+		return nil
+	}
+	ok, err := vs.Delete(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no memory with id %s", id)
+	}
+	fmt.Printf("deleted memory #%s\n", id)
+	return nil
+}
+
+func runMemoryExport(cfg *config.Config, path string) error {
+	vs, err := memory.OpenVectorStore(cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel)
+	if err != nil {
+		return err
+	}
+	defer vs.Close()
+	mems, err := vs.List(0)
+	if err != nil {
+		return err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Yagent semantic memories (%d)\n\n", len(mems))
+	for _, m := range mems {
+		fmt.Fprintf(&b, "## #%s [%s]\n%s\n\n", m.ID, m.Source, m.Text)
+	}
+	if path == "-" {
+		fmt.Print(b.String())
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("exported %d memories to %s\n", len(mems), path)
 	return nil
 }
 

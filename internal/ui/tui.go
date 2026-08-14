@@ -2381,6 +2381,11 @@ func (m *tuiModel) statusView() string {
 	parts = append(parts, th.pill(th.Surface, color, true).Render(state))
 	used, limit := m.ag.ContextUsage()
 	parts = append(parts, th.pill(th.Surface, color, false).Render(iconCtx+" "+m.ctxGauge(used, limit)))
+	// Context-growth forecast: ~N turns until the window would be exhausted,
+	// shown once there are enough turns to estimate (median per-turn growth).
+	if turns := m.ag.GrowthForecast(); turns >= 0 {
+		parts = append(parts, th.pill(th.Surface, th.Muted, false).Render("~"+fmt.Sprint(turns)+" turns"))
+	}
 	parts = append(parts, th.pill(th.Surface, th.Muted, false).Render(iconTool+" "+fmt.Sprint(m.toolCalls)))
 	if m.ag.ContextPressure() {
 		parts = append(parts, th.pill(th.Error, "#ffffff", true).Render("⚠ VRAM"))

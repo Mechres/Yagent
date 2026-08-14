@@ -254,6 +254,47 @@ func (v *VectorStore) Count() int {
 	return n
 }
 
+// List returns every memory (newest first), for the `yagent memory` CLI.
+func (v *VectorStore) List(limit int) ([]Memory, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := v.db.Query(
+		`SELECT id, text, source, session_id, created_at FROM memories ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list memories: %w", err)
+	}
+	defer rows.Close()
+	var out []Memory
+	for rows.Next() {
+		var m Memory
+		var id int64
+		var createdAt int64
+		if err := rows.Scan(&id, &m.Text, &m.Source, &m.SessionID, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan memory: %w", err)
+		}
+		m.ID = fmt.Sprint(id)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// Delete removes a memory by id. Reports false when the id was not found.
+func (v *VectorStore) Delete(id string) (bool, error) {
+	res, err := v.db.Exec(`DELETE FROM memories WHERE id = ?`, id)
+	if err != nil {
+		return false, fmt.Errorf("delete memory: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteAll removes every memory (yagent memory clear).
+func (v *VectorStore) DeleteAll() error {
+	_, err := v.db.Exec(`DELETE FROM memories`)
+	return err
+}
+
 // memRow is one decoded memories row plus derived scores.
 type memRow struct {
 	id         int64

@@ -20,6 +20,7 @@ import (
 
 	"github.com/Mechres/Yagent/internal/bench"
 	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/memory"
 )
 
 // Status of one check.
@@ -129,6 +130,76 @@ func (r *Report) addProjectToolchain() {
 	}
 }
 
+// addStorage audits what the agent remembers (L3 semantic memories, sessions,
+// checkpoints) so `yagent doctor` doubles as a storage health report and the
+// human can prune growth (companion to `yagent memory`).
+func (r *Report) addStorage(cfg *config.Config) {
+	memCount := "n/a"
+	if vs, err := memory.OpenVectorStore(cfg.DataDir, cfg.EmbeddingServerURL, cfg.EmbeddingModel); err == nil {
+		memCount = fmt.Sprint(vs.Count())
+		vs.Close()
+	}
+	parts := []string{"memories " + memCount}
+	if st, err := memory.Open(cfg.DataDir); err == nil {
+		n, _ := st.CountSessions()
+		parts = append(parts, fmt.Sprintf("sessions %d", n))
+		st.Close()
+	}
+	if n, sz := countCheckpoints(cfg.DataDir); n > 0 {
+		parts = append(parts, fmt.Sprintf("checkpoints %d (%.1f MB)", n, sz))
+	} else {
+		parts = append(parts, "checkpoints 0")
+	}
+	if sz, err := dirSizeMB(cfg.DataDir); err == nil {
+		parts = append(parts, fmt.Sprintf("data dir %.1f MB", sz))
+	}
+	rep := strings.Join(parts, ", ")
+	if memCount != "0" {
+		r.add("storage", StatusInfo, rep+" — audit with `yagent memory list`")
+		return
+	}
+	r.add("storage", StatusInfo, rep)
+}
+
+// countCheckpoints counts .yagent/checkpoints dirs and their total size (the
+// per-workspace checkpoint layout).
+func countCheckpoints(root string) (int, float64) {
+	var n int
+	var sz int64
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && d.Name() == "checkpoints" && strings.Contains(path, string(filepath.Separator)+".yagent"+string(filepath.Separator)) {
+			_ = filepath.WalkDir(path, func(p string, e os.DirEntry, err error) error {
+				if err == nil && !e.IsDir() {
+					if fi, err := e.Info(); err == nil {
+						sz += fi.Size()
+					}
+				}
+				return nil
+			})
+			n++
+		}
+		return nil
+	})
+	return n, float64(sz) / (1 << 20)
+}
+
+func dirSizeMB(dir string) (float64, error) {
+	var sz int64
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil {
+			sz += fi.Size()
+		}
+		return nil
+	})
+	return float64(sz) / (1 << 20), err
+}
+
 // Run executes the diagnostics against cfg.
 func Run(cfg *config.Config) Report {
 	var rep Report
@@ -222,6 +293,9 @@ func Run(cfg *config.Config) Report {
 			rep.add("bench", StatusInfo, "no recorded baseline (run `yagent bench --repeat 3`)")
 		}
 	}
+
+	// --- storage usage (yagent memory audit companion) ---
+	rep.addStorage(cfg)
 
 	client := &http.Client{Timeout: timeout}
 

@@ -169,6 +169,15 @@ func (t *smokeTool) buildPlan(ctx context.Context) (runPlan, bool) {
 		if err := t.build(ctx, "go", "build", "-o", tmp, "."); err != nil {
 			return runPlan{}, false
 		}
+		// A library package (no func main) builds to a non-executable archive —
+		// running it would fail with permission denied and mislead the model
+		// into "sandbox" rabbit holes. Detect and skip: no main = nothing to
+		// execute, so smoke is not applicable (the compile gate covers it).
+		fi, err := os.Stat(tmp)
+		if err != nil || fi.Mode()&0o111 == 0 {
+			_ = os.Remove(tmp)
+			return runPlan{}, false
+		}
 		return runPlan{bin: tmp, clean: func() { _ = os.Remove(tmp) }}, true
 	case has("Cargo.toml"):
 		// cargo build then the debug binary.

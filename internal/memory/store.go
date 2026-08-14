@@ -98,6 +98,13 @@ func Open(dir string) (*Store, error) {
 	return st, nil
 }
 
+// CountSessions reports how many sessions are stored (doctor storage audit).
+func (s *Store) CountSessions() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n)
+	return n, err
+}
+
 // backfillFTS indexes messages written before the FTS table existed. It reads
 // every row into memory first, then writes inside one transaction, so it never
 // holds a read cursor while inserting (which would deadlock the rollback

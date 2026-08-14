@@ -1834,6 +1834,37 @@ func lastTraceSections(trace string) (nonHist, history int) {
 	return nonHist, history
 }
 
+func TestGrowthForecast(t *testing.T) {
+	// Build an agent, seed turnUsage, and check the forecast math.
+	a := &Agent{
+		turnUsage: []int{1000, 1600, 2200, 2800}, // +600/turn, window 8192
+		cfg:       Config{Window: 8192},
+	}
+	got := a.GrowthForecast()
+	// remaining = 8192-2800 = 5392; 5392/600 ≈ 9
+	if got != 9 {
+		t.Errorf("GrowthForecast = %d, want 9", got)
+	}
+
+	// too few turns -> -1
+	if (&Agent{cfg: Config{Window: 8192}, turnUsage: []int{1000, 1600}}).GrowthForecast() != -1 {
+		t.Error("forecast with 2 turns should be -1")
+	}
+
+	// nearly full -> 1 (a partial turn still fits before the budget kicks in)
+	a2 := &Agent{turnUsage: []int{7000, 7600, 8100}, cfg: Config{Window: 8192}}
+	if got := a2.GrowthForecast(); got != 1 {
+		t.Errorf("nearly-full forecast = %d, want 1", got)
+	}
+
+	// median robustness: one huge turn shouldn't dominate
+	a3 := &Agent{turnUsage: []int{1000, 2000, 2600, 3200, 3800, 4400, 9000}, cfg: Config{Window: 16000}}
+	// deltas: 1000, 600, 600, 600, 600, 4600 -> median 600; remaining 16000-9000=7000; 7000/600≈12
+	if got := a3.GrowthForecast(); got != 12 {
+		t.Errorf("median-robust forecast = %d, want 12", got)
+	}
+}
+
 func TestContextUsageConcurrent(t *testing.T) {
 	s := newScriptedLLM(t, [][]string{
 		toolCall("c1", "fs_read", `{"path": "a.txt"}`),
@@ -2378,6 +2409,116 @@ func TestDiagnosticsFailed(t *testing.T) {
 		if c.want == "clean" && DiagnosticsFailed(c.in) {
 			t.Errorf("DiagnosticsFailed(%q) = true, want false", c.in)
 		}
+	}
+}
+
+func TestTestsFailed(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"all tests passed\n", "clean"},
+		{"ok  \tgithub.com/x/y\t0.123s\n", "clean"},
+		{"PASS\nok  \tgithub.com/x/y\t0.111s\n", "clean"},
+		{"--- FAIL: TestThing (0.01s)\n", "fail"},
+		{"FAIL\n", "fail"},
+		{"FAIL\tgithub.com/x/y [build failed]\n", "fail"},
+		{"error: tests failed\n", "fail"},
+		{"tests failed: exit status 1\n", "fail"},
+		{"3 failed, 5 passed\n", "fail"},
+	}
+	for _, c := range cases {
+		if c.want == "fail" && !TestsFailed(c.in) {
+			t.Errorf("TestsFailed(%q) = false, want true", c.in)
+		}
+		if c.want == "clean" && TestsFailed(c.in) {
+			t.Errorf("TestsFailed(%q) = true, want false", c.in)
+		}
+	}
+}
+
+func TestRunGoalTestGateRefusesOnFailingTests(t *testing.T) {
+	// The workspace compiles (go vet passes) but a unit test fails. With
+	// TestGate on, DONE must be refused and the failure fed back until the
+	// model fixes the test.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module testgate\n\ngo 1.22\n")
+	writeWorkspaceFile(t, ws, "calc.go", "package calc\n\nfunc Add(a, b int) int { return a - b } // wrong: subtracts\n")
+	writeWorkspaceFile(t, ws, "calc_test.go", `package calc
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+	if Add(1, 1) != 2 {
+		t.Fatal("Add(1,1) != 2")
+	}
+}
+`)
+
+	s := newScriptedLLM(t, [][]string{
+		finalContent("done the work"),
+		finalContent("DONE it is complete"),
+		// gate refuses (test fails); model fixes the function
+		toolCall("c1", "fs_write", `{"path":"calc.go","content":"package calc\n\nfunc Add(a, b int) int { return a + b }\n"}`),
+		finalContent("fixed the bug"),
+		finalContent("DONE tests pass now"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, GoalGate: true, TestGate: true}, ws)
+
+	var rounds []int
+	answer, err := a.RunGoal(context.Background(), "make Add correct", 5, func(r int, _ string) {
+		rounds = append(rounds, r)
+	})
+	if err != nil {
+		t.Fatalf("RunGoal: %v", err)
+	}
+	if len(rounds) < 2 {
+		t.Errorf("test gate did not force a second round: rounds=%v", rounds)
+	}
+	if answer != "fixed the bug" {
+		t.Errorf("answer = %q", answer)
+	}
+	// the test-failure report must have been fed back
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sawTestFail := false
+	for _, req := range s.requests {
+		if strings.Contains(string(req), "unit tests FAIL") {
+			sawTestFail = true
+			break
+		}
+	}
+	if !sawTestFail {
+		t.Error("test gate did not feed the failure back")
+	}
+}
+
+func TestRunGoalTestGateSkipsNoTests(t *testing.T) {
+	// No test files: the test gate must skip (no framework / nothing to run)
+	// rather than refusing a valid DONE.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module testgate\n\ngo 1.22\n")
+	writeWorkspaceFile(t, ws, "calc.go", "package calc\n\nfunc Add(a, b int) int { return a + b }\n")
+
+	s := newScriptedLLM(t, [][]string{
+		finalContent("done"),
+		finalContent("DONE complete"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, GoalGate: true, TestGate: true}, ws)
+
+	var rounds []int
+	answer, err := a.RunGoal(context.Background(), "do something", 5, func(r int, _ string) {
+		rounds = append(rounds, r)
+	})
+	if err != nil {
+		t.Fatalf("RunGoal: %v", err)
+	}
+	if len(rounds) != 1 {
+		t.Errorf("no tests should pass on round 1, got rounds=%v", rounds)
+	}
+	if answer != "done" {
+		t.Errorf("answer = %q", answer)
 	}
 }
 

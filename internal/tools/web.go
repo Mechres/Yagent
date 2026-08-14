@@ -64,7 +64,7 @@ func (t *webSearchTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	for i, r := range results {
 		fmt.Fprintf(&b, "%d. %s\n   %s\n   %s\n", i+1, r.Title, r.URL, r.Snippet)
 	}
-	return capResult(b.String(), maxResultBytes), nil
+	return capResult(WrapUntrusted("web_search for "+a.Query, b.String()), maxResultBytes), nil
 }
 
 // ---------- web_fetch ----------
@@ -84,6 +84,15 @@ var webFetchSchema = fnSchema("web_fetch", "fetch a URL and return its readable 
 func (t *webFetchTool) Schema() llm.ToolSchema { return webFetchSchema }
 func (t *webFetchTool) Risk() RiskLevel        { return RiskReadOnly }
 
+// WrapUntrusted marks content that came from outside the workspace (web pages,
+// fetched repos, search snippets) as DATA, not commands. Delimiters + the
+// system prompt's rule make a "ignore previous instructions" injection on a
+// fetched page unable to silently take over the model. Deterministic, applied
+// at the tool boundary so it survives regardless of how the result is used.
+func WrapUntrusted(source, content string) string {
+	return "<untrusted data from " + source + ">\n" + content + "\n</untrusted>"
+}
+
 func (t *webFetchTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var a webFetchArgs
 	if err := decodeArgs(raw, &a); err != nil {
@@ -100,8 +109,9 @@ func (t *webFetchTool) Execute(ctx context.Context, raw json.RawMessage) (string
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
+	wrapped := WrapUntrusted(a.URL, text)
 	if t.client.CacheHits() > hitsBefore {
-		return "[cached page]\n" + text, nil
+		return "[cached page]\n" + wrapped, nil
 	}
-	return text, nil
+	return wrapped, nil
 }
