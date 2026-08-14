@@ -1154,3 +1154,30 @@ A holistic codebase review uncovered six concrete consistency, tool-visibility, 
 - ✅ **recall/task-ledger dedup** (#6) — recalled memories that restate a path
   in touchedPaths or the current failure (GoalMemorize facts) are filtered
   from the same system message, saving ~50-100 tokens/turn on long runs.
+
+## agy review batch 2026-08-14 round 3: TUI Overhaul & Interaction Parity (6 features — all shipped & tested)
+
+A focused TUI improvement pass implemented six major interactivity, visual consistency, and workflow enhancements:
+
+- ✅ **Prompt & Command History** (#1) — In-memory readline-style prompt history
+  buffer (`history`, `historyIdx`, `draftInput`). Up/Down arrows on single-line
+  or empty inputs cycle through past queries/commands with draft preservation.
+  Covered by `TestPromptHistoryNavigation`.
+- ✅ **Interactive Help Modal** (#2) — Centered 2-column modal (`helpView`)
+  triggered by `/help`, `F1`, or `?` on empty input. Lists all keyboard shortcuts
+  and categorized slash commands with themed styling. Covered by `TestHelpModal`.
+- ✅ **Interactive Checkpoints Manager Modal** (#3) — `/checkpoint` or `/checkpoints`
+  opens a centered snapshot manager (`checkpointsView`): lists snapshots with
+  timestamps, `r` to restore, `d` (twice) to delete, `esc` to close. Covered by
+  `TestCheckpointsModal`.
+- ✅ **Smart LCS Context Hunk Differ** (#4) — Replaced naive index-based line
+  diff in `renderApprovalDiff` with a full Longest Common Subsequence (LCS) differ
+  (`internal/ui/diff.go`) with common prefix/suffix trimming and 3-line context
+  hunk formatting (`···` breaks). Covered by `TestLCSDiffHunks`.
+- ✅ **Active Workflow Header Indicator** (#5) — The header bar dynamically
+  displays a highlighted badge (e.g. `🎯 goal: ...` or `🎯 playbook: ...`) when an
+  autonomous goal or multi-stage playbook is active.
+- ✅ **Quick Session Save Shortcut** (#6) — `Ctrl+S` exports the active session
+  as Markdown (`session-<id>.md`) and reports a status confirmation without
+  leaving the TUI. Covered by `TestQuickSaveSessionShortcut`.
+

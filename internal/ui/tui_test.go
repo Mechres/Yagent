@@ -17,6 +17,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/checkpoint"
 	"github.com/Mechres/Yagent/internal/config"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
@@ -1091,5 +1092,163 @@ func TestSessionsBrowser(t *testing.T) {
 	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.sessionsOpen {
 		t.Error("esc should close the browser")
+	}
+}
+
+func TestPromptHistoryNavigation(t *testing.T) {
+	m := testModel(t)
+	m.inputCh = make(chan turnRequest, 10)
+
+	// submit two inputs
+	m.msgInput.SetValue("first command")
+	m.submitLine()
+	m.msgInput.SetValue("second command")
+	m.submitLine()
+
+	if len(m.history) != 2 {
+		t.Fatalf("history len = %d, want 2", len(m.history))
+	}
+
+	// input is currently empty draft; pressing up loads "second command"
+	m.msgInput.SetValue("my draft")
+	m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if m.msgInput.Value() != "second command" {
+		t.Errorf("got %q, want 'second command'", m.msgInput.Value())
+	}
+
+	// pressing up again loads "first command"
+	m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if m.msgInput.Value() != "first command" {
+		t.Errorf("got %q, want 'first command'", m.msgInput.Value())
+	}
+
+	// pressing down loads "second command"
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.msgInput.Value() != "second command" {
+		t.Errorf("got %q, want 'second command'", m.msgInput.Value())
+	}
+
+	// pressing down again restores the draft
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.msgInput.Value() != "my draft" {
+		t.Errorf("got %q, want 'my draft'", m.msgInput.Value())
+	}
+}
+
+func TestHelpModal(t *testing.T) {
+	m := testModel(t)
+
+	// /help opens modal
+	m.msgInput.SetValue("/help")
+	m.submitLine()
+	if !m.helpOpen {
+		t.Fatal("/help did not open help modal")
+	}
+	view := m.helpView()
+	if !strings.Contains(view, "Keyboard Shortcuts") || !strings.Contains(view, "Slash Commands") {
+		t.Errorf("helpView = %q", view)
+	}
+
+	// esc closes
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.helpOpen {
+		t.Error("esc did not close help modal")
+	}
+
+	// ? on empty input opens modal
+	m.msgInput.SetValue("")
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	if !m.helpOpen {
+		t.Error("? did not open help modal")
+	}
+}
+
+func TestCheckpointsModal(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "file.txt"), []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkpoint.Save(ws, "snap1"); err != nil {
+		t.Fatal(err)
+	}
+
+	m := testModel(t)
+	m.workspace = ws
+	m.msgInput.SetValue("/checkpoint")
+	m.submitLine()
+	if !m.checkpointsOpen {
+		t.Fatal("/checkpoint did not open checkpoints modal")
+	}
+	if len(m.checkpoints) != 1 || m.checkpoints[0].Name != "snap1" {
+		t.Fatalf("checkpoints = %+v", m.checkpoints)
+	}
+	view := m.checkpointsView()
+	if !strings.Contains(view, "snap1") {
+		t.Errorf("checkpointsView = %q", view)
+	}
+
+	// modify file
+	_ = os.WriteFile(filepath.Join(ws, "file.txt"), []byte("v2"), 0o644)
+
+	// restore via 'r'
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.checkpointsOpen {
+		t.Error("restore should close checkpoints modal")
+	}
+	data, _ := os.ReadFile(filepath.Join(ws, "file.txt"))
+	if string(data) != "v1" {
+		t.Errorf("restored content = %q, want v1", data)
+	}
+
+	// delete via 'd' (confirm)
+	m.openCheckpointsModal()
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !m.checkpointsConfirm {
+		t.Error("first d should arm confirmation")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if len(m.checkpoints) != 0 {
+		t.Errorf("checkpoint not deleted, remain = %d", len(m.checkpoints))
+	}
+}
+
+func TestQuickSaveSessionShortcut(t *testing.T) {
+	st, err := memory.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sess, _ := st.NewSession(context.Background(), "/tmp/ws")
+	_, _ = st.Append(context.Background(), sess.ID, llm.Message{Role: "user", Content: "quick save test"})
+
+	m := testModel(t)
+	m.env.st = st
+	m.env.sessionID = sess.ID
+
+	// press ctrl+s
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	path := "session-" + sess.ID + ".md"
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("session file not saved: %v", err)
+	}
+	if !strings.Contains(string(data), "quick save test") {
+		t.Errorf("saved markdown content = %q", data)
+	}
+}
+
+func TestLCSDiffHunks(t *testing.T) {
+	oldText := "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10"
+	newText := "line 1\nline 2\nline 3\nline 4\nMODIFIED 5\nline 6\nline 7\nline 8\nline 9\nline 10"
+
+	diff := renderApprovalDiff(tokyoNight, oldText, newText)
+	if !strings.Contains(diff, "- line 5") || !strings.Contains(diff, "+ MODIFIED 5") {
+		t.Fatalf("diff missing change: %q", diff)
+	}
+	// should contain surrounding context lines (line 3, line 4, line 6, line 7)
+	if !strings.Contains(diff, "line 3") || !strings.Contains(diff, "line 7") {
+		t.Errorf("diff missing context lines: %q", diff)
 	}
 }

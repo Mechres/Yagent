@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/checkpoint"
 	"github.com/Mechres/Yagent/internal/config"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
@@ -318,6 +319,29 @@ type tuiModel struct {
 	findQuery   string
 	findMatches []int
 	findMatch   int
+
+	// Command and prompt history (Up/Down arrow navigation).
+	history    []string
+	historyIdx int
+	draftInput string
+
+	// Help modal (? or /help or F1).
+	helpOpen bool
+
+	// Checkpoints modal (/checkpoint or /checkpoints).
+	checkpointsOpen    bool
+	checkpointsIdx     int
+	checkpointsConfirm bool
+	checkpointsAction  string
+	checkpoints        []checkpointSummary
+
+	// Active workflow indicator (goal or playbook) in header.
+	activeWorkflow string
+}
+
+type checkpointSummary struct {
+	Name    string
+	ModTime time.Time
 }
 
 func newInput() textarea.Model {
@@ -716,6 +740,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
+		if m.helpOpen {
+			return m.handleHelpKey(msg)
+		}
+		if m.checkpointsOpen {
+			return m.handleCheckpointsKey(msg)
+		}
 		if m.sessionsOpen {
 			return m.handleSessionsKey(msg)
 		}
@@ -749,6 +779,29 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleFindKey(msg)
 		}
 		switch msg.String() {
+		case "f1":
+			m.helpOpen = true
+			return m, nil
+		case "?":
+			if m.msgInput.Value() == "" {
+				m.helpOpen = true
+				return m, nil
+			}
+		case "ctrl+s":
+			if m.env != nil && m.env.sessionID != "" {
+				md, err := m.env.st.RenderMarkdown(context.Background(), m.env.sessionID)
+				if err != nil {
+					m.append("  error exporting session: " + err.Error())
+				} else {
+					path := "session-" + m.env.sessionID + ".md"
+					if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+						m.append("  error writing " + path + ": " + err.Error())
+					} else {
+						m.append("  " + iconOK + " session saved to " + path)
+					}
+				}
+				return m, m.nextCmd()
+			}
 		case "ctrl+f":
 			return m.openFind(), nil
 		case "ctrl+c":
@@ -795,11 +848,36 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll(false)
 			return m, nil
 		case "up":
+			// Single-line prompt history navigation
+			if !strings.Contains(m.msgInput.Value(), "\n") && len(m.history) > 0 {
+				if m.historyIdx == len(m.history) {
+					m.draftInput = m.msgInput.Value()
+				}
+				if m.historyIdx > 0 {
+					m.historyIdx--
+					m.msgInput.SetValue(m.history[m.historyIdx])
+					m.msgInput.CursorEnd()
+					return m, nil
+				}
+			}
 			if m.msgInput.Value() == "" {
 				m.scroll(true)
 				return m, nil
 			}
 		case "down":
+			if !strings.Contains(m.msgInput.Value(), "\n") && len(m.history) > 0 {
+				if m.historyIdx < len(m.history)-1 {
+					m.historyIdx++
+					m.msgInput.SetValue(m.history[m.historyIdx])
+					m.msgInput.CursorEnd()
+					return m, nil
+				} else if m.historyIdx == len(m.history)-1 {
+					m.historyIdx = len(m.history)
+					m.msgInput.SetValue(m.draftInput)
+					m.msgInput.CursorEnd()
+					return m, nil
+				}
+			}
 			if m.msgInput.Value() == "" {
 				m.scroll(false)
 				return m, nil
@@ -942,6 +1020,12 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	if text == "" {
 		return m, nil
 	}
+	if len(m.history) == 0 || m.history[len(m.history)-1] != text {
+		m.history = append(m.history, text)
+	}
+	m.historyIdx = len(m.history)
+	m.draftInput = ""
+
 	switch text {
 	case "/exit":
 		return m, m.quitCmd()
@@ -950,10 +1034,11 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, m.toggleMouse()
 	case "/help":
 		m.msgInput.Reset()
-		m.append("commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /mouse /skills /skill-name")
-		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty; search: Ctrl+F; mouse capture: Ctrl+M")
-		m.append("esc cancels the running turn; a repeating-thinking loop is auto-stopped (ui.loop_guard)")
-		return m, m.nextCmd()
+		m.helpOpen = true
+		return m, nil
+	case "/checkpoint", "/checkpoints":
+		m.msgInput.Reset()
+		return m.openCheckpointsModal(), nil
 	case "/settings":
 		m.msgInput.Reset()
 		m.settingsOpen = true
@@ -995,6 +1080,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.resetThinking()
 		m.follow = true
 		m.refreshViewport()
+		m.activeWorkflow = ""
 		m.append("history cleared")
 		return m, m.nextCmd()
 	case "/compact":
@@ -1013,6 +1099,15 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(text, "/") {
 		m.msgInput.Reset()
+		if strings.HasPrefix(text, "/goal ") {
+			goal := strings.TrimSpace(strings.TrimPrefix(text, "/goal"))
+			m.activeWorkflow = "goal: " + shorten(goal, 20)
+		} else if strings.HasPrefix(text, "/playbook ") {
+			parts := strings.Fields(text)
+			if len(parts) > 1 {
+				m.activeWorkflow = "playbook: " + parts[1]
+			}
+		}
 		skillsCmd := &skillsHandler{
 			store:       m.env.sk,
 			reg:         m.env.registry,
@@ -1368,51 +1463,181 @@ func approvePath(ws, p string) (string, error) {
 	return resolved, nil
 }
 
-// renderApprovalDiff is a colorized line diff (additions in theme green,
-// removals in theme red) for approval previews.
-func renderApprovalDiff(th Theme, oldText, newText string) string {
-	oldLines := splitKeepEmpty(oldText)
-	newLines := splitKeepEmpty(newText)
-	green := lipgloss.NewStyle().Foreground(th.Success)
-	red := lipgloss.NewStyle().Foreground(th.Error)
-	hunk := lipgloss.NewStyle().Foreground(th.Secondary)
-	var b strings.Builder
-	max := len(oldLines)
-	if len(newLines) > max {
-		max = len(newLines)
+// handleHelpKey drives the interactive help modal: any dismiss key closes it.
+func (m *tuiModel) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "enter", "?", "f1":
+		m.helpOpen = false
+		return m, nil
 	}
-	for i := 0; i < max; i++ {
-		o, n := "", ""
-		hasO, hasN := i < len(oldLines), i < len(newLines)
-		if hasO {
-			o = oldLines[i]
-		}
-		if hasN {
-			n = newLines[i]
-		}
-		switch {
-		case hasO && hasN && o == n:
-			b.WriteString("  " + o + "\n")
-		case hasO && hasN:
-			b.WriteString(red.Render("- "+o) + "\n")
-			b.WriteString(green.Render("+ "+n) + "\n")
-		case hasO:
-			b.WriteString(red.Render("- "+o) + "\n")
-		default:
-			b.WriteString(green.Render("+ "+n) + "\n")
-		}
-	}
-	if b.Len() == 0 {
-		return "(no changes)"
-	}
-	return hunk.Render("── diff ──") + "\n" + strings.TrimRight(b.String(), "\n")
+	return m, nil
 }
 
-func splitKeepEmpty(s string) []string {
-	if s == "" {
-		return nil
+// helpView renders the interactive help modal (shown as a centered modal over
+// the transcript).
+func (m *tuiModel) helpView() string {
+	th := m.th
+	title := lipgloss.NewStyle().Bold(true).Foreground(th.Primary).
+		Render(iconGear + " Yagent Keyboard Shortcuts & Commands")
+
+	secStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Secondary)
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Foreground)
+	descStyle := lipgloss.NewStyle().Foreground(th.Muted)
+
+	col1 := []string{
+		secStyle.Render("Keyboard Shortcuts"),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("Enter"), descStyle.Render("Send prompt / execute")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("Alt+Enter"), descStyle.Render("Insert newline")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("↑ / ↓"), descStyle.Render("Prompt history (or scroll)")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("PgUp / PgDn"), descStyle.Render("Scroll transcript (Ctrl+U/D)")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("Ctrl+F"), descStyle.Render("Search transcript")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("Ctrl+M"), descStyle.Render("Toggle mouse capture")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("Ctrl+S"), descStyle.Render("Quick export session markdown")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("t"), descStyle.Render("Toggle thinking block expand")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("Esc"), descStyle.Render("Cancel turn (keeps session)")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("Ctrl+C"), descStyle.Render("Quit")),
 	}
-	return strings.Split(strings.TrimRight(s, "\n"), "\n")
+
+	col2 := []string{
+		secStyle.Render("Slash Commands"),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/settings"), descStyle.Render("Interactive config editor")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/sessions"), descStyle.Render("Session browser (resume/fork)")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/checkpoint"), descStyle.Render("Workspace snapshots")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/playbook"), descStyle.Render("Declarative workflows")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/skills"), descStyle.Render("Procedural skills manager")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/goal <desc>"), descStyle.Render("Autonomous goal loop")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/undo [list|<N>]"), descStyle.Render("Revert previous file changes")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/retry"), descStyle.Render("Retry with stable sampling")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/compact"), descStyle.Render("Condense conversation ledger")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/yolo [on|off]"), descStyle.Render("Toggle auto-approval mode")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/clear"), descStyle.Render("Reset transcript history")),
+	}
+
+	left := strings.Join(col1, "\n")
+	right := strings.Join(col2, "\n")
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "    ", right)
+
+	hint := descStyle.Render("esc / q / enter to close")
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.th.Primary).
+		Padding(0, 1).Render(title + "\n\n" + body + "\n\n" + hint)
+}
+
+// openCheckpointsModal opens the interactive workspace snapshots browser.
+func (m *tuiModel) openCheckpointsModal() tea.Model {
+	m.checkpointsOpen = true
+	m.checkpointsIdx = 0
+	m.checkpointsConfirm = false
+	m.checkpointsAction = ""
+	m.refreshCheckpoints()
+	return m
+}
+
+func (m *tuiModel) refreshCheckpoints() {
+	names := checkpoint.List(m.workspace)
+	m.checkpoints = make([]checkpointSummary, 0, len(names))
+	for _, n := range names {
+		fi, err := os.Stat(filepath.Join(m.workspace, ".yagent/checkpoints", n))
+		mt := time.Now()
+		if err == nil {
+			mt = fi.ModTime()
+		}
+		m.checkpoints = append(m.checkpoints, checkpointSummary{Name: n, ModTime: mt})
+	}
+}
+
+// handleCheckpointsKey drives the checkpoints manager modal.
+func (m *tuiModel) handleCheckpointsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.checkpoints) == 0 {
+		switch msg.String() {
+		case "esc", "q":
+			m.checkpointsOpen = false
+			return m, nil
+		}
+		return m, nil
+	}
+	if m.checkpointsIdx < 0 || m.checkpointsIdx >= len(m.checkpoints) {
+		m.checkpointsIdx = 0
+	}
+	switch msg.String() {
+	case "esc", "q":
+		m.checkpointsOpen = false
+		return m, nil
+	case "up":
+		if m.checkpointsIdx > 0 {
+			m.checkpointsIdx--
+		}
+	case "down":
+		if m.checkpointsIdx < len(m.checkpoints)-1 {
+			m.checkpointsIdx++
+		}
+	case "r":
+		cp := m.checkpoints[m.checkpointsIdx]
+		if err := checkpoint.Restore(m.workspace, cp.Name); err != nil {
+			m.checkpointsAction = "error: " + err.Error()
+			return m, nil
+		}
+		m.checkpointsOpen = false
+		m.append(fmt.Sprintf("  "+iconOK+" restored workspace to checkpoint %q", cp.Name))
+		return m, m.nextCmd()
+	case "d", "x":
+		cp := m.checkpoints[m.checkpointsIdx]
+		if m.checkpointsConfirm {
+			if err := checkpoint.Delete(m.workspace, cp.Name); err != nil {
+				m.checkpointsAction = "error: " + err.Error()
+			} else {
+				m.append(fmt.Sprintf("  deleted checkpoint %q", cp.Name))
+			}
+			m.checkpointsConfirm = false
+			m.refreshCheckpoints()
+			if m.checkpointsIdx >= len(m.checkpoints) && len(m.checkpoints) > 0 {
+				m.checkpointsIdx = len(m.checkpoints) - 1
+			}
+			return m, nil
+		}
+		m.checkpointsConfirm = true
+		return m, nil
+	}
+	if msg.String() != "d" && msg.String() != "x" {
+		m.checkpointsConfirm = false
+	}
+	m.checkpointsAction = ""
+	return m, nil
+}
+
+// checkpointsView renders the checkpoints manager modal.
+func (m *tuiModel) checkpointsView() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
+		Render(iconSession + " Workspace Checkpoints")
+	marker := lipgloss.NewStyle().Foreground(m.th.Primary).Render("▸")
+	dim := lipgloss.NewStyle().Foreground(m.th.Muted)
+	rows := make([]string, 0, len(m.checkpoints))
+	for i, c := range m.checkpoints {
+		timeStr := c.ModTime.Format("2006-01-02 15:04:05")
+		line := fmt.Sprintf("%-20s  %s", c.Name, timeStr)
+		if i == m.checkpointsIdx {
+			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(m.th.Surface).
+				Bold(true).Render(line))
+		} else {
+			rows = append(rows, "  "+dim.Render(line))
+		}
+	}
+	if len(m.checkpoints) == 0 {
+		rows = append(rows, "  "+dim.Render("no checkpoints saved in this workspace"))
+	}
+	body := strings.Join(rows, "\n")
+	hint := dim.Render("↑/↓ pick · r restore · d delete (twice) · esc close")
+	if m.checkpointsConfirm {
+		hint = lipgloss.NewStyle().Foreground(m.th.Error).Render("  delete this checkpoint? press d again to confirm, any key to cancel")
+	}
+	if m.checkpointsAction != "" {
+		action := lipgloss.NewStyle().Foreground(m.th.Primary).Render(m.checkpointsAction)
+		body += "\n\n" + action
+	}
+	bodyStyle := lipgloss.NewStyle().Foreground(m.th.Foreground).Render(body)
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.th.Primary).
+		Padding(0, 1).Render(title + "\n\n" + bodyStyle + "\n\n" + hint)
 }
 
 // handleSessionsKey drives the session browser: up/down pick a session,
@@ -1994,11 +2219,17 @@ func (m *tuiModel) View() string {
 	if m.sessionsOpen {
 		out = overlayModal(m.th, m.sessionsView(), m.width, m.height)
 	}
+	if m.checkpointsOpen {
+		out = overlayModal(m.th, m.checkpointsView(), m.width, m.height)
+	}
 	if m.skillsOpen {
 		out = overlayModal(m.th, m.skillsView(), m.width, m.height)
 	}
 	if m.clarifyOpen {
 		out = overlayModal(m.th, m.clarifyView(), m.width, m.height)
+	}
+	if m.helpOpen {
+		out = overlayModal(m.th, m.helpView(), m.width, m.height)
 	}
 	return out
 }
@@ -2077,7 +2308,7 @@ func (m *tuiModel) resizeInput() {
 
 // showPopover reports whether the "/" command palette should be rendered.
 func (m *tuiModel) showPopover() bool {
-	if m.settingsOpen || m.sessionsOpen || m.skillsOpen || m.clarifyOpen || m.findOpen {
+	if m.helpOpen || m.checkpointsOpen || m.settingsOpen || m.sessionsOpen || m.skillsOpen || m.clarifyOpen || m.findOpen {
 		return false
 	}
 	return strings.HasPrefix(m.msgInput.Value(), "/") && len(m.slashMatches()) > 0
@@ -2088,6 +2319,9 @@ func (m *tuiModel) headerView() string {
 	th := m.th
 	title := th.pill(th.Primary, lipgloss.Color("#15161e"), true).Render(iconYOLO + " YAGENT")
 	parts := []string{title}
+	if m.activeWorkflow != "" {
+		parts = append(parts, th.pill(th.Secondary, lipgloss.Color("#15161e"), true).Render("🎯 "+m.activeWorkflow))
+	}
 	if m.workspace != "" {
 		parts = append(parts, th.pill(th.Surface, th.Foreground, false).Render(shorten(m.workspace, 40)))
 	}
