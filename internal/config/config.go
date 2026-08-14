@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -101,6 +102,11 @@ type Provider struct {
 	// server's /v1/models at selector-open time (local llama.cpp/Ollama). The
 	// static Models list is the fallback when the server is unreachable.
 	Dynamic bool
+	// ModelsDev is the models.dev provider key (e.g. "deepseek", "openrouter",
+	// "togetherai") when the model list can be refreshed live from models.dev —
+	// the same index opencode uses — so cloud models never go stale. Empty =
+	// no live sync (the static Models list is used).
+	ModelsDev string
 }
 
 // Providers is the built-in catalog for the `/model` selector. Local is always
@@ -145,15 +151,17 @@ var Providers = []Provider{
 		},
 	},
 	{
-		Name:    "DeepSeek",
-		BaseURL: "https://api.deepseek.com",
-		KeyEnv:  "DEEPSEEK_API_KEY",
-		Models:  []string{"deepseek-v4-pro", "deepseek-v4-flash"},
+		Name:      "DeepSeek",
+		BaseURL:   "https://api.deepseek.com",
+		KeyEnv:    "DEEPSEEK_API_KEY",
+		Models:    []string{"deepseek-v4-pro", "deepseek-v4-flash"},
+		ModelsDev: "deepseek",
 	},
 	{
-		Name:    "OpenRouter",
-		BaseURL: "https://openrouter.ai/api",
-		KeyEnv:  "OPENROUTER_API_KEY",
+		Name:      "OpenRouter",
+		BaseURL:   "https://openrouter.ai/api",
+		KeyEnv:    "OPENROUTER_API_KEY",
+		ModelsDev: "openrouter",
 		Models: []string{
 			"deepseek/deepseek-v4-pro",
 			"deepseek/deepseek-v4-flash",
@@ -166,27 +174,31 @@ var Providers = []Provider{
 		},
 	},
 	{
-		Name:    "Groq",
-		BaseURL: "https://api.groq.com/openai",
-		KeyEnv:  "GROQ_API_KEY",
-		Models:  []string{"openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "groq/compound"},
+		Name:      "Groq",
+		BaseURL:   "https://api.groq.com/openai",
+		KeyEnv:    "GROQ_API_KEY",
+		ModelsDev: "groq",
+		Models:    []string{"openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "groq/compound"},
 	},
 	{
-		Name:    "Together",
-		BaseURL: "https://api.together.xyz/v1",
-		KeyEnv:  "TOGETHER_API_KEY",
-		Models:  []string{"deepseek-ai/DeepSeek-V4-Pro", "moonshotai/Kimi-K2.7-Code", "MiniMaxAI/MiniMax-M3", "openai/gpt-oss-120b"},
+		Name:      "Together",
+		BaseURL:   "https://api.together.xyz/v1",
+		KeyEnv:    "TOGETHER_API_KEY",
+		ModelsDev: "togetherai",
+		Models:    []string{"deepseek-ai/DeepSeek-V4-Pro", "moonshotai/Kimi-K2.7-Code", "MiniMaxAI/MiniMax-M3", "openai/gpt-oss-120b"},
 	},
 	{
-		Name:    "Mistral",
-		BaseURL: "https://api.mistral.ai/v1",
-		KeyEnv:  "MISTRAL_API_KEY",
-		Models:  []string{"devstral-2512", "mistral-large-2512", "mistral-medium-2604"},
+		Name:      "Mistral",
+		BaseURL:   "https://api.mistral.ai/v1",
+		KeyEnv:    "MISTRAL_API_KEY",
+		ModelsDev: "mistral",
+		Models:    []string{"devstral-2512", "mistral-large-2512", "mistral-medium-2604"},
 	},
 	{
-		Name:    "NVIDIA NIM",
-		BaseURL: "https://integrate.api.nvidia.com/v1",
-		KeyEnv:  "NVIDIA_API_KEY",
+		Name:      "NVIDIA NIM",
+		BaseURL:   "https://integrate.api.nvidia.com/v1",
+		KeyEnv:    "NVIDIA_API_KEY",
+		ModelsDev: "nvidia",
 		Models: []string{
 			"nvidia/nemotron-3-super-120b-a12b",
 			"nvidia/nemotron-3-ultra-550b-a55b",
@@ -276,6 +288,78 @@ func FetchModels(ctx context.Context, baseURL string) ([]string, bool) {
 		add(m.Name)
 	}
 	return out, len(out) > 0
+}
+
+// FetchModelsDev fetches the live model list for a cloud provider from
+// models.dev (the same index opencode uses), so cloud models never go stale.
+// It returns the provider's model IDs filtered to coding-relevant ones and
+// capped, or ok=false when the fetch fails. This is the cloud counterpart of
+// FetchModels (which reads a local /v1/models endpoint).
+func FetchModelsDev(ctx context.Context, providerKey string) ([]string, bool) {
+	if providerKey == "" {
+		return nil, false
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://models.dev/api.json", nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	var index map[string]struct {
+		Models map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(body, &index); err != nil {
+		return nil, false
+	}
+	prov, ok := index[providerKey]
+	if !ok {
+		return nil, false
+	}
+	// prefer coding-relevant models first, then any others, capped.
+	var coding, other []string
+	for id := range prov.Models {
+		low := strings.ToLower(id)
+		if strings.Contains(low, "coder") || strings.Contains(low, "code") ||
+			strings.Contains(low, "instruct") || strings.Contains(low, "deepseek") ||
+			strings.Contains(low, "qwen3") || strings.Contains(low, "devstral") ||
+			strings.Contains(low, "gpt-oss") || strings.Contains(low, "nemotron") {
+			coding = append(coding, id)
+		} else {
+			other = append(other, id)
+		}
+	}
+	sort.Strings(coding)
+	sort.Strings(other)
+	out := append(coding, other...)
+	const max = 20
+	if len(out) > max {
+		out = out[:max]
+	}
+	return out, len(out) > 0
+}
+
+// ModelWarning returns a caution for a model our own bench data shows is weak
+// at tool calling, or "" when it's fine/unknown. Surfaced in the /model
+// selector's confirm step so a user doesn't unknowingly pick a model that
+// can't drive tools.
+func ModelWarning(model string) string {
+	m := strings.ToLower(model)
+	for _, weak := range []string{
+		"mini", "nano", "1b", "2b", "3b", "qwen2.5-coder-7b", "gpt-3.5",
+	} {
+		if strings.Contains(m, weak) {
+			return "caution: this model may be weak at tool calling on this stack (a 7B-9B model needs a good function-calling recipe) — run `yagent bench` to confirm it can drive tools"
+		}
+	}
+	return ""
 }
 
 // SkillsConfig configures procedural memory (M3.5).

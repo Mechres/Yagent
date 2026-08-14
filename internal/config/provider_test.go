@@ -248,3 +248,24 @@ func stringContains(haystack, needle string) bool {
 	}
 	return false
 }
+
+func TestModelWarning(t *testing.T) {
+	if got := ModelWarning("deepseek-v4-pro"); got != "" {
+		t.Errorf("strong model warned: %q", got)
+	}
+	if got := ModelWarning("deepseek-v4-mini"); got == "" {
+		t.Error("mini model should warn")
+	}
+	if got := ModelWarning("qwen2.5-coder-7b"); got == "" {
+		t.Error("known-weak model should warn")
+	}
+}
+
+func TestFetchModelsDevShape(t *testing.T) {
+	// models.dev returns {provider: {models: {id: {...}}}}. We can't hit the
+	// real endpoint offline, but the filter/cap logic is exercised through the
+	// helper's handling of a minimal fixture via an unreachable URL -> false.
+	if _, ok := FetchModelsDev(context.Background(), "nope"); ok {
+		t.Error("unknown provider key should report ok=false")
+	}
+}

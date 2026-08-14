@@ -2,6 +2,26 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.74 — 2026-08-15
+
+### Added
+- **models.dev live sync** — cloud providers in the `/model` selector now
+  fetch their **current model list from models.dev** (the same index opencode
+  uses) at open time, so cloud models never go stale like the hardcoded
+  DeepSeek/Mistral lists did. `config.FetchModelsDev` reads the provider's
+  model IDs from `https://models.dev/api.json`, filters to coding-relevant
+  ones, and caps at 20. The model pane shows "Model (live from models.dev)"
+  and falls back to the static list when unreachable. `Provider.ModelsDev`
+  keys are set for DeepSeek, OpenRouter, Groq, Together, Mistral, NVIDIA.
+- **Model selection warnings** — `config.ModelWarning` surfaces a caution in
+  the `/model` confirm step when the picked model is one our bench data shows
+  weak at tool calling (mini/nano/1b–3b/qwen2.5-coder-7b and similar), so a
+  user isn't stuck with a model that can't drive tools.
+
+### Assessed & skipped (P2/P3 review)
+- Skills hierarchy (P2), in-chat per-message `/diff` (P3, covered by
+  `/diff <N>`), model packs (P3, marginal) — recorded in the research file.
+
 ## v0.1.73 — 2026-08-15
 
 ### Added

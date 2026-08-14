@@ -172,10 +172,12 @@ type toolMsg struct{ call llm.ToolCall }
 type progressMsg struct{ text string }
 
 // modelListMsg carries the live model list fetched from a Dynamic provider
-// (local llama.cpp/Ollama) when the /model selector opens.
+// (local llama.cpp/Ollama) or a models.dev-backed cloud provider when the
+// /model selector opens.
 type modelListMsg struct {
 	models []string
 	ok     bool
+	dev    bool // true = from models.dev (cloud)
 }
 
 type turnDoneMsg struct {
@@ -733,10 +735,16 @@ func (m *tuiModel) openModelSelector() (tea.Model, tea.Cmd) {
 			break
 		}
 	}
-	// fire the live fetch for a Dynamic provider
-	if config.Providers[m.modelProvider].Dynamic {
+	// fire the live fetch: local /v1/models for Dynamic providers, models.dev
+	// for cloud providers that support it.
+	prov := config.Providers[m.modelProvider]
+	switch {
+	case prov.Dynamic:
 		m.modelLoading = true
 		return m, m.fetchLocalModels()
+	case prov.ModelsDev != "":
+		m.modelLoading = true
+		return m, m.fetchModelsDev(prov.ModelsDev)
 	}
 	return m, nil
 }
@@ -750,6 +758,16 @@ func (m *tuiModel) fetchLocalModels() tea.Cmd {
 		defer cancel()
 		models, ok := config.FetchModels(ctx, base)
 		return modelListMsg{models: models, ok: ok}
+	}
+}
+
+// fetchModelsDev fetches a cloud provider's current model list from models.dev.
+func (m *tuiModel) fetchModelsDev(providerKey string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.runnerCtx, 10*time.Second)
+		defer cancel()
+		models, ok := config.FetchModelsDev(ctx, providerKey)
+		return modelListMsg{models: models, ok: ok, dev: true}
 	}
 }
 
@@ -2263,14 +2281,16 @@ func (m *tuiModel) modelView() string {
 	prov := config.Providers[m.modelProvider]
 	modelNames := prov.Models
 	status := ""
-	if prov.Dynamic {
+	if prov.Dynamic || prov.ModelsDev != "" {
 		modelNames = m.modelLive
 		if m.modelLoading {
 			status = " (detecting…)"
 		} else if m.modelLive == nil {
 			status = " (server unreachable — showing defaults)"
-		} else {
+		} else if prov.Dynamic {
 			status = " (detected)"
+		} else {
+			status = " (live from models.dev)"
 		}
 	}
 	var modelRows []string
@@ -2316,7 +2336,7 @@ func (m *tuiModel) modelView() string {
 		}
 		chosen := ""
 		names := prov.Models
-		if prov.Dynamic {
+		if prov.Dynamic || prov.ModelsDev != "" {
 			names = m.modelLive
 		}
 		if m.modelModelIdx >= 0 && m.modelModelIdx < len(names) {
@@ -2325,6 +2345,9 @@ func (m *tuiModel) modelView() string {
 		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
 			Render(fmt.Sprintf("switch to %s / %s at %s (%s)?", prov.Name, chosen, prov.BaseURL, auth)) +
 			"  " + lipgloss.NewStyle().Foreground(m.th.Muted).Render("y = apply, n = cancel")
+		if warn := config.ModelWarning(chosen); warn != "" {
+			page += "\n\n" + lipgloss.NewStyle().Foreground(m.th.Error).Render("⚠ "+warn)
+		}
 	}
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(m.th.Primary).Padding(0, 1).Render(page)

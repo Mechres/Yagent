@@ -138,3 +138,8 @@ consult:                      # the `consult` tool (advisor). Disabled until set
 #     url: "https://gitlab.example.com/mcp"
 #     headers: {"Authorization": "Bearer {env:GITLAB_TOKEN}"}
 #     enabled: true
+
+# The /model selector refreshes cloud model lists live from models.dev (the
+# same index opencode uses) — DeepSeek, OpenRouter, Groq, Together, Mistral and
+# NVIDIA NIM never show a stale catalog. Local providers auto-detect their
+# loaded models from /v1/models.

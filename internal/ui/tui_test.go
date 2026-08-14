@@ -1449,3 +1449,32 @@ func gitInit(t *testing.T, ws string) {
 		t.Fatal(err)
 	}
 }
+
+func TestModelSelectorModelsDevStatus(t *testing.T) {
+	m := testModel(t)
+	m.modelOpen = true
+	// find the DeepSeek provider (ModelsDev set)
+	idx := -1
+	for i, p := range config.Providers {
+		if p.ModelsDev == "deepseek" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("no ModelsDev provider in catalog")
+	}
+	m.modelProvider = idx
+	m.modelLive = []string{"deepseek-v4-pro", "deepseek-v4-flash"}
+	m.modelLoading = false
+	v := m.modelView()
+	if !strings.Contains(v, "live from models.dev") {
+		t.Errorf("modelView missing models.dev status: %q", v)
+	}
+	// loading state
+	m.modelLoading = true
+	v = m.modelView()
+	if !strings.Contains(v, "detecting…") {
+		t.Errorf("modelView missing loading status: %q", v)
+	}
+}
