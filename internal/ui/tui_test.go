@@ -90,12 +90,16 @@ func TestSlashAutoCompleteOnEnter(t *testing.T) {
 	if !m.helpOpen {
 		t.Errorf("/h did not auto-complete into /help and open the modal (helpOpen=%v)", m.helpOpen)
 	}
-	// a prefix matching several commands is NOT auto-completed (stays as typed
-	// unless the user navigated) — /c has many matches.
-	m.msgInput.SetValue("/c")
+	// a prefix matching several commands is NOT auto-completed and is NOT sent
+	// to the model — it stays in the input so the palette remains open (this
+	// fixes "/ex" being submitted to the model instead of completing).
+	m.msgInput.SetValue("/ex")
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !strings.HasPrefix(m.msgInput.Value(), "/") {
-		t.Errorf("ambiguous prefix sent as-is: %q", m.msgInput.Value())
+	if m.msgInput.Value() != "/ex" {
+		t.Errorf("ambiguous /ex should stay in the input, got %q", m.msgInput.Value())
+	}
+	if m.busy {
+		t.Error("/ex was submitted to the model (should be held for completion)")
 	}
 }
 

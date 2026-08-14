@@ -1052,6 +1052,18 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	m.historyIdx = len(m.history)
 	m.draftInput = ""
 
+	// An incomplete "/..." is a command prefix, not a message: if it's a strict
+	// prefix of at least one command (e.g. "/ex" -> /exit and /export), keep
+	// the palette open instead of sending the fragment to the model. Tab/arrows
+	// pick the intended command.
+	if matches := m.slashMatches(); len(matches) > 0 && matches[0] != text {
+		if val := m.msgInput.Value(); strings.HasPrefix(val, "/") {
+			m.tabIndex = -1
+			m.msgInput.SetValue(val)
+			return m, nil
+		}
+	}
+
 	switch text {
 	case "/exit":
 		return m, m.quitCmd()
