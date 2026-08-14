@@ -81,6 +81,9 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		runnerCtx: runnerCtx, runnerCancel: runnerCancel, runnerDone: runnerDone,
 		msgInput: newInput(), yoloToggler: ap, trace: opts.Trace,
 	}
+	if env.gitEnabled {
+		env.commitDirtyStart()
+	}
 	// The clarify/plan tools route through the TUI modal: block on the user's
 	// answer and hand it back to the agent as tool data.
 	env.registry.SetAskUser(func(ctx context.Context, question string, choices []string) (string, error) {
@@ -122,6 +125,10 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 				env.undo.StartTurn()
 				answer, err := m.currentAgent().Run(req.ctx, req.text)
 				env.undo.EndTurn()
+				env.turnSeq++
+				if ws, werr := os.Getwd(); werr == nil {
+					env.commitTurn(ws, fmt.Sprintf("turn %d", env.turnSeq))
+				}
 				incoming <- turnDoneMsg{answer: answer, err: err, seq: req.seq}
 			}
 		}

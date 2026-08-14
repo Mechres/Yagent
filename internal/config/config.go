@@ -68,6 +68,11 @@ type Config struct {
 	// fails), and plan-narration-as-stall (a final answer that lists "next
 	// steps" is fed back until the work is done).
 	Codegen bool `yaml:"codegen"`
+	// AutoCommitGit, when true (default), makes each turn's file changes a
+	// real git commit (aider-style) so /undo is a revert and a crash can't
+	// lose a session's work. Only active when the workspace is a git repo;
+	// pre-existing dirty files are committed before the agent edits.
+	AutoCommitGit bool `yaml:"git_auto_commit"`
 	// Path is the config file this was loaded from ("" when none existed);
 	// used to persist runtime toggles like skills.write_approval.
 	Path string `yaml:"-"`
@@ -472,6 +477,7 @@ func LoadConfig(path string) (*Config, error) {
 		Sampling:         SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
 		Skills:           SkillsConfig{WriteApproval: false},
 		VramThresholdTPS: DefaultVramThresholdTPS,
+		AutoCommitGit:    true,
 	}
 	dataDir, err := DefaultDataDir()
 	if err != nil {
@@ -687,6 +693,7 @@ func Settings() []SettingKey {
 		{Key: "shell.sandbox", Label: "Shell sandbox", Options: []string{"", "bwrap"}},
 		{Key: "vram_threshold_tps", Label: "VRAM pressure t/s threshold (0 = off; auto-prunes context when streaming slows)"},
 		{Key: "codegen", Label: "Codegen mode (whole-file writes + compile-gated final answers)", Options: []string{"false", "true"}},
+		{Key: "git_auto_commit", Label: "Auto-commit each turn to git (/undo = revert; needs a git repo)", Options: []string{"true", "false"}},
 		{Key: "consult.server_url", Label: "Consult server URL"},
 		{Key: "consult.model", Label: "Consult model"},
 		{Key: "consult.api_key", Label: "Consult API key"},
@@ -747,6 +754,8 @@ func (c *Config) Get(key string) string {
 		return strconv.FormatFloat(c.VramThresholdTPS, 'f', -1, 64)
 	case "codegen":
 		return strconv.FormatBool(c.Codegen)
+	case "git_auto_commit":
+		return strconv.FormatBool(c.AutoCommitGit)
 	case "consult.server_url":
 		return c.Consult.ServerURL
 	case "consult.model":
@@ -841,6 +850,7 @@ func validateKey(parts []string, value string) error {
 		"shell.sandbox":      true,
 		"vram_threshold_tps": true,
 		"codegen":            true,
+		"git_auto_commit":    true,
 		"consult.server_url": true, "consult.model": true, "consult.api_key": true,
 		"consult.cmd":           true,
 		"summarizer.server_url": true, "summarizer.model": true,
@@ -894,7 +904,7 @@ func validateKey(parts []string, value string) error {
 		if err != nil || n < 0 {
 			return &ValidationError{msg: "sampling.reasoning_max_tokens must be a non-negative integer (0 = off)"}
 		}
-	case "ui.show_reasoning", "ui.loop_guard", "codegen":
+	case "ui.show_reasoning", "ui.loop_guard", "codegen", "git_auto_commit":
 		if value != "true" && value != "false" {
 			return &ValidationError{msg: key + " must be true or false"}
 		}

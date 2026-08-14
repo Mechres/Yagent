@@ -2,6 +2,23 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.71 — 2026-08-15
+
+### Added
+- **Git auto-commit / undo** (borrowed from aider) — the crash-safe undo that
+  was deferred four times, solved by reusing git instead of an in-memory
+  journal (`internal/gitops`). When `git_auto_commit` is on (default) and the
+  workspace is a git repo:
+  - Pre-existing dirty files are committed up front (`CommitDirty`), so user
+    work is never lost or mixed into agent commits.
+  - Each turn's changes become a real `yagent: turn N` commit.
+  - `/undo`, `/undo list` and `/undo <N>` route through git (`RevertN` via
+    `git revert`, matched by the `yagent:` commit marker) instead of the
+    in-memory buffer — durable across crashes and resumed sessions.
+  - Falls back to the in-memory buffer outside a git repo; refuses to commit
+    without a configured git identity.
+- config.example.yaml documents `git_auto_commit`.
+
 ## v0.1.70 — 2026-08-15
 
 ### Fixed

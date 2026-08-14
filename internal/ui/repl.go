@@ -18,6 +18,7 @@ import (
 	"github.com/Mechres/Yagent/internal/agent"
 	"github.com/Mechres/Yagent/internal/checkpoint"
 	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/gitops"
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/jobs"
 	"github.com/Mechres/Yagent/internal/llm"
@@ -280,6 +281,10 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 	if env.initialSummary != "" {
 		fmt.Println("(resumed with running summary of the earlier conversation)")
 	}
+	if env.gitEnabled {
+		env.commitDirtyStart()
+		fmt.Println("(git auto-commit on — each turn is committed; /undo reverts it)")
+	}
 	for {
 		fmt.Fprint(w, "> ")
 		line, err := reader.ReadString('\n')
@@ -340,6 +345,10 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		env.undo.StartTurn()
 		_, err = ag.Run(ctx, line)
 		env.undo.EndTurn()
+		env.turnSeq++
+		if ws, werr := os.Getwd(); werr == nil {
+			env.commitTurn(ws, fmt.Sprintf("turn %d", env.turnSeq))
+		}
 		if err != nil {
 			if errors.Is(err, agent.ErrMaxIterations) {
 				fmt.Fprintf(w, "\n[%v — type /clear to start fresh]\n", err)
@@ -557,6 +566,93 @@ type chatEnv struct {
 	undo           *undo.Buffer
 	jobs           *jobs.Registry
 	summ           *llm.Client // optional offloaded summarizer (budget + /compact)
+	// gitEnabled is true when git auto-commit is active (git.auto_commit on AND
+	// the workspace is a git repo): each turn's writes become a real commit and
+	// /undo becomes a git revert (durable, crash-safe). When false, the
+	// in-memory undo buffer is the fallback.
+	gitEnabled bool
+	turnSeq    int
+}
+
+// commitDirtyStart commits any pre-existing uncommitted changes up front (aider
+// style), so the user's work is never mixed into or overwritten by agent
+// commits. Best-effort: logs a warning on failure rather than blocking startup.
+func (env *chatEnv) commitDirtyStart() {
+	if !env.gitEnabled {
+		return
+	}
+	ws, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	if _, err := gitops.CommitDirty(ws, "yagent: snapshot pre-session dirty state"); err != nil {
+		slog.Warn("git auto-commit: could not snapshot dirty state", "error", err)
+	}
+}
+
+// commitTurn commits the agent's changes for one completed turn (aider style:
+// /undo then reverts it). Best-effort.
+func (env *chatEnv) commitTurn(ws, subject string) {
+	if !env.gitEnabled {
+		return
+	}
+	if _, err := gitops.AgentCommit(ws, subject); err != nil {
+		slog.Warn("git auto-commit: could not commit turn", "error", err)
+	}
+}
+
+// maybeUndo reverts the last N agent turns via git when enabled, else falls
+// back to the in-memory buffer. Returns a human message.
+func (env *chatEnv) maybeUndo(ws string, n int) (string, error) {
+	if env.gitEnabled {
+		reverted, err := gitops.RevertN(ws, n)
+		if err != nil {
+			return "", err
+		}
+		if len(reverted) == 0 {
+			return "", fmt.Errorf("nothing to undo")
+		}
+		return fmt.Sprintf("reverted %d commit(s): %s", len(reverted), strings.Join(reverted, "; ")), nil
+	}
+	if n <= 1 {
+		entries, err := env.undo.UndoLastTurn()
+		if err != nil {
+			return "", err
+		}
+		var paths []string
+		for _, e := range entries {
+			paths = append(paths, e.Path)
+		}
+		return fmt.Sprintf("reverted %d file(s): %s", len(paths), strings.Join(paths, ", ")), nil
+	}
+	entries, err := env.undo.UndoN(n)
+	if err != nil {
+		return "", err
+	}
+	var paths []string
+	for _, e := range entries {
+		paths = append(paths, e.Path)
+	}
+	return fmt.Sprintf("reverted %d file(s) across %d turn(s): %s", len(paths), n, strings.Join(paths, ", ")), nil
+}
+
+// undoList returns one line per undoable turn (git commits or buffer turns).
+func (env *chatEnv) undoList(ws string) []string {
+	if env.gitEnabled {
+		commits, err := gitops.AgentCommits(ws)
+		if err != nil {
+			return nil
+		}
+		if len(commits) == 0 {
+			return []string{"no yagent commits to undo"}
+		}
+		out := make([]string, 0, len(commits))
+		for i, c := range commits {
+			out = append(out, fmt.Sprintf("commit %d: %s (%s)", i+1, c.Subject, c.Hash))
+		}
+		return out
+	}
+	return env.undo.Turns()
 }
 
 // runGoalMode drives the agent autonomously toward a goal: each round runs the
@@ -738,6 +834,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		forkSource: forkSource, undo: undo.New(), jobs: jobs.New(),
 		summ: summClient,
 	}
+	env.gitEnabled = cfg.AutoCommitGit && gitops.IsRepo(ws)
 	env.registry = tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
 		ProjectVectors:      projVS,
@@ -1085,33 +1182,47 @@ func (h *skillsHandler) pendingIDs(id string) ([]string, error) {
 }
 
 // undoLastTurn reverts the file writes from the most recent completed turn.
+// With git auto-commit it reverts the last agent commit (durable); otherwise
+// it uses the in-memory buffer.
 func (h *skillsHandler) undoLastTurn() (bool, error) {
-	if h.env == nil || h.env.undo == nil || !h.env.undo.CanUndo() {
-		fmt.Fprintln(h.w, "nothing to undo")
-		return true, nil
-	}
-	entries, err := h.env.undo.UndoLastTurn()
-	if err != nil {
-		return true, err
-	}
-	for _, e := range entries {
-		fmt.Fprintf(h.w, "  reverted %s\n", e.Path)
-	}
-	return true, nil
-}
-
-// undoList shows the per-turn undo history (/undo list, proposal #6).
-func (h *skillsHandler) undoList() (bool, error) {
-	if h.env == nil || h.env.undo == nil {
+	if h.env == nil {
 		fmt.Fprintln(h.w, "undo is not available")
 		return true, nil
 	}
-	turns := h.env.undo.Turns()
+	ws, err := os.Getwd()
+	if err != nil {
+		return true, err
+	}
+	msg, err := h.env.maybeUndo(ws, 1)
+	if err != nil {
+		fmt.Fprintln(h.w, err.Error())
+		return true, nil
+	}
+	fmt.Fprintln(h.w, msg)
+	return true, nil
+}
+
+// undoList shows the undo history (/undo list): the agent's git commits when
+// git auto-commit is on, else the in-memory turn buffer.
+func (h *skillsHandler) undoList() (bool, error) {
+	if h.env == nil {
+		fmt.Fprintln(h.w, "undo is not available")
+		return true, nil
+	}
+	ws, err := os.Getwd()
+	if err != nil {
+		return true, err
+	}
+	turns := h.env.undoList(ws)
 	if len(turns) == 0 {
 		fmt.Fprintln(h.w, "no turns to undo")
 		return true, nil
 	}
-	fmt.Fprintln(h.w, "turns (most recent first):")
+	label := "turns"
+	if h.env.gitEnabled {
+		label = "commits"
+	}
+	fmt.Fprintf(h.w, "%s (most recent first):\n", label)
 	for _, t := range turns {
 		fmt.Fprintln(h.w, "  "+t)
 	}
@@ -1125,22 +1236,20 @@ func (h *skillsHandler) undoN(nstr string) (bool, error) {
 	if err != nil || n <= 0 {
 		return true, fmt.Errorf("usage: /undo <N> where N is a positive number of turns (see /undo list)")
 	}
-	if h.env == nil || h.env.undo == nil {
+	if h.env == nil {
 		fmt.Fprintln(h.w, "undo is not available")
 		return true, nil
 	}
-	if !h.env.undo.CanUndo() {
-		fmt.Fprintln(h.w, "nothing to undo")
-		return true, nil
-	}
-	entries, err := h.env.undo.UndoN(n)
+	ws, err := os.Getwd()
 	if err != nil {
 		return true, err
 	}
-	fmt.Fprintf(h.w, "reverted %d turn(s):\n", n)
-	for _, e := range entries {
-		fmt.Fprintf(h.w, "  reverted %s\n", e.Path)
+	msg, err := h.env.maybeUndo(ws, n)
+	if err != nil {
+		fmt.Fprintln(h.w, err.Error())
+		return true, nil
 	}
+	fmt.Fprintln(h.w, msg)
 	return true, nil
 }
 

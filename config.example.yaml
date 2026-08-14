@@ -92,6 +92,12 @@ vram_threshold_tps: 5
 # steps..." narration is fed back until the work is done.
 # codegen: true
 
+# Git auto-commit (aider-style): when the workspace is a git repo, each turn's
+# file changes become a real commit and /undo reverts via git — durable across
+# crashes, unlike the in-memory buffer. Pre-existing dirty files are committed
+# up front so user work is never lost or mixed into agent commits.
+# git_auto_commit: true
+
 consult:                      # the `consult` tool (advisor). Disabled until set.
   # server_url: http://localhost:11434
   # model: qwen2.5-coder:14b
