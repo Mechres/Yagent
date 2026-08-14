@@ -314,7 +314,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			}
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		case "/retry":
 			if lastLine == "" {
@@ -571,7 +571,11 @@ type chatEnv struct {
 	// /undo becomes a git revert (durable, crash-safe). When false, the
 	// in-memory undo buffer is the fallback.
 	gitEnabled bool
-	turnSeq    int
+	// gitBaseline is HEAD after the startup dirty-commit snapshot — the point
+	// the session started from. /diff shows the agent's cumulative changes
+	// against it (the plandex-style review sandbox).
+	gitBaseline string
+	turnSeq     int
 }
 
 // commitDirtyStart commits any pre-existing uncommitted changes up front (aider
@@ -588,6 +592,17 @@ func (env *chatEnv) commitDirtyStart() {
 	if _, err := gitops.CommitDirty(ws, "yagent: snapshot pre-session dirty state"); err != nil {
 		slog.Warn("git auto-commit: could not snapshot dirty state", "error", err)
 	}
+	env.gitBaseline = gitops.Head(ws)
+}
+
+// sessionDiff returns the agent's cumulative changes since the session
+// baseline (git diff of baseline...HEAD), for the /diff review command.
+func (env *chatEnv) sessionDiff() (stat, diff string) {
+	if !env.gitEnabled || env.gitBaseline == "" {
+		return "", ""
+	}
+	ws, _ := os.Getwd()
+	return gitops.DiffStat(ws, env.gitBaseline), gitops.DiffSince(ws, env.gitBaseline)
 }
 
 // commitTurn commits the agent's changes for one completed turn (aider style:
@@ -999,6 +1014,8 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.showModels(rest, ag)
 	case rest == "key" || strings.HasPrefix(rest, "key "):
 		return h.setAPIKey(rest)
+	case rest == "diff" || strings.HasPrefix(rest, "diff "):
+		return h.showDiff(rest)
 	case rest == "undo":
 		return h.undoLastTurn()
 	case rest == "undo list":
@@ -1327,8 +1344,117 @@ func (h *skillsHandler) showSettings() (bool, error) {
 	return true, nil
 }
 
-// setAPIKey stores an API key in the config's api_key field (`/key <value>`),
-// the TUI-free counterpart to the /model selector's inline key entry. `clear`
+// showDiff renders the agent's cumulative changes since the session baseline
+// (the plandex-style review sandbox: see the whole session's work before you
+// keep or discard it). /diff = everything since baseline; /diff <N> = the last
+// N agent commits; /diff discard = revert all of the session's changes.
+func (h *skillsHandler) showDiff(rest string) (bool, error) {
+	if h.env == nil {
+		fmt.Fprintln(h.w, "diff requires a git-backed session (git_auto_commit on in a git repo)")
+		return true, nil
+	}
+	if !h.env.gitEnabled {
+		fmt.Fprintln(h.w, "git auto-commit is off — /diff needs the git layer (set git_auto_commit: true)")
+		return true, nil
+	}
+	parts := strings.Fields(rest)
+	if len(parts) >= 2 && parts[1] == "discard" {
+		ws, err := os.Getwd()
+		if err != nil {
+			return true, err
+		}
+		commits, _ := gitops.AgentCommits(ws)
+		n := len(commits)
+		if n == 0 {
+			fmt.Fprintln(h.w, "nothing to discard")
+			return true, nil
+		}
+		msg, err := h.env.maybeUndo(ws, n)
+		if err != nil {
+			return true, err
+		}
+		fmt.Fprintln(h.w, msg)
+		return true, nil
+	}
+	if len(parts) >= 2 {
+		n, err := strconv.Atoi(parts[1])
+		if err != nil || n <= 0 {
+			return true, fmt.Errorf("usage: /diff [<N>|discard] — the cumulative changes since the session started")
+		}
+		return h.showLastNDiff(n)
+	}
+	stat, diff := h.env.sessionDiff()
+	if stat == "" && diff == "" {
+		fmt.Fprintln(h.w, "no changes yet this session")
+		return true, nil
+	}
+	if stat != "" {
+		fmt.Fprintln(h.w, stat)
+	}
+	fmt.Fprintln(h.w)
+	if diff == "" {
+		fmt.Fprintln(h.w, "(no tracked-file diff — new files only; see git status)")
+		return true, nil
+	}
+	fmt.Fprintln(h.w, renderPlainDiff(diff))
+	return true, nil
+}
+
+// showLastNDiff shows the diff of the last N agent commits.
+func (h *skillsHandler) showLastNDiff(n int) (bool, error) {
+	ws, err := os.Getwd()
+	if err != nil {
+		return true, err
+	}
+	commits, err := gitops.AgentCommits(ws)
+	if err != nil {
+		return true, err
+	}
+	if len(commits) == 0 {
+		fmt.Fprintln(h.w, "no yagent commits to diff")
+		return true, nil
+	}
+	if n > len(commits) {
+		n = len(commits)
+	}
+	// the last N agent commits end at the newest agent commit's parent-boundary;
+	// diff from the commit just before the run to HEAD.
+	oldest := commits[n-1]
+	diff := gitops.DiffSince(ws, oldest.Hash+"^")
+	if diff == "" {
+		fmt.Fprintln(h.w, "(no diff — files added/removed only)")
+		return true, nil
+	}
+	fmt.Fprintln(h.w, renderPlainDiff(diff))
+	return true, nil
+}
+
+// renderPlainDiff colorizes a unified git diff for terminal output (no ANSI on
+// a pipe; keeps the +/- markers visible either way).
+func renderPlainDiff(diff string) string {
+	if diff == "" {
+		return ""
+	}
+	var lines []string
+	for _, ln := range strings.Split(strings.TrimRight(diff, "\n"), "\n") {
+		switch {
+		case strings.HasPrefix(ln, "+++") || strings.HasPrefix(ln, "---") ||
+			strings.HasPrefix(ln, "diff "):
+			lines = append(lines, "\x1b[90m"+ln+"\x1b[0m")
+		case strings.HasPrefix(ln, "@@"):
+			lines = append(lines, "\x1b[36m"+ln+"\x1b[0m")
+		case strings.HasPrefix(ln, "+"):
+			lines = append(lines, "\x1b[32m"+ln+"\x1b[0m")
+		case strings.HasPrefix(ln, "-"):
+			lines = append(lines, "\x1b[31m"+ln+"\x1b[0m")
+		default:
+			lines = append(lines, ln)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// setAPIKey stores an API key in the config's api_key field (`/key <value>`),// the TUI-free counterpart to the /model selector's inline key entry. `clear`
 // empties it (revert to env-var-only keys).
 func (h *skillsHandler) setAPIKey(rest string) (bool, error) {
 	target := h.cfg.Path

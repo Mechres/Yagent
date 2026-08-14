@@ -189,6 +189,28 @@ func DiffSince(ws, ref string) string {
 	return out
 }
 
+// Head returns the short hash of the current HEAD, or "" when not a repo.
+func Head(ws string) string {
+	out, err := run(ws, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// DiffStat returns a compact one-line-per-file summary of the diff between the
+// given ref and HEAD (what changed, how many lines), or "" when identical.
+func DiffStat(ws, ref string) string {
+	if ref == "" {
+		return ""
+	}
+	out, err := run(ws, "diff", "--stat", ref+"...HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
 func run(ws string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = ws

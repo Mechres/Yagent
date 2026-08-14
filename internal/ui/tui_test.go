@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -1413,5 +1414,38 @@ func TestModelKeyEntryViewRenders(t *testing.T) {
 	v := m.modelView()
 	if !strings.Contains(v, "API key for") || !strings.Contains(v, "OPENCODE_ZEN_API_KEY") {
 		t.Errorf("key-entry view missing prompt: %q", v)
+	}
+}
+
+func TestDiffModalOpenAndRender(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{ServerURL: "http://x", Model: "m", ContextWindow: 16384}
+	// a git-backed env with a session baseline
+	ws := t.TempDir()
+	gitInit(t, ws)
+	m.env.gitEnabled = true
+	m.env.gitBaseline = "HEAD"
+	m.workspace = ws
+	m.openDiffModal()
+	if !m.diffOpen {
+		t.Fatal("diff modal did not open")
+	}
+	v := m.diffView()
+	if !strings.Contains(v, "Session diff") {
+		t.Errorf("diffView = %q", v)
+	}
+	// esc closes
+	m.handleDiffKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.diffOpen {
+		t.Error("esc did not close diff modal")
+	}
+}
+
+func gitInit(t *testing.T, ws string) {
+	t.Helper()
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = ws
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
 	}
 }

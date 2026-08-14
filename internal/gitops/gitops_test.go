@@ -173,3 +173,28 @@ func TestChangedFiles(t *testing.T) {
 		t.Errorf("ChangedFiles = %v", files)
 	}
 }
+
+func TestHeadAndDiffSince(t *testing.T) {
+	ws := setupRepo(t)
+	baseline := Head(ws)
+	if baseline == "" {
+		t.Fatal("empty HEAD in a repo")
+	}
+	// no changes yet -> empty diff/stat
+	if stat := DiffStat(ws, baseline); stat != "" {
+		t.Errorf("DiffStat on clean = %q", stat)
+	}
+	// make a change and commit it as agent work
+	write(t, ws, "base.txt", "base\n+ new line\n")
+	if _, err := AgentCommit(ws, "edit base"); err != nil {
+		t.Fatal(err)
+	}
+	stat := DiffStat(ws, baseline)
+	if !strings.Contains(stat, "base.txt") {
+		t.Errorf("DiffStat missing base.txt: %q", stat)
+	}
+	diff := DiffSince(ws, baseline)
+	if !strings.Contains(diff, "+ new line") {
+		t.Errorf("DiffSince missing the added line: %q", diff)
+	}
+}

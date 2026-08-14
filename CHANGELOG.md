@@ -2,6 +2,20 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.72 — 2026-08-15
+
+### Added
+- **Cumulative diff sandbox** (borrowed from plandex) — `/diff` shows the
+  agent's cumulative changes against the session baseline, layered on the
+  v0.1.71 git commits:
+  - `/diff` (REPL + TUI): a compact `git diff --stat` plus the colorized
+    unified diff since `gitBaseline` (HEAD captured after the startup
+    dirty-commit snapshot).
+  - TUI `/diff` opens a scrollable modal (`↑/↓`, `d` to discard, `esc`).
+  - `/diff <N>` shows the last N agent commits; `/diff discard` reverts the
+    whole session — the "review before you keep" workflow.
+- `gitops.Head` / `DiffStat` / `DiffSince` back the view.
+
 ## v0.1.71 — 2026-08-15
 
 ### Added

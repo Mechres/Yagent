@@ -23,6 +23,7 @@ import (
 	"github.com/Mechres/Yagent/internal/agent"
 	"github.com/Mechres/Yagent/internal/checkpoint"
 	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/gitops"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
 	"github.com/Mechres/Yagent/internal/skills"
@@ -348,6 +349,12 @@ type tuiModel struct {
 	// (the selected cloud provider has none configured).
 	modelKeyEntry bool
 	modelKeyInput textinput.Model
+
+	// /diff review modal (cumulative session diff vs baseline).
+	diffOpen   bool
+	diffText   string
+	diffScroll int
+	diffStat   string
 
 	sessionsOpen    bool
 	sessionsIdx     int
@@ -872,6 +879,87 @@ func (m *tuiModel) applyModelSelection() {
 	m.swapRuntime(client, ag)
 }
 
+// openDiffModal opens the /diff review view: the agent's cumulative changes
+// since the session baseline (git), colorized and scrollable.
+func (m *tuiModel) openDiffModal() {
+	if !m.env.gitEnabled {
+		m.append("/diff needs the git layer — set git_auto_commit: true in a git repo")
+		return
+	}
+	stat, diff := m.env.sessionDiff()
+	m.diffStat = stat
+	m.diffText = diff
+	m.diffScroll = 0
+	m.diffOpen = true
+}
+
+// handleDiffKey scrolls the diff modal and offers discard.
+func (m *tuiModel) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.diffOpen = false
+		return m, nil
+	case "up":
+		if m.diffScroll > 0 {
+			m.diffScroll--
+		}
+		return m, nil
+	case "down":
+		m.diffScroll++
+		return m, nil
+	case "d", "D":
+		// discard all session changes via git undo
+		ws, _ := os.Getwd()
+		commits, _ := gitops.AgentCommits(ws)
+		if len(commits) == 0 {
+			m.append("nothing to discard")
+			return m, nil
+		}
+		msg2, err := m.env.maybeUndo(ws, len(commits))
+		if err != nil {
+			m.append("error: " + err.Error())
+			return m, nil
+		}
+		m.append(msg2)
+		m.diffOpen = false
+		return m, nil
+	}
+	return m, nil
+}
+
+// diffView renders the /diff modal: a stat header plus the colorized diff,
+// scrolled to diffScroll.
+func (m *tuiModel) diffView() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
+		Render(iconGear + " Session diff (vs baseline)")
+	var body string
+	if m.diffStat != "" {
+		body += lipgloss.NewStyle().Foreground(m.th.Secondary).Render(m.diffStat) + "\n\n"
+	}
+	if m.diffText == "" {
+		body += "(no tracked changes yet this session)"
+	} else {
+		lines := strings.Split(renderPatchPreview(m.th, m.diffText), "\n")
+		if m.diffScroll > len(lines) {
+			m.diffScroll = len(lines)
+		}
+		view := lines
+		if m.diffScroll > 0 {
+			if m.diffScroll < len(lines) {
+				view = lines[m.diffScroll:]
+			} else {
+				view = nil
+			}
+		}
+		body += strings.Join(view, "\n")
+	}
+	hint := lipgloss.NewStyle().Foreground(m.th.Muted).
+		Render("↑/↓ scroll   ·   d discard session changes   ·   esc close")
+	page := title + "\n\n" + body + "\n\n" + hint
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.th.Primary).Padding(0, 1).Render(page)
+}
+
 func indexOf(list []string, value string) int {
 	for i, v := range list {
 		if v == value {
@@ -1028,6 +1116,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.modelOpen {
 			return m.handleModelKey(msg)
+		}
+		if m.diffOpen {
+			return m.handleDiffKey(msg)
 		}
 		if m.hunkOpen {
 			return m.handleHunkKey(msg)
@@ -1374,6 +1465,10 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	case "/model":
 		m.msgInput.Reset()
 		return m.openModelSelector()
+	case "/diff":
+		m.msgInput.Reset()
+		m.openDiffModal()
+		return m, nil
 	case "/key":
 		m.msgInput.Reset()
 		m.openKeyEntry()
@@ -2561,7 +2656,7 @@ func (m *tuiModel) thinkingBlock() string {
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
 		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/model", "/key",
-		"/undo", "/undo list", "/undo <N>", "/sessions", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
+		"/undo", "/undo list", "/undo <N>", "/diff", "/sessions", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
 		"/playbook", "/mouse",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
@@ -2650,6 +2745,9 @@ func (m *tuiModel) View() string {
 	}
 	if m.modelOpen {
 		out = overlayModal(m.th, m.modelView(), m.width, m.height)
+	}
+	if m.diffOpen {
+		out = overlayModal(m.th, m.diffView(), m.width, m.height)
 	}
 	if m.sessionsOpen {
 		out = overlayModal(m.th, m.sessionsView(), m.width, m.height)
