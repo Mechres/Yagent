@@ -101,3 +101,17 @@ consult:                      # the `consult` tool (advisor). Disabled until set
 # summarizer:                  # offload history condensation (budget + /compact)
 #   server_url: http://laptop:11434   # to a second machine/model (e.g. a laptop).
 #   model: qwen3:4b                   # Default (unset): the main model summarizes.
+
+# Provider/model catalog for the TUI /model selector and REPL /model command.
+# Built-in entries: Local llama.cpp :8089, Local Ollama :11434, DeepSeek,
+# OpenRouter, Groq, Together, Mistral. Selecting a cloud provider persists
+# server_url + model and reads the key from the env var listed below (or the
+# configured api_key) — the key is never written to this file.
+#
+# DeepSeek:       DEEPSEEK_API_KEY        https://api.deepseek.com
+# OpenRouter:     OPENROUTER_API_KEY      https://openrouter.ai/api
+# Groq:           GROQ_API_KEY            https://api.groq.com/openai
+# Together:       TOGETHER_API_KEY        https://api.together.xyz/v1
+# Mistral:        MISTRAL_API_KEY         https://api.mistral.ai/v1
+#
+# Equivalent CLI: yagent chat --plain  then  /model 2 deepseek-chat

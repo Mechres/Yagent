@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -73,6 +75,12 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		func(delta string) { send(reasoningMsg{delta: delta}) },
 		func(call llm.ToolCall) { send(toolMsg{call: call}) },
 		opts.Trace)
+	m := tuiModel{
+		cfg: cfg, env: env, ag: ag, client: client,
+		incoming: incoming, inputCh: inputCh,
+		runnerCtx: runnerCtx, runnerCancel: runnerCancel, runnerDone: runnerDone,
+		msgInput: newInput(), yoloToggler: ap, trace: opts.Trace,
+	}
 	// The clarify/plan tools route through the TUI modal: block on the user's
 	// answer and hand it back to the agent as tool data.
 	env.registry.SetAskUser(func(ctx context.Context, question string, choices []string) (string, error) {
@@ -93,35 +101,32 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	startBackgroundIndex(runnerCtx, env, func(line string) { send(progressMsg{text: line}) })
 
 	// Agent runner: one turn per input line; on cancel, wraps up the session.
+	// Reads the live client/agent through the model so a /model provider switch
+	// swaps the runtime without restarting the loop.
 	go func() {
 		defer close(runnerDone)
 		for {
 			select {
 			case <-runnerCtx.Done():
 				wrapCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				ag := m.currentAgent()
 				if err := ag.Finish(wrapCtx); err != nil {
 					slog.Warn("session-end skill review", "error", err)
 				}
-				if err := memory.SummarizeSession(wrapCtx, client, env.st, env.vs, env.sessionID); err != nil {
+				if err := memory.SummarizeSession(wrapCtx, m.currentClient(), env.st, env.vs, env.sessionID); err != nil {
 					slog.Warn("session summary", "error", err)
 				}
 				cancel()
 				return
 			case req := <-inputCh:
 				env.undo.StartTurn()
-				answer, err := ag.Run(req.ctx, req.text)
+				answer, err := m.currentAgent().Run(req.ctx, req.text)
 				env.undo.EndTurn()
 				incoming <- turnDoneMsg{answer: answer, err: err, seq: req.seq}
 			}
 		}
 	}()
 
-	m := tuiModel{
-		cfg: cfg, env: env, ag: ag, client: client,
-		incoming: incoming, inputCh: inputCh,
-		runnerCtx: runnerCtx, runnerCancel: runnerCancel, runnerDone: runnerDone,
-		msgInput: newInput(), yoloToggler: ap,
-	}
 	if ws, err := os.Getwd(); err == nil {
 		m.workspace = ws
 	}
@@ -161,6 +166,29 @@ type turnDoneMsg struct {
 	answer string
 	err    error
 	seq    int // turn sequence; stale messages from a cancelled turn are ignored
+}
+
+// currentClient returns the live LLM client (safe during a running turn).
+func (m *tuiModel) currentClient() *llm.Client {
+	m.runtimeMu.RLock()
+	defer m.runtimeMu.RUnlock()
+	return m.client
+}
+
+// currentAgent returns the live agent (safe during a running turn).
+func (m *tuiModel) currentAgent() *agent.Agent {
+	m.runtimeMu.RLock()
+	defer m.runtimeMu.RUnlock()
+	return m.ag
+}
+
+// swapRuntime replaces the client+agent after a provider/model switch. Only
+// called when no turn is running (the /model command refuses while busy).
+func (m *tuiModel) swapRuntime(client *llm.Client, ag *agent.Agent) {
+	m.runtimeMu.Lock()
+	m.client = client
+	m.ag = ag
+	m.runtimeMu.Unlock()
 }
 
 // turnRequest carries one submitted turn plus its own context, so the model can
@@ -218,6 +246,11 @@ type tuiModel struct {
 	client      *llm.Client
 	workspace   string
 	yoloToggler *toggleableApprover
+	trace       io.Writer
+
+	// runtimeMu guards client/ag so a provider switch (/model) can swap them
+	// live without racing the running turn's reader.
+	runtimeMu sync.RWMutex
 
 	incoming     chan tea.Msg
 	inputCh      chan turnRequest
@@ -287,6 +320,13 @@ type tuiModel struct {
 	editInput    textinput.Model
 	choosing     bool
 	choosingIdx  int
+
+	// /model provider selector: two panes (provider | model), index tracked.
+	modelOpen     bool
+	modelProvider int  // index into config.Providers
+	modelModelIdx int  // index into the selected provider's Models
+	modelOnModels bool // true = the model pane is active
+	modelConfirm  bool
 
 	sessionsOpen    bool
 	sessionsIdx     int
@@ -598,6 +638,115 @@ func (m *tuiModel) applyThemeLive(key, value string) {
 	}
 }
 
+// openModelSelector initializes the /model two-pane picker. It refuses while a
+// turn is running (the swap must not race the runner).
+func (m *tuiModel) openModelSelector() {
+	if m.busy {
+		m.append("cannot switch model while a turn is running (wait for it to finish)")
+		return
+	}
+	m.modelOpen = true
+	m.modelProvider = 0
+	m.modelModelIdx = 0
+	m.modelOnModels = false
+	m.modelConfirm = false
+	// pre-select the current provider if its base URL matches
+	for i, p := range config.Providers {
+		if p.BaseURL == m.cfg.ServerURL {
+			m.modelProvider = i
+			if idx := indexOf(p.Models, m.cfg.Model); idx >= 0 {
+				m.modelModelIdx = idx
+			}
+			break
+		}
+	}
+}
+
+// handleModelKey drives the /model picker: tab toggles the active pane,
+// left/right move within a pane, enter confirms (applies + rebuilds the
+// runtime), esc closes. modelOnModels selects the model pane.
+func (m *tuiModel) handleModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.modelConfirm {
+		switch msg.String() {
+		case "y", "enter":
+			m.modelConfirm = false
+			m.modelOpen = false
+			m.applyModelSelection()
+		case "n", "esc":
+			m.modelConfirm = false
+		}
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q":
+		m.modelOpen = false
+		return m, nil
+	case "tab":
+		m.modelOnModels = !m.modelOnModels
+		return m, nil
+	case "left", "right":
+		if !m.modelOnModels {
+			n := len(config.Providers)
+			if msg.String() == "left" {
+				m.modelProvider = (m.modelProvider + n - 1) % n
+			} else {
+				m.modelProvider = (m.modelProvider + 1) % n
+			}
+			m.modelModelIdx = 0
+		} else {
+			prov := config.Providers[m.modelProvider]
+			if len(prov.Models) > 0 {
+				if msg.String() == "left" {
+					m.modelModelIdx = (m.modelModelIdx + len(prov.Models) - 1) % len(prov.Models)
+				} else {
+					m.modelModelIdx = (m.modelModelIdx + 1) % len(prov.Models)
+				}
+			}
+		}
+		return m, nil
+	case "enter":
+		if !m.modelOnModels {
+			m.modelOnModels = true
+		} else {
+			m.modelConfirm = true
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// applyModelSelection persists the chosen provider/model and rebuilds the
+// client + agent so the next turn uses the new endpoint.
+func (m *tuiModel) applyModelSelection() {
+	prov := config.Providers[m.modelProvider]
+	model := ""
+	if m.modelModelIdx >= 0 && m.modelModelIdx < len(prov.Models) {
+		model = prov.Models[m.modelModelIdx]
+	}
+	key := m.cfg.KeyFor(prov)
+	if err := config.SetProvider(m.cfg.Path, prov, model, key); err != nil {
+		m.append("  error: " + err.Error())
+		return
+	}
+	applied := m.cfg.SelectProvider(prov, model)
+	m.append(fmt.Sprintf("  switched to %s / %s (%s)", prov.Name, model, prov.BaseURL))
+
+	// Rebuild the runtime: fresh client + agent over the same session.
+	client := newLLMClient(m.cfg)
+	if applied != "" {
+		client.BearerToken = applied
+	}
+	ag := newAgent(client, m.cfg, m.env, m.yoloToggler,
+		func(delta string) { m.incoming <- tokenMsg{delta: delta} },
+		func(delta string) { m.incoming <- reasoningMsg{delta: delta} },
+		func(call llm.ToolCall) { m.incoming <- toolMsg{call: call} },
+		m.trace)
+	// carry the conversation context into the new agent
+	ag.LoadSession(m.ag.History(), m.ag.RunningSummary())
+	ag.SetSessionID(m.env.sessionID)
+	m.swapRuntime(client, ag)
+}
+
 func indexOf(list []string, value string) int {
 	for i, v := range list {
 		if v == value {
@@ -751,6 +900,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.settingsOpen {
 			return m.handleSettingsKey(msg)
+		}
+		if m.modelOpen {
+			return m.handleModelKey(msg)
 		}
 		if m.hunkOpen {
 			return m.handleHunkKey(msg)
@@ -1082,6 +1234,10 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		m.settingsOpen = true
 		m.settingsIdx = 0
 		m.editing = false
+		return m, nil
+	case "/model":
+		m.msgInput.Reset()
+		m.openModelSelector()
 		return m, nil
 	case "/sessions":
 		m.msgInput.Reset()
@@ -1539,6 +1695,7 @@ func (m *tuiModel) helpView() string {
 	col2 := []string{
 		secStyle.Render("Slash Commands"),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/settings"), descStyle.Render("Interactive config editor")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/model"), descStyle.Render("Switch provider/model (local or cloud)")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/sessions"), descStyle.Render("Session browser (resume/fork)")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/checkpoint"), descStyle.Render("Workspace snapshots")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/playbook"), descStyle.Render("Declarative workflows")),
@@ -1839,6 +1996,72 @@ func (m *tuiModel) settingsView() string {
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(m.th.Primary).
 		Padding(0, 1).Render(page)
+}
+
+// modelView renders the /model provider selector: two side-by-side panes
+// (providers | models). The active pane is highlighted; confirm shows the
+// chosen endpoint before applying.
+func (m *tuiModel) modelView() string {
+	marker := lipgloss.NewStyle().Foreground(m.th.Primary).Render("▸")
+	provStyle := lipgloss.NewStyle().Foreground(m.th.Foreground)
+	modelStyle := lipgloss.NewStyle().Foreground(m.th.Foreground)
+	activeStyle := lipgloss.NewStyle().Background(m.th.Surface).Bold(true).Foreground(m.th.Foreground)
+
+	// provider pane
+	var provRows []string
+	for i, p := range config.Providers {
+		row := p.Name
+		if i == m.modelProvider && !m.modelOnModels {
+			provRows = append(provRows, marker+" "+activeStyle.Render(row))
+		} else if i == m.modelProvider {
+			provRows = append(provRows, marker+" "+provStyle.Render(row))
+		} else {
+			provRows = append(provRows, "  "+provStyle.Render(row))
+		}
+	}
+	provPane := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.th.Primary).Padding(0, 1).Render(
+		lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).Render("Provider") + "\n\n" +
+			strings.Join(provRows, "\n"))
+
+	// model pane
+	prov := config.Providers[m.modelProvider]
+	var modelRows []string
+	if len(prov.Models) == 0 {
+		modelRows = append(modelRows, "  (free-text: set model in /settings)")
+	}
+	for i, mo := range prov.Models {
+		row := mo
+		if i == m.modelModelIdx && m.modelOnModels {
+			modelRows = append(modelRows, marker+" "+activeStyle.Render(row))
+		} else if i == m.modelModelIdx {
+			modelRows = append(modelRows, marker+" "+modelStyle.Render(row))
+		} else {
+			modelRows = append(modelRows, "  "+modelStyle.Render(row))
+		}
+	}
+	modelPane := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.th.Primary).Padding(0, 1).Render(
+		lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).Render("Model") + "\n\n" +
+			strings.Join(modelRows, "\n"))
+
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).Render(iconGear + " Model provider")
+	hint := lipgloss.NewStyle().Foreground(m.th.Muted).
+		Render("tab switch pane   ·   ←/→ choose   ·   enter select   ·   esc close")
+	page := title + "\n\n" + lipgloss.JoinHorizontal(lipgloss.Top, provPane, modelPane) + "\n\n" + hint
+
+	if m.modelConfirm {
+		key := m.cfg.KeyFor(prov)
+		auth := "no key"
+		if key != "" {
+			auth = "key from config/env"
+		}
+		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
+			Render(fmt.Sprintf("switch to %s / %s at %s (%s)?", prov.Name, prov.Models[m.modelModelIdx], prov.BaseURL, auth)) +
+			"  " + lipgloss.NewStyle().Foreground(m.th.Muted).Render("y = apply, n = cancel")
+	}
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.th.Primary).Padding(0, 1).Render(page)
 }
 
 // loadHistoryIntoTranscript renders a loaded session's past messages into the
@@ -2166,7 +2389,7 @@ func (m *tuiModel) thinkingBlock() string {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>",
+		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/model",
 		"/undo", "/undo list", "/undo <N>", "/sessions", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
 		"/playbook", "/mouse",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
@@ -2253,6 +2476,9 @@ func (m *tuiModel) View() string {
 	out += m.statusView()
 	if m.settingsOpen {
 		out = overlayModal(m.th, m.settingsView(), m.width, m.height)
+	}
+	if m.modelOpen {
+		out = overlayModal(m.th, m.modelView(), m.width, m.height)
 	}
 	if m.sessionsOpen {
 		out = overlayModal(m.th, m.sessionsView(), m.width, m.height)

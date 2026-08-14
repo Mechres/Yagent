@@ -71,6 +71,108 @@ type Config struct {
 	ProjectPath string `yaml:"-"`
 }
 
+// Provider is one entry in the built-in provider catalog (`/model` selector):
+// a named OpenAI-compatible endpoint plus the models it serves. Selecting a
+// provider persists server_url/model/api_key and rebuilds the client — the
+// opt-in cloud path, with the local server always the default.
+type Provider struct {
+	// Name is the display label, e.g. "DeepSeek" or "OpenRouter".
+	Name string
+	// BaseURL is the OpenAI-compatible endpoint root (no /v1 suffix).
+	BaseURL string
+	// KeyEnv is the environment variable holding the API key (empty = no key).
+	KeyEnv string
+	// Models are the selectable model names for this provider.
+	Models []string
+}
+
+// Providers is the built-in catalog for the `/model` selector. Local is always
+// first and default. Cloud keys are read from the env var when the user selects
+// a cloud provider, or from the configured api_key if already set — never
+// stored in the config file.
+var Providers = []Provider{
+	{
+		Name:    "Local (llama.cpp :8089)",
+		BaseURL: "http://localhost:8089",
+		Models: []string{
+			"Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+			"Ornith-1.0-9B",
+		},
+	},
+	{
+		Name:    "Local (Ollama :11434)",
+		BaseURL: "http://localhost:11434",
+		Models:  []string{"qwen3:8b", "qwen2.5-coder:7b", "nomic-embed-text"},
+	},
+	{
+		Name:    "DeepSeek",
+		BaseURL: "https://api.deepseek.com",
+		KeyEnv:  "DEEPSEEK_API_KEY",
+		Models:  []string{"deepseek-chat", "deepseek-reasoner"},
+	},
+	{
+		Name:    "OpenRouter",
+		BaseURL: "https://openrouter.ai/api",
+		KeyEnv:  "OPENROUTER_API_KEY",
+		Models: []string{
+			"deepseek/deepseek-chat",
+			"anthropic/claude-3.5-sonnet",
+			"openai/gpt-4o",
+			"google/gemini-2.0-flash-001",
+			"qwen/qwen2.5-coder-32b-instruct",
+		},
+	},
+	{
+		Name:    "Groq",
+		BaseURL: "https://api.groq.com/openai",
+		KeyEnv:  "GROQ_API_KEY",
+		Models:  []string{"llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"},
+	},
+	{
+		Name:    "Together",
+		BaseURL: "https://api.together.xyz/v1",
+		KeyEnv:  "TOGETHER_API_KEY",
+		Models:  []string{"deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-Coder-32B-Instruct"},
+	},
+	{
+		Name:    "Mistral",
+		BaseURL: "https://api.mistral.ai/v1",
+		KeyEnv:  "MISTRAL_API_KEY",
+		Models:  []string{"open-mistral-nemo", "codestral-latest"},
+	},
+}
+
+// ProviderNames returns the display labels in catalog order.
+func ProviderNames() []string {
+	out := make([]string, len(Providers))
+	for i, p := range Providers {
+		out[i] = p.Name
+	}
+	return out
+}
+
+// ProviderByName finds a catalog entry by display name ("" when unknown).
+func ProviderByName(name string) (Provider, bool) {
+	for _, p := range Providers {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return Provider{}, false
+}
+
+// KeyFor returns the API key to use for a provider: the already-configured
+// api_key first, else the provider's environment variable, else "".
+func (c *Config) KeyFor(p Provider) string {
+	if c.APIKey != "" {
+		return c.APIKey
+	}
+	if p.KeyEnv != "" {
+		return os.Getenv(p.KeyEnv)
+	}
+	return ""
+}
+
 // SkillsConfig configures procedural memory (M3.5).
 type SkillsConfig struct {
 	// WriteApproval gates skill writes: when true every skill_manage write is
@@ -419,6 +521,37 @@ func ProjectConfigPath() string {
 // SetWriteApproval persists skills.write_approval to the config file at path.
 func SetWriteApproval(path string, on bool) error {
 	return Set(path, "skills.write_approval", strconv.FormatBool(on))
+}
+
+// SetProvider persists a provider selection (server_url + model + api_key) to
+// the config file at path, atomically in catalog order. api_key may be empty
+// (local provider, or a cloud key read from the environment rather than
+// stored). Applying three Set calls is fine: each is independent and validated.
+func SetProvider(path string, p Provider, model, apiKey string) error {
+	if err := Set(path, "server_url", p.BaseURL); err != nil {
+		return err
+	}
+	if model != "" {
+		if err := Set(path, "model", model); err != nil {
+			return err
+		}
+	}
+	if apiKey != "" {
+		return Set(path, "api_key", apiKey)
+	}
+	return nil
+}
+
+// SelectProvider applies a catalog selection to the config in memory and
+// returns the api key to use (from config or the provider's env var). It does
+// not persist — callers persist via SetProvider or the generic Set calls.
+func (c *Config) SelectProvider(p Provider, model string) string {
+	c.ServerURL = p.BaseURL
+	if model != "" {
+		c.Model = model
+	}
+	c.APIKey = c.KeyFor(p)
+	return c.APIKey
 }
 
 // SettingKey is a dotted config key; Settings lists them for the /settings UI.

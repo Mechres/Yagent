@@ -2,6 +2,24 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.66 — 2026-08-14
+
+### Added
+- **Provider/model selector** — the TUI gained `/model`, a two-pane modal
+  (provider | model) over a built-in catalog (`config.Providers`: Local
+  llama.cpp :8089, Local Ollama :11434, DeepSeek, OpenRouter, Groq, Together,
+  Mistral). Selecting persists `server_url` + `model` (+ `api_key` when one is
+  configured) via `config.SetProvider` and **rebuilds the client + agent live**
+  — the runner now reads the runtime under a mutex (`swapRuntime`), so no
+  restart is needed and the session history/summary are carried into the new
+  agent. Cloud keys come from the env var listed on each provider
+  (`DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, …) or the configured `api_key` —
+  **never written to the config file**. Local stays the default and first.
+- **REPL `/model`** — `--plain` mode lists the catalog and
+  `/model <n> [model]` switches provider (applies next session, since the REPL
+  loop holds the client directly; the TUI applies live).
+- config.example.yaml documents the catalog and its env-var keys.
+
 ## v0.1.65 — 2026-08-14
 
 ### Added

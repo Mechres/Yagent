@@ -562,6 +562,14 @@ func (a *Agent) LoadSession(history []llm.Message, summary string) {
 	a.totalToolCalls = 0
 }
 
+// RunningSummary returns the current running summary (used by the /model
+// provider switch to carry context into the rebuilt agent).
+func (a *Agent) RunningSummary() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.runningSummary
+}
+
 // SetRegistry swaps the tool registry (used by playbooks to scope each phase's
 // tools, P8). Call it between turns, never while a turn is dispatching.
 func (a *Agent) SetRegistry(reg *tools.Registry) {

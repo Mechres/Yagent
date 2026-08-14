@@ -351,15 +351,16 @@ func TestThemeByName(t *testing.T) {
 func TestThemeRendersDistinctPalettes(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.ANSI256) })
-	base := testModel(t)
-	base.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
-	base.cfg = &config.Config{Model: "m"}
-	base.width, base.height = 100, 30
-	base.branch = "main"
-
 	seen := map[string]string{}
 	for _, name := range config.ThemeOptions {
-		m := *base
+		// tuiModel now embeds a sync.RWMutex (runtime swap guard), so it must
+		// not be copied by value — build a fresh model with just the header
+		// fields and the theme under test.
+		m := testModel(t)
+		m.ag = agent.New(stubChatLLM{}, tools.NewRegistry(t.TempDir(), tools.Options{}), nil, agent.Config{MaxIterations: 1}, t.TempDir())
+		m.cfg = &config.Config{Model: "m"}
+		m.width, m.height = 100, 30
+		m.branch = "main"
 		m.th = themeByName(name)
 		// extract the primary RGB from the rendered header (first color sequence)
 		out := m.headerView()
@@ -1297,5 +1298,62 @@ func TestLCSDiffHunks(t *testing.T) {
 	// should contain surrounding context lines (line 3, line 4, line 6, line 7)
 	if !strings.Contains(diff, "line 3") || !strings.Contains(diff, "line 7") {
 		t.Errorf("diff missing context lines: %q", diff)
+	}
+}
+
+func TestModelSelectorOpenAndNavigate(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{
+		ServerURL: "http://localhost:8089", Model: "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+		ContextWindow: 16384, Path: filepath.Join(t.TempDir(), "config.yaml"),
+	}
+	m.busy = false
+	m.msgInput.SetValue("/model")
+	if _, err := m.submitLine(); err != nil {
+		t.Fatal(err)
+	}
+	if !m.modelOpen {
+		t.Fatal("/model did not open the selector")
+	}
+	// starts on the provider pane, pre-selected to the matching local provider
+	if m.modelProvider != 0 || m.modelOnModels {
+		t.Errorf("initial state: provider=%d onModels=%v", m.modelProvider, m.modelOnModels)
+	}
+	// navigate to the DeepSeek provider (index 2 in the catalog)
+	for i := 0; i < 2; i++ {
+		m.handleModelKey(tea.KeyMsg{Type: tea.KeyRight})
+	}
+	if m.modelProvider != 2 {
+		t.Errorf("provider = %d, want 2 (DeepSeek)", m.modelProvider)
+	}
+	// enter moves to the model pane
+	m.handleModelKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.modelOnModels {
+		t.Fatal("enter did not move to the model pane")
+	}
+	// right cycles the model list
+	m.handleModelKey(tea.KeyMsg{Type: tea.KeyRight})
+	if m.modelModelIdx != 1 {
+		t.Errorf("modelIdx = %d, want 1 (deepseek-reasoner)", m.modelModelIdx)
+	}
+	// esc closes without applying
+	m.handleModelKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.modelOpen {
+		t.Error("esc did not close the selector")
+	}
+	// the view renders both panes
+	m.modelOpen = true
+	v := m.modelView()
+	if !strings.Contains(v, "Provider") || !strings.Contains(v, "Model") || !strings.Contains(v, "DeepSeek") {
+		t.Errorf("modelView = %q", v)
+	}
+}
+
+func TestModelSelectorRefusesWhileBusy(t *testing.T) {
+	m := testModel(t)
+	m.busy = true
+	m.openModelSelector()
+	if m.modelOpen {
+		t.Error("selector opened while a turn was running")
 	}
 }

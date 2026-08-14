@@ -309,7 +309,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			}
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		case "/retry":
 			if lastLine == "" {
@@ -755,6 +755,23 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 	return env, nil
 }
 
+// newLLMClient builds an OpenAI-compatible client from the (possibly just
+// provider-switched) config, mirroring cmd/yagent's chat flag wiring. Shared by
+// startup and the /model runtime swap.
+func newLLMClient(cfg *config.Config) *llm.Client {
+	client := llm.NewClient(cfg.ServerURL, cfg.Model)
+	client.BearerToken = cfg.APIKey
+	client.Sampling = llm.Sampling{
+		Temperature:        cfg.Sampling.Temperature,
+		TopP:               cfg.Sampling.TopP,
+		TopK:               cfg.Sampling.TopK,
+		RepetitionPenalty:  cfg.Sampling.RepetitionPenalty,
+		MinP:               cfg.Sampling.MinP,
+		ReasoningMaxTokens: cfg.Sampling.ReasoningMaxTokens,
+	}
+	return client
+}
+
 // newAgent builds the agent loop over a chatEnv. trace, when non-nil, receives
 // the per-context prompt dump (B2); the client is also wired as the token
 // counter so the context gauge uses the server tokenizer when available (C1).
@@ -881,6 +898,8 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 			return h.showSettings()
 		}
 		return h.setSetting(rest)
+	case rest == "model" || strings.HasPrefix(rest, "model "):
+		return h.showModels(rest, ag)
 	case rest == "undo":
 		return h.undoLastTurn()
 	case rest == "undo list":
@@ -1194,6 +1213,52 @@ func (h *skillsHandler) showSettings() (bool, error) {
 		fmt.Fprintf(h.w, "project config: %s (overrides global)\n", h.cfg.ProjectPath)
 	}
 	fmt.Fprintf(h.w, "edit with: /set <key> <value>  (most keys take effect on the next chat session)\n")
+	return true, nil
+}
+
+// showModels lists the built-in provider catalog and applies a selection. In
+// the plain REPL the agent loop holds the client, so switching provider/model
+// takes effect on the next chat session (the TUI /model selector applies live).
+func (h *skillsHandler) showModels(rest string, ag *agent.Agent) (bool, error) {
+	if rest == "model" {
+		fmt.Fprintln(h.w, "providers:")
+		for i, p := range config.Providers {
+			mark := "  "
+			if p.BaseURL == h.cfg.ServerURL {
+				mark = "▸ "
+			}
+			fmt.Fprintf(h.w, "%s[%d] %s  (%s)\n", mark, i, p.Name, p.BaseURL)
+		}
+		fmt.Fprintln(h.w, "usage: /model <provider-number> [model]  — e.g. /model 2 deepseek-chat")
+		fmt.Fprintln(h.w, "provider keys come from the env (DEEPSEEK_API_KEY, OPENROUTER_API_KEY, …) or api_key; never stored in config")
+		fmt.Fprintln(h.w, "applies on the next chat session (use the TUI /model selector to switch live)")
+		return true, nil
+	}
+	parts := strings.Fields(rest)
+	if len(parts) < 2 {
+		return true, fmt.Errorf("usage: /model <provider-number> [model]")
+	}
+	idx, err := strconv.Atoi(parts[1])
+	if err != nil || idx < 0 || idx >= len(config.Providers) {
+		return true, fmt.Errorf("unknown provider %q (see /model for the list)", parts[1])
+	}
+	prov := config.Providers[idx]
+	model := ""
+	if len(parts) > 2 {
+		model = parts[2]
+	} else if len(prov.Models) > 0 {
+		model = prov.Models[0]
+	}
+	target := h.cfg.Path
+	if h.cfg.ProjectPath != "" {
+		target = h.cfg.ProjectPath
+	}
+	key := h.cfg.KeyFor(prov)
+	if err := config.SetProvider(target, prov, model, key); err != nil {
+		return true, err
+	}
+	h.cfg.SelectProvider(prov, model)
+	fmt.Fprintf(h.w, "switched to %s / %s (%s) — applies next session\n", prov.Name, model, prov.BaseURL)
 	return true, nil
 }
 
