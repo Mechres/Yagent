@@ -157,6 +157,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"grep":                  &grepTool{ws: r.workspace},
 		"workspace_diagnostics": &diagnosticsTool{ws: r.workspace},
 		"test_runner":           &testRunnerTool{ws: r.workspace},
+		"runtime_smoke":         &smokeTool{ws: r.workspace},
 		"code_environment":      &environmentTool{ws: r.workspace},
 		"shell_exec":            &shellExecTool{ws: r.workspace, sandbox: opts.ShellSandbox},
 		"git_status":            &gitStatusTool{ws: r.workspace},

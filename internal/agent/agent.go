@@ -336,6 +336,12 @@ type Agent struct {
 	// and cleared when workspace_diagnostics runs (verify-don't-trust barrier).
 	unverifiedWrite bool
 
+	// smokePassed is true when runtime_smoke last reported PASS. Any write sets
+	// it false again, so the codegen smoke gate re-runs after every change —
+	// "compiles" (unverifiedWrite cleared by diagnostics) is not enough; the
+	// program must also *run* without crashing.
+	smokePassed bool
+
 	// Machine-generated progress ledger (goal state anchor): touchedPaths and
 	// lastToolError are injected as a compact TASK STATE block each request so
 	// the model doesn't have to reconstruct progress from history/summary.
@@ -541,10 +547,10 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	a.toolLoopName = ""
 	a.turnReadCalls = 0
 	a.turnWrote = false
+	a.smokePassed = false
 	a.failedWriteSig = map[string]int{}
 	a.recentEdits = nil
 	a.mu.Unlock()
-
 	for i := 0; i < a.cfg.MaxIterations; i++ {
 		// Budget before every request: plain chat turns (no tool calls)
 		// would otherwise never trigger summarization.
@@ -669,9 +675,23 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 			if a.cfg.Codegen {
 				a.mu.RLock()
 				wrote := a.turnWrote
+				smoked := a.smokePassed
 				a.mu.RUnlock()
 				if wrote {
 					if gate := a.goalGateCheck(ctx); gate != "" {
+						if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: gate}); err != nil {
+							return "", err
+						}
+						continue
+					}
+				}
+				// Codegen smoke gate: after the compile gate passes, the
+				// program must also RUN without crashing (a 9B model's most
+				// common greenfield failure: compiles clean, panics on input).
+				// Deterministic, feeds the crash report back, bounded by
+				// MaxIterations. Skip when smoke already passed this turn.
+				if wrote && !smoked {
+					if gate := a.smokeGateCheck(ctx); gate != "" {
 						if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: gate}); err != nil {
 							return "", err
 						}
@@ -956,6 +976,22 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 					continue // DONE refused; next round must fix the failures
 				}
 			}
+			// Codegen smoke gate at the DONE verdict: even a round that burned
+			// its iteration budget (so Run's internal gate never fired) must not
+			// be accepted while the program crashes at runtime.
+			if a.cfg.Codegen {
+				a.mu.RLock()
+				smoked := a.smokePassed
+				a.mu.RUnlock()
+				if !smoked {
+					if verify := a.smokeGateCheck(ctx); verify != "" {
+						if _, aerr := a.appendMessage(ctx, llm.Message{Role: "user", Content: verify}); aerr != nil {
+							return last, aerr
+						}
+						continue // DONE refused; the program must run cleanly
+					}
+				}
+			}
 			return last, nil
 		}
 	}
@@ -984,6 +1020,27 @@ func (a *Agent) goalGateCheck(ctx context.Context) string {
 	return "Deterministic completion check: the workspace still fails its static check. " +
 		"You reported DONE, but the errors below are unresolved — fix them, then re-verify and report DONE again.\n\n" + result +
 		errorFixHints(result)
+}
+
+// smokeGateCheck runs runtime_smoke deterministically and returns a DONE-
+// refusal message when the program crashes (panic/segfault/assertion/silent
+// non-zero exit), or "" when it survived (or no smoke runner applies). The
+// codegen complement of goalGateCheck: compiling is not running.
+func (a *Agent) smokeGateCheck(ctx context.Context) string {
+	tool, ok := a.registry.Get("runtime_smoke")
+	if !ok {
+		return ""
+	}
+	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		return ""
+	}
+	if strings.Contains(result, "runtime_smoke PASS") ||
+		strings.Contains(result, "no smoke runner") {
+		return ""
+	}
+	return "Deterministic completion check: the program CRASHED when run. " +
+		"The report below is from running it with minimal input — fix the crash, then re-run workspace_diagnostics and runtime_smoke.\n\n" + result
 }
 
 // DiagnosticsFailed reports whether a workspace_diagnostics result indicates
@@ -1477,7 +1534,7 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 var (
 	coreToolNames = []string{
 		"fs_read", "fs_write", "fs_edit", "fs_patch", "fs_refactor", "glob", "grep", "shell_exec",
-		"workspace_diagnostics", "test_runner", "clarify", "plan",
+		"workspace_diagnostics", "test_runner", "runtime_smoke", "clarify", "plan",
 		"git_status", "git_diff", "git_log", "memory_save", "memory_search",
 		"skills_list", "skill_view", "consult", "subagent",
 	}
@@ -2269,8 +2326,11 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	a.mu.Lock()
 	if name == "workspace_diagnostics" {
 		a.unverifiedWrite = false
+	} else if name == "runtime_smoke" && strings.HasPrefix(result, "runtime_smoke PASS") {
+		a.smokePassed = true
 	} else if tool.Risk() != tools.RiskReadOnly {
 		a.unverifiedWrite = true
+		a.smokePassed = false
 		var pa struct {
 			Path string `json:"path"`
 		}

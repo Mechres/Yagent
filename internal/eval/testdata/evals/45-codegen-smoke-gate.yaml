@@ -1,0 +1,20 @@
+name: codegen-smoke-gate
+description: v0.1.60 — codegen mode refuses a final answer while the program crashes at runtime (compiles clean, panics on run)
+codegen: true
+files:
+  go.mod: |
+    module smoke
+
+    go 1.22
+input: write a Go program
+steps:
+  # the model writes a program that COMPILES but panics at runtime
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nfunc main() {\n\tvar s []int\n\t_ = s[5]\n}\n"}'}
+  - answer: the program is complete
+  # the smoke gate builds and RUNS it deterministically, sees the panic,
+  # feeds the crash report back, and refuses the final answer
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"}'}
+  - answer: fixed the crash, the program runs now
+assert:
+  requests_contain: ["Deterministic completion check: the program CRASHED when run"]
+  final_answer_contains: "runs now"

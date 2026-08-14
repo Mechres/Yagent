@@ -2,6 +2,24 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.60 — 2026-08-14
+
+### Added
+- **`runtime_smoke` gate** — the codegen companion to the compile gate.
+  After a write passes `workspace_diagnostics`, a final answer is also refused
+  while the program **crashes at runtime**: the tool builds and briefly runs
+  the generated program (Go `go build`+run, C/C++ g++/gcc with an `-lncurses`
+  fallback, Cargo, Python) feeding scripted stdin, and reports PASS (survived)
+  or FAIL (signal-killed, or output carrying panic/segfault/assertion markers,
+  or a silent non-zero exit). Wired into both the `Run` loop and the `RunGoal`
+  DONE verdict (codegen-only, `smokePassed` goes stale on any write). This
+  converts the codegen guarantee from "compiles" into "compiles **and runs**" —
+  the fix for the live-tested failures where Tetris compiled clean but crashed
+  with a vector OOB and Snake died on its first food.
+- **Golden eval 45** — codegen-smoke-gate: a compile-clean but panicking program
+  is refused until fixed. Agent + tools unit tests cover crash detection,
+  PASS/FAIL/no-runner/build-failure paths.
+
 ## v0.1.59 — 2026-08-14
 
 ### Added

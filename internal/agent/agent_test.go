@@ -2057,6 +2057,70 @@ func TestRunGoalGateRefusesDoneOnFailingBuild(t *testing.T) {
 	}
 }
 
+func TestCodegenSmokeGateCatchesCrash(t *testing.T) {
+	// codegen mode: the model writes a Go program that COMPILES but panics at
+	// runtime (the classic 9B greenfield failure). The deterministic smoke gate
+	// must feed the crash back and refuse the final answer until it is fixed.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module smoke\n\ngo 1.22\n")
+
+	s := newScriptedLLM(t, [][]string{
+		// write a program that panics (index out of range)
+		toolCall("c1", "fs_write", `{"path":"main.go","content":"package main\n\nfunc main() {\n\tvar s []int\n\t_ = s[5]\n}\n"}`),
+		finalContent("the program is complete"),
+		// gate refuses with the crash report; model fixes it
+		toolCall("c2", "fs_write", `{"path":"main.go","content":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"fixed\")\n}\n"}`),
+		finalContent("fixed the crash, program runs now"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, Codegen: true}, ws)
+
+	answer, err := a.Run(context.Background(), "build a hello program")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "fixed the crash, program runs now" {
+		t.Errorf("answer = %q", answer)
+	}
+	// the crash report must have been fed back as a user message
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var sawCrash bool
+	for _, req := range s.requests {
+		if strings.Contains(string(req), "CRASHED when run") {
+			sawCrash = true
+			break
+		}
+	}
+	if !sawCrash {
+		t.Error("smoke gate did not feed the crash report back")
+	}
+}
+
+func TestCodegenSmokeGatePassesClean(t *testing.T) {
+	// A program that compiles AND runs cleanly must not be gated: one
+	// write + final answer, no refusal.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module smoke\n\ngo 1.22\n")
+
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_write", `{"path":"main.go","content":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"}`),
+		finalContent("all done"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, Codegen: true}, ws)
+
+	answer, err := a.Run(context.Background(), "build a hello program")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "all done" {
+		t.Errorf("answer = %q", answer)
+	}
+}
+
 func TestRunGoalGateCleanBuildPasses(t *testing.T) {
 	// A workspace that passes diagnostics (empty main package) must NOT be
 	// gated: DONE is accepted on round 1.
