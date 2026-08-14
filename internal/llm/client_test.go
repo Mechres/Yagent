@@ -515,3 +515,27 @@ func TestCountTokensUnavailable(t *testing.T) {
 		t.Fatal("expected an error when the server exposes no tokenizer")
 	}
 }
+
+func TestBaseURLNormalizesV1Suffix(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"http://localhost:8089", "http://localhost:8089"},
+		{"http://localhost:8089/", "http://localhost:8089"},
+		{"http://localhost:8089/v1", "http://localhost:8089"},
+		{"https://integrate.api.nvidia.com/v1", "https://integrate.api.nvidia.com"},
+		{"https://api.together.xyz/v1", "https://api.together.xyz"},
+		{"https://api.mistral.ai/v1", "https://api.mistral.ai"},
+		{"https://opencode.ai/zen/go", "https://opencode.ai/zen/go"},
+	}
+	for _, c := range cases {
+		if got := baseURL(c.in); got != c.want {
+			t.Errorf("baseURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// the full chat path resolves correctly for both shapes
+	if got := baseURL("https://integrate.api.nvidia.com/v1") + "/v1/chat/completions"; got != "https://integrate.api.nvidia.com/v1/chat/completions" {
+		t.Errorf("nvidia chat path = %q", got)
+	}
+	if got := baseURL("http://localhost:8089") + "/v1/chat/completions"; got != "http://localhost:8089/v1/chat/completions" {
+		t.Errorf("llama.cpp chat path = %q", got)
+	}
+}

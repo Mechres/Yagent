@@ -71,6 +71,18 @@ type Client struct {
 }
 
 // NewClient constructs a Client with default HTTP settings.
+// baseURL normalizes a configured server URL for the /v1/* suffixes: it strips
+// a trailing "/v1" so chat/embed paths always resolve to <base>/v1/<endpoint>.
+// Without this, a provider whose documented base already ends in /v1 (NVIDIA
+// NIM, Together, Mistral) would produce /v1/v1/chat/completions -> 404.
+func baseURL(serverURL string) string {
+	u := strings.TrimRight(serverURL, "/")
+	if strings.HasSuffix(u, "/v1") {
+		u = strings.TrimSuffix(u, "/v1")
+	}
+	return u
+}
+
 func NewClient(serverURL, model string) *Client {
 	return &Client{
 		ServerURL: serverURL,
@@ -207,7 +219,7 @@ func (e *httpStatusError) Error() string {
 }
 
 func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta, onReasoning func(string)) (*Response, error) {
-	url := strings.TrimRight(c.ServerURL, "/") + "/v1/chat/completions"
+	url := baseURL(c.ServerURL) + "/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -302,7 +314,7 @@ func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]f
 	if err != nil {
 		return nil, fmt.Errorf("marshal embed request: %w", err)
 	}
-	url := strings.TrimRight(c.ServerURL, "/") + "/v1/embeddings"
+	url := baseURL(c.ServerURL) + "/v1/embeddings"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("build embed request: %w", err)

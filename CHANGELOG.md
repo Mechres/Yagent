@@ -2,6 +2,18 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.70 — 2026-08-15
+
+### Fixed
+- **`/v1`-suffix URL normalization** — the LLM client appended `/v1/chat/
+  completions` (and `/v1/embeddings`) to the raw `server_url`, so a provider
+  whose documented base already ends in `/v1` (NVIDIA NIM, Together, Mistral)
+  produced `/v1/v1/chat/completions` → `404 page not found` (found live on
+  NVIDIA NIM). `baseURL()` now strips a trailing `/v1`, so chat/embed paths
+  always resolve to `<base>/v1/<endpoint>` for both shapes — plain bases
+  (llama.cpp/Ollama) and `/v1`-suffixed cloud bases. Verified against a mock
+  server that the request lands on `/v1/chat/completions` exactly once.
+
 ## v0.1.69 — 2026-08-15
 
 ### Added
