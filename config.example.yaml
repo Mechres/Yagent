@@ -109,6 +109,7 @@ consult:                      # the `consult` tool (advisor). Disabled until set
 # configured api_key) — the key is never written to this file.
 #
 # DeepSeek:       DEEPSEEK_API_KEY        https://api.deepseek.com
+# OpenCode Zen:   OPENCODE_ZEN_API_KEY    https://opencode.ai/zen
 # OpenRouter:     OPENROUTER_API_KEY      https://openrouter.ai/api
 # Groq:           GROQ_API_KEY            https://api.groq.com/openai
 # Together:       TOGETHER_API_KEY        https://api.together.xyz/v1

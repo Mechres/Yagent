@@ -1,6 +1,10 @@
 package config
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,14 +88,88 @@ func TestSetProviderPersists(t *testing.T) {
 
 func TestSelectProvider(t *testing.T) {
 	cfg := &Config{}
-	cfg.SelectProvider(Providers[2], "deepseek-chat")
-	if cfg.ServerURL != Providers[2].BaseURL || cfg.Model != "deepseek-chat" {
+	prov, ok := ProviderByName("DeepSeek")
+	if !ok {
+		t.Fatal("DeepSeek not in catalog")
+	}
+	cfg.SelectProvider(prov, "deepseek-chat")
+	if cfg.ServerURL != prov.BaseURL || cfg.Model != "deepseek-chat" {
 		t.Errorf("SelectProvider = %q/%q", cfg.ServerURL, cfg.Model)
 	}
 }
 
 func contains(haystack, needle string) bool {
 	return len(needle) == 0 || stringContains(haystack, needle)
+}
+
+func TestFetchModelsOpenAIAndOllamaShapes(t *testing.T) {
+	// OpenAI shape (llama.cpp): data[].id
+	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"id": "Qwen3VL-8B-Instruct-Q4_K_M.gguf"},
+				{"id": "Ornith-1.0-9B"},
+			},
+		})
+	}))
+	defer openAI.Close()
+	models, ok := FetchModels(context.Background(), openAI.URL)
+	if !ok || len(models) != 2 || models[0] != "Qwen3VL-8B-Instruct-Q4_K_M.gguf" {
+		t.Errorf("OpenAI-shape FetchModels = %v, %v", models, ok)
+	}
+
+	// Ollama shape: models[].name
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"models": []map[string]any{
+				{"name": "qwen3:8b"},
+				{"name": "nomic-embed-text"},
+			},
+		})
+	}))
+	defer ollama.Close()
+	models, ok = FetchModels(context.Background(), ollama.URL)
+	if !ok || len(models) != 2 || models[0] != "qwen3:8b" {
+		t.Errorf("Ollama-shape FetchModels = %v, %v", models, ok)
+	}
+
+	// unreachable -> ok=false
+	if _, ok := FetchModels(context.Background(), "http://127.0.0.1:1"); ok {
+		t.Error("unreachable server should report ok=false")
+	}
+}
+
+func TestOpenCodeZenProvider(t *testing.T) {
+	prov, ok := ProviderByName("OpenCode Zen")
+	if !ok {
+		t.Fatal("OpenCode Zen not in catalog")
+	}
+	if prov.BaseURL != "https://opencode.ai/zen" {
+		t.Errorf("zen base = %q", prov.BaseURL)
+	}
+	if prov.KeyEnv != "OPENCODE_ZEN_API_KEY" {
+		t.Errorf("zen key env = %q", prov.KeyEnv)
+	}
+	// DeepSeek V4 models must be in the Zen list
+	all := ""
+	for _, m := range prov.Models {
+		all += m + " "
+	}
+	if !stringContains(all, "deepseek-v4-pro") || !stringContains(all, "deepseek-v4-flash") {
+		t.Errorf("Zen models missing DeepSeek V4: %q", all)
+	}
+	// local providers are Dynamic
+	if !Providers[0].Dynamic || !Providers[1].Dynamic {
+		t.Error("local providers must be Dynamic (live model detection)")
+	}
+	// cloud providers are not Dynamic (static catalog)
+	if Providers[2].Dynamic {
+		t.Error("OpenCode Zen must not be Dynamic")
+	}
 }
 
 func stringContains(haystack, needle string) bool {

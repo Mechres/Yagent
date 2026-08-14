@@ -2,6 +2,23 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.67 — 2026-08-14
+
+### Added
+- **Local model auto-detection** — the `/model` selector fetches the **live
+  model list** from a local provider's `/v1/models` endpoint when it opens
+  (`config.FetchModels`, handling both the OpenAI `data[].id` and Ollama
+  `models[].name` shapes). The model pane shows "Model (detected)" with the
+  actual loaded models, "(detecting…)" while the fetch is in flight, and falls
+  back to the static defaults when the server is unreachable. So a local pane
+  always reflects what llama.cpp/Ollama really have loaded, not a stale
+  catalog.
+- **OpenCode Zen provider** — `https://opencode.ai/zen`, key
+  `OPENCODE_ZEN_API_KEY`, with the current recommended models (DeepSeek V4
+  Pro/Flash, Qwen3.7 Max/Plus, Kimi K2.7 Code, GLM 5.2, MiniMax M3).
+- **Catalog refresh** — DeepSeek/OpenRouter/Groq/Together/Mistral model lists
+  updated to current models.
+
 ## v0.1.66 — 2026-08-14
 
 ### Added

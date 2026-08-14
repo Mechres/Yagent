@@ -2,12 +2,17 @@ package config
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -84,25 +89,40 @@ type Provider struct {
 	KeyEnv string
 	// Models are the selectable model names for this provider.
 	Models []string
+	// Dynamic, when true, means the model list is fetched live from the
+	// server's /v1/models at selector-open time (local llama.cpp/Ollama). The
+	// static Models list is the fallback when the server is unreachable.
+	Dynamic bool
 }
 
 // Providers is the built-in catalog for the `/model` selector. Local is always
-// first and default. Cloud keys are read from the env var when the user selects
-// a cloud provider, or from the configured api_key if already set — never
-// stored in the config file.
+// first and default. Local providers are Dynamic (models fetched live from
+// /v1/models); cloud providers list the current recommended models statically.
+// Cloud keys are read from the env var when the user selects a cloud provider,
+// or from the configured api_key if already set — never stored in the config.
 var Providers = []Provider{
 	{
 		Name:    "Local (llama.cpp :8089)",
 		BaseURL: "http://localhost:8089",
-		Models: []string{
-			"Qwen3VL-8B-Instruct-Q4_K_M.gguf",
-			"Ornith-1.0-9B",
-		},
+		Dynamic: true,
+		Models:  []string{"Qwen3VL-8B-Instruct-Q4_K_M.gguf"},
 	},
 	{
 		Name:    "Local (Ollama :11434)",
 		BaseURL: "http://localhost:11434",
-		Models:  []string{"qwen3:8b", "qwen2.5-coder:7b", "nomic-embed-text"},
+		Dynamic: true,
+		Models:  []string{"qwen3:8b", "qwen2.5-coder:7b"},
+	},
+	{
+		Name:    "OpenCode Zen",
+		BaseURL: "https://opencode.ai/zen",
+		KeyEnv:  "OPENCODE_ZEN_API_KEY",
+		Models: []string{
+			"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-free",
+			"qwen3.7-max", "qwen3.7-plus",
+			"kimi-k2.7-code", "kimi-k3",
+			"glm-5.2", "minimax-m3",
+		},
 	},
 	{
 		Name:    "DeepSeek",
@@ -116,17 +136,19 @@ var Providers = []Provider{
 		KeyEnv:  "OPENROUTER_API_KEY",
 		Models: []string{
 			"deepseek/deepseek-chat",
+			"deepseek/deepseek-r1",
 			"anthropic/claude-3.5-sonnet",
 			"openai/gpt-4o",
 			"google/gemini-2.0-flash-001",
 			"qwen/qwen2.5-coder-32b-instruct",
+			"moonshotai/kimi-k2-instruct",
 		},
 	},
 	{
 		Name:    "Groq",
 		BaseURL: "https://api.groq.com/openai",
 		KeyEnv:  "GROQ_API_KEY",
-		Models:  []string{"llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"},
+		Models:  []string{"llama-3.3-70b-versatile", "llama-3.1-8b-instant"},
 	},
 	{
 		Name:    "Together",
@@ -171,6 +193,55 @@ func (c *Config) KeyFor(p Provider) string {
 		return os.Getenv(p.KeyEnv)
 	}
 	return ""
+}
+
+// FetchModels queries a provider's /v1/models endpoint and returns the model
+// ids it reports — the local auto-detection path for Dynamic providers
+// (llama.cpp and Ollama both serve the OpenAI-shaped endpoint). It handles both
+// the OpenAI `data[].id` and Ollama `models[].name` shapes. Returns ok=false
+// when the server is unreachable or returns no models.
+func FetchModels(ctx context.Context, baseURL string) ([]string, bool) {
+	client := &http.Client{Timeout: 4 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(baseURL, "/")+"/v1/models", nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, false
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	for _, m := range list.Data {
+		add(m.ID)
+	}
+	for _, m := range list.Models {
+		add(m.Name)
+	}
+	return out, len(out) > 0
 }
 
 // SkillsConfig configures procedural memory (M3.5).

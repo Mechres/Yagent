@@ -1230,7 +1230,7 @@ func (h *skillsHandler) showModels(rest string, ag *agent.Agent) (bool, error) {
 			fmt.Fprintf(h.w, "%s[%d] %s  (%s)\n", mark, i, p.Name, p.BaseURL)
 		}
 		fmt.Fprintln(h.w, "usage: /model <provider-number> [model]  — e.g. /model 2 deepseek-chat")
-		fmt.Fprintln(h.w, "provider keys come from the env (DEEPSEEK_API_KEY, OPENROUTER_API_KEY, …) or api_key; never stored in config")
+		fmt.Fprintln(h.w, "provider keys come from the env (OPENCODE_ZEN_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY, …) or api_key; never stored in config")
 		fmt.Fprintln(h.w, "applies on the next chat session (use the TUI /model selector to switch live)")
 		return true, nil
 	}

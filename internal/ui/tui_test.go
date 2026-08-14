@@ -1309,8 +1309,9 @@ func TestModelSelectorOpenAndNavigate(t *testing.T) {
 	}
 	m.busy = false
 	m.msgInput.SetValue("/model")
-	if _, err := m.submitLine(); err != nil {
-		t.Fatal(err)
+	got, _ := m.submitLine()
+	if got.(*tuiModel) != m {
+		t.Fatal("submitLine returned a different model")
 	}
 	if !m.modelOpen {
 		t.Fatal("/model did not open the selector")
@@ -1319,12 +1320,12 @@ func TestModelSelectorOpenAndNavigate(t *testing.T) {
 	if m.modelProvider != 0 || m.modelOnModels {
 		t.Errorf("initial state: provider=%d onModels=%v", m.modelProvider, m.modelOnModels)
 	}
-	// navigate to the DeepSeek provider (index 2 in the catalog)
+	// navigate to the OpenCode Zen provider (index 2 in the catalog)
 	for i := 0; i < 2; i++ {
 		m.handleModelKey(tea.KeyMsg{Type: tea.KeyRight})
 	}
 	if m.modelProvider != 2 {
-		t.Errorf("provider = %d, want 2 (DeepSeek)", m.modelProvider)
+		t.Errorf("provider = %d, want 2 (OpenCode Zen)", m.modelProvider)
 	}
 	// enter moves to the model pane
 	m.handleModelKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1334,7 +1335,7 @@ func TestModelSelectorOpenAndNavigate(t *testing.T) {
 	// right cycles the model list
 	m.handleModelKey(tea.KeyMsg{Type: tea.KeyRight})
 	if m.modelModelIdx != 1 {
-		t.Errorf("modelIdx = %d, want 1 (deepseek-reasoner)", m.modelModelIdx)
+		t.Errorf("modelIdx = %d, want 1 (deepseek-v4-flash)", m.modelModelIdx)
 	}
 	// esc closes without applying
 	m.handleModelKey(tea.KeyMsg{Type: tea.KeyEsc})
@@ -1344,7 +1345,7 @@ func TestModelSelectorOpenAndNavigate(t *testing.T) {
 	// the view renders both panes
 	m.modelOpen = true
 	v := m.modelView()
-	if !strings.Contains(v, "Provider") || !strings.Contains(v, "Model") || !strings.Contains(v, "DeepSeek") {
+	if !strings.Contains(v, "Provider") || !strings.Contains(v, "Model") || !strings.Contains(v, "OpenCode Zen") {
 		t.Errorf("modelView = %q", v)
 	}
 }

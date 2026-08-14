@@ -162,6 +162,14 @@ type tokenMsg struct{ delta string }
 type reasoningMsg struct{ delta string }
 type toolMsg struct{ call llm.ToolCall }
 type progressMsg struct{ text string }
+
+// modelListMsg carries the live model list fetched from a Dynamic provider
+// (local llama.cpp/Ollama) when the /model selector opens.
+type modelListMsg struct {
+	models []string
+	ok     bool
+}
+
 type turnDoneMsg struct {
 	answer string
 	err    error
@@ -327,6 +335,8 @@ type tuiModel struct {
 	modelModelIdx int  // index into the selected provider's Models
 	modelOnModels bool // true = the model pane is active
 	modelConfirm  bool
+	modelLive     []string // live models from a Dynamic provider (local)
+	modelLoading  bool     // a live fetch is in flight
 
 	sessionsOpen    bool
 	sessionsIdx     int
@@ -639,17 +649,21 @@ func (m *tuiModel) applyThemeLive(key, value string) {
 }
 
 // openModelSelector initializes the /model two-pane picker. It refuses while a
-// turn is running (the swap must not race the runner).
-func (m *tuiModel) openModelSelector() {
+// turn is running (the swap must not race the runner). For a Dynamic provider
+// (local llama.cpp/Ollama) it fires an async /v1/models fetch so the model
+// pane shows what is actually loaded.
+func (m *tuiModel) openModelSelector() (tea.Model, tea.Cmd) {
 	if m.busy {
 		m.append("cannot switch model while a turn is running (wait for it to finish)")
-		return
+		return m, nil
 	}
 	m.modelOpen = true
 	m.modelProvider = 0
 	m.modelModelIdx = 0
 	m.modelOnModels = false
 	m.modelConfirm = false
+	m.modelLive = nil
+	m.modelLoading = false
 	// pre-select the current provider if its base URL matches
 	for i, p := range config.Providers {
 		if p.BaseURL == m.cfg.ServerURL {
@@ -659,6 +673,24 @@ func (m *tuiModel) openModelSelector() {
 			}
 			break
 		}
+	}
+	// fire the live fetch for a Dynamic provider
+	if config.Providers[m.modelProvider].Dynamic {
+		m.modelLoading = true
+		return m, m.fetchLocalModels()
+	}
+	return m, nil
+}
+
+// fetchLocalModels queries the selected Dynamic provider's /v1/models endpoint
+// in a tea.Cmd so the TUI stays responsive; the result lands as a modelListMsg.
+func (m *tuiModel) fetchLocalModels() tea.Cmd {
+	base := config.Providers[m.modelProvider].BaseURL
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.runnerCtx, 4*time.Second)
+		defer cancel()
+		models, ok := config.FetchModels(ctx, base)
+		return modelListMsg{models: models, ok: ok}
 	}
 }
 
@@ -695,11 +727,15 @@ func (m *tuiModel) handleModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.modelModelIdx = 0
 		} else {
 			prov := config.Providers[m.modelProvider]
-			if len(prov.Models) > 0 {
+			names := prov.Models
+			if prov.Dynamic {
+				names = m.modelLive
+			}
+			if len(names) > 0 {
 				if msg.String() == "left" {
-					m.modelModelIdx = (m.modelModelIdx + len(prov.Models) - 1) % len(prov.Models)
+					m.modelModelIdx = (m.modelModelIdx + len(names) - 1) % len(names)
 				} else {
-					m.modelModelIdx = (m.modelModelIdx + 1) % len(prov.Models)
+					m.modelModelIdx = (m.modelModelIdx + 1) % len(names)
 				}
 			}
 		}
@@ -719,9 +755,13 @@ func (m *tuiModel) handleModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // client + agent so the next turn uses the new endpoint.
 func (m *tuiModel) applyModelSelection() {
 	prov := config.Providers[m.modelProvider]
+	names := prov.Models
+	if prov.Dynamic {
+		names = m.modelLive
+	}
 	model := ""
-	if m.modelModelIdx >= 0 && m.modelModelIdx < len(prov.Models) {
-		model = prov.Models[m.modelModelIdx]
+	if m.modelModelIdx >= 0 && m.modelModelIdx < len(names) {
+		model = names[m.modelModelIdx]
 	}
 	key := m.cfg.KeyFor(prov)
 	if err := config.SetProvider(m.cfg.Path, prov, model, key); err != nil {
@@ -1113,6 +1153,17 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.append("  [index] " + msg.text)
 		return m, m.nextCmd()
 
+	case modelListMsg:
+		// live model list from a Dynamic (local) provider
+		m.modelLoading = false
+		if msg.ok && len(msg.models) > 0 {
+			m.modelLive = msg.models
+			if m.modelModelIdx >= len(msg.models) {
+				m.modelModelIdx = 0
+			}
+		}
+		return m, nil
+
 	case clarifyRequestMsg:
 		m.flushStream()
 		m.clarifyOpen = true
@@ -1237,8 +1288,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, nil
 	case "/model":
 		m.msgInput.Reset()
-		m.openModelSelector()
-		return m, nil
+		return m.openModelSelector()
 	case "/sessions":
 		m.msgInput.Reset()
 		m.sessions, _ = m.env.st.ListSessions(context.Background())
@@ -2024,13 +2074,26 @@ func (m *tuiModel) modelView() string {
 		lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).Render("Provider") + "\n\n" +
 			strings.Join(provRows, "\n"))
 
-	// model pane
+	// model pane — Dynamic providers (local) show the live /v1/models list
+	// with a refresh hint; static providers use the catalog list.
 	prov := config.Providers[m.modelProvider]
-	var modelRows []string
-	if len(prov.Models) == 0 {
-		modelRows = append(modelRows, "  (free-text: set model in /settings)")
+	modelNames := prov.Models
+	status := ""
+	if prov.Dynamic {
+		modelNames = m.modelLive
+		if m.modelLoading {
+			status = " (detecting…)"
+		} else if m.modelLive == nil {
+			status = " (server unreachable — showing defaults)"
+		} else {
+			status = " (detected)"
+		}
 	}
-	for i, mo := range prov.Models {
+	var modelRows []string
+	if len(modelNames) == 0 {
+		modelRows = append(modelRows, "  (none detected — set model in /settings)")
+	}
+	for i, mo := range modelNames {
 		row := mo
 		if i == m.modelModelIdx && m.modelOnModels {
 			modelRows = append(modelRows, marker+" "+activeStyle.Render(row))
@@ -2042,7 +2105,7 @@ func (m *tuiModel) modelView() string {
 	}
 	modelPane := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(m.th.Primary).Padding(0, 1).Render(
-		lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).Render("Model") + "\n\n" +
+		lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).Render("Model"+status) + "\n\n" +
 			strings.Join(modelRows, "\n"))
 
 	title := lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).Render(iconGear + " Model provider")
@@ -2056,8 +2119,16 @@ func (m *tuiModel) modelView() string {
 		if key != "" {
 			auth = "key from config/env"
 		}
+		chosen := ""
+		names := prov.Models
+		if prov.Dynamic {
+			names = m.modelLive
+		}
+		if m.modelModelIdx >= 0 && m.modelModelIdx < len(names) {
+			chosen = names[m.modelModelIdx]
+		}
 		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
-			Render(fmt.Sprintf("switch to %s / %s at %s (%s)?", prov.Name, prov.Models[m.modelModelIdx], prov.BaseURL, auth)) +
+			Render(fmt.Sprintf("switch to %s / %s at %s (%s)?", prov.Name, chosen, prov.BaseURL, auth)) +
 			"  " + lipgloss.NewStyle().Foreground(m.th.Muted).Render("y = apply, n = cancel")
 	}
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
