@@ -835,6 +835,21 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.confirmQuit {
 				return m, m.quitCmd()
 			}
+			// Auto-complete a partial "/..." command before sending it: if the
+			// input is a prefix of exactly one slash command, expand to the full
+			// command and run it (e.g. "/ex" -> "/export"). If the user
+			// navigated the palette with arrows/tab, run the highlighted item.
+			if val := m.msgInput.Value(); strings.HasPrefix(val, "/") {
+				matches := m.slashMatches()
+				if len(matches) > 0 && m.tabIndex > 0 {
+					m.msgInput.SetValue(matches[m.tabIndex%len(matches)])
+					m.msgInput.CursorEnd()
+					m.tabIndex = 0
+				} else if len(matches) == 1 && matches[0] != val {
+					m.msgInput.SetValue(matches[0])
+					m.msgInput.CursorEnd()
+				}
+			}
 			return m.submitLine()
 		case "tab":
 			if strings.HasPrefix(m.msgInput.Value(), "/") {
@@ -848,6 +863,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll(false)
 			return m, nil
 		case "up":
+			// When the "/" command palette is open, arrows navigate it.
+			if matches := m.slashMatches(); len(matches) > 1 {
+				m.tabIndex = (m.tabIndex - 1 + len(matches)) % len(matches)
+				return m, nil
+			}
 			// Single-line prompt history navigation
 			if !strings.Contains(m.msgInput.Value(), "\n") && len(m.history) > 0 {
 				if m.historyIdx == len(m.history) {
@@ -865,6 +885,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "down":
+			// When the "/" command palette is open, arrows navigate it.
+			if matches := m.slashMatches(); len(matches) > 1 {
+				m.tabIndex = (m.tabIndex + 1) % len(matches)
+				return m, nil
+			}
+			// Single-line prompt history navigation
 			if !strings.Contains(m.msgInput.Value(), "\n") && len(m.history) > 0 {
 				if m.historyIdx < len(m.history)-1 {
 					m.historyIdx++
@@ -2467,7 +2493,7 @@ func (m *tuiModel) popoverView() string {
 		}
 	}
 	body := strings.Join(rows, "\n")
-	hint := lipgloss.NewStyle().Foreground(th.Muted).Render("  tab to cycle · esc to clear · enter to run")
+	hint := lipgloss.NewStyle().Foreground(th.Muted).Render("  ↑/↓ or tab to select · enter to run · esc to clear")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(th.Border).

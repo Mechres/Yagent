@@ -56,6 +56,49 @@ func TestTabCyclesCommands(t *testing.T) {
 	}
 }
 
+func TestSlashPaletteArrowNavigation(t *testing.T) {
+	m := testModel(t)
+	m.msgInput.SetValue("/c") // matches /clear, /compact, /checkpoint...
+	// palette is open; up/down navigate the highlight, not the prompt history
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	sel := m.tabIndex
+	if sel <= 0 {
+		t.Errorf("down did not advance the palette selection (tabIndex=%d)", sel)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.tabIndex != (sel+1)%len(m.slashMatches()) {
+		t.Errorf("tabIndex after second down = %d", m.tabIndex)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if m.tabIndex != sel {
+		t.Errorf("up did not go back (tabIndex=%d, want %d)", m.tabIndex, sel)
+	}
+	// typing a key resets the selection (set to -1 = no active selection)
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if m.tabIndex != -1 {
+		t.Errorf("typing did not reset tabIndex: %d, want -1", m.tabIndex)
+	}
+}
+
+func TestSlashAutoCompleteOnEnter(t *testing.T) {
+	m := testModel(t)
+	m.inputCh = make(chan turnRequest, 10)
+	// /h matches exactly /help — enter auto-completes, then /help opens the
+	// help modal (no agent needed, so no panic).
+	m.msgInput.SetValue("/h")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.helpOpen {
+		t.Errorf("/h did not auto-complete into /help and open the modal (helpOpen=%v)", m.helpOpen)
+	}
+	// a prefix matching several commands is NOT auto-completed (stays as typed
+	// unless the user navigated) — /c has many matches.
+	m.msgInput.SetValue("/c")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.HasPrefix(m.msgInput.Value(), "/") {
+		t.Errorf("ambiguous prefix sent as-is: %q", m.msgInput.Value())
+	}
+}
+
 func TestSlashMatchesIncludeSkills(t *testing.T) {
 	m := testModel(t)
 	if _, err := m.env.sk.Apply(skills.Op{
