@@ -342,6 +342,12 @@ type Agent struct {
 	// program must also *run* without crashing.
 	smokePassed bool
 
+	// lastSmokeArgs is the raw arguments of the most recent runtime_smoke call
+	// (the model's behavioral steps probe). The smoke gate re-runs the SAME
+	// probe at the final answer, so a crash-only {} run can't silently replace
+	// a failed behavioral assertion.
+	lastSmokeArgs []byte
+
 	// Machine-generated progress ledger (goal state anchor): touchedPaths and
 	// lastToolError are injected as a compact TASK STATE block each request so
 	// the model doesn't have to reconstruct progress from history/summary.
@@ -1031,7 +1037,14 @@ func (a *Agent) smokeGateCheck(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
-	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	a.mu.RLock()
+	args := a.lastSmokeArgs
+	a.mu.RUnlock()
+	raw := json.RawMessage(args)
+	if len(args) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	result, err := tool.Execute(ctx, raw)
 	if err != nil {
 		return ""
 	}
@@ -1039,8 +1052,7 @@ func (a *Agent) smokeGateCheck(ctx context.Context) string {
 		strings.Contains(result, "no smoke runner") {
 		return ""
 	}
-	return "Deterministic completion check: the program CRASHED when run. " +
-		"The report below is from running it with minimal input — fix the crash, then re-run workspace_diagnostics and runtime_smoke.\n\n" + result
+	return "Deterministic completion check: the program FAILED runtime_smoke — it either crashes when run or its output is missing expected text (a behavioral bug, e.g. an add-then-list app that forgets to reload). The report below is from actually running it — fix what it reports, then re-run workspace_diagnostics and runtime_smoke.\n\n" + result
 }
 
 // DiagnosticsFailed reports whether a workspace_diagnostics result indicates
@@ -2326,8 +2338,13 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	a.mu.Lock()
 	if name == "workspace_diagnostics" {
 		a.unverifiedWrite = false
-	} else if name == "runtime_smoke" && strings.HasPrefix(result, "runtime_smoke PASS") {
-		a.smokePassed = true
+	} else if name == "runtime_smoke" {
+		// Record the probe the model used so the gate re-runs the SAME steps
+		// (not a crash-only {} run) at the final answer.
+		a.lastSmokeArgs = append(a.lastSmokeArgs[:0], call.Function.Arguments...)
+		if strings.HasPrefix(result, "runtime_smoke PASS") {
+			a.smokePassed = true
+		}
 	} else if tool.Risk() != tools.RiskReadOnly {
 		a.unverifiedWrite = true
 		a.smokePassed = false
@@ -2442,7 +2459,8 @@ var codegenPromptSuffix = `
 Codegen mode — you are building a new program from scratch. Follow this strategy:
 - Write each file with a SINGLE complete fs_write call. Do not build files incrementally with fs_edit. A whole-file write that is complete is always better than a series of partial edits.
 - After writing, run the real build (workspace_diagnostics) and fix ONLY the exact errors the compiler names. fs_read the exact lines it cites, then make one targeted edit. Never blind-edit a file because you "think" it might be wrong.
-- Do not end your turn with a plan, a list of "next steps", or instructions the user could follow instead of you. If work remains, DO it now. Only give a final answer when the program is complete and compiles.
+- Prove the program BEHAVES, not just compiles: run runtime_smoke with steps that exercise its actual functionality and assert the output — e.g. for a todo app: step 1 {"args":["add","buy milk"],"expect":"buy milk"}, step 2 {"args":["list"],"expect":"buy milk"}; for a counter: {"expect":"3"}. A program that compiles but doesn't do its job is still broken. If runtime_smoke FAILs a step, fix the code and re-run until it PASSes.
+- Do not end your turn with a plan, a list of "next steps", or instructions the user could follow instead of you. If work remains, DO it now. Only give a final answer when the program is complete, compiles, and passes runtime_smoke.
 `
 
 // maxInstructionsBytes caps auto-discovered developer-instruction files so a

@@ -16,5 +16,5 @@ steps:
   - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"}'}
   - answer: fixed the crash, the program runs now
 assert:
-  requests_contain: ["Deterministic completion check: the program CRASHED when run"]
+  requests_contain: ["Deterministic completion check: the program FAILED runtime_smoke"]
   final_answer_contains: "runs now"

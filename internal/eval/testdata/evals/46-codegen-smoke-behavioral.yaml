@@ -1,0 +1,24 @@
+name: codegen-smoke-behavioral-steps
+description: "v0.1.60 — runtime_smoke steps assert the program BEHAVES: a todo with dead persistence is refused until the reload is fixed"
+codegen: true
+files:
+  go.mod: |
+    module todo
+
+    go 1.22
+input: build a todo CLI app with add and list subcommands
+steps:
+  # the model writes a todo app with dead persistence (add works, but a fresh
+  # `list` process never reloads the file — so the item disappears)
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n)\n\ntype Todo struct {\n\tID int\n\tText string\n}\n\nvar ts []Todo\n\nfunc save() {\n\tb, _ := json.Marshal(ts)\n\t_ = os.WriteFile(\"todos.json\", b, 0o644)\n}\n\nfunc main() {\n\tswitch os.Args[1] {\n\tcase \"add\":\n\t\tts = append(ts, Todo{len(ts) + 1, os.Args[2]})\n\t\tsave()\n\t\tfmt.Println(\"Added:\", os.Args[2])\n\tcase \"list\":\n\t\tfor _, t := range ts {\n\t\t\tfmt.Println(t.ID, t.Text)\n\t\t}\n\t}\n}\n"}'}
+  # the model probes behavior: add, then a FRESH list must show the item
+  - tool_call: {name: runtime_smoke, args: '{"steps":[{"args":["add","buy milk"],"expect":"Added: buy milk"},{"args":["list"],"expect":"buy milk"}]}'}
+  - answer: the todo app works
+  # the gate re-runs the SAME probe deterministically, sees the fresh list
+  # misses "buy milk" (dead persistence), and refuses — feeding the report back
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n)\n\ntype Todo struct {\n\tID int\n\tText string\n}\n\nfunc load() []Todo {\n\tvar ts []Todo\n\tif b, err := os.ReadFile(\"todos.json\"); err == nil {\n\t\t_ = json.Unmarshal(b, &ts)\n\t}\n\treturn ts\n}\n\nfunc main() {\n\tts := load()\n\tswitch os.Args[1] {\n\tcase \"add\":\n\t\tts = append(ts, Todo{len(ts) + 1, os.Args[2]})\n\t\tb, _ := json.Marshal(ts)\n\t\t_ = os.WriteFile(\"todos.json\", b, 0o644)\n\t\tfmt.Println(\"Added:\", os.Args[2])\n\tcase \"list\":\n\t\tfor _, t := range ts {\n\t\t\tfmt.Println(t.ID, t.Text)\n\t\t}\n\t}\n}\n"}'}
+  - tool_call: {name: runtime_smoke, args: '{"steps":[{"args":["add","buy milk"],"expect":"Added: buy milk"},{"args":["list"],"expect":"buy milk"}]}'}
+  - answer: fixed the persistence, the fresh list shows the item now
+assert:
+  requests_contain: ["Deterministic completion check: the program FAILED runtime_smoke"]
+  final_answer_contains: "fixed the persistence"

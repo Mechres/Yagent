@@ -129,3 +129,167 @@ func TestSmokeToolPythonRuns(t *testing.T) {
 		t.Errorf("expected PASS, got: %s", res)
 	}
 }
+
+// todoApp returns a small Go todo CLI: add <text> persists to todos.json and
+// list prints it back. Broken persists but never loads on a fresh run — the
+// exact dead-persistence bug from the live test drive (v0.1.58).
+const workingTodo = `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+type Todo struct {
+	ID   int    ` + "`json:\"id\"`" + `
+	Text string ` + "`json:\"text\"`" + `
+}
+
+func load() []Todo {
+	var ts []Todo
+	if b, err := os.ReadFile("todos.json"); err == nil {
+		_ = json.Unmarshal(b, &ts)
+	}
+	return ts
+}
+
+func save(ts []Todo) {
+	b, _ := json.Marshal(ts)
+	_ = os.WriteFile("todos.json", b, 0o644)
+}
+
+func main() {
+	ts := load()
+	switch os.Args[1] {
+	case "add":
+		ts = append(ts, Todo{ID: len(ts) + 1, Text: os.Args[2]})
+		save(ts)
+		fmt.Println("Added:", os.Args[2])
+	case "list":
+		for _, t := range ts {
+			fmt.Printf("%d %s\n", t.ID, t.Text)
+		}
+	}
+}
+`
+
+const brokenTodo = `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+type Todo struct {
+	ID   int    ` + "`json:\"id\"`" + `
+	Text string ` + "`json:\"text\"`" + `
+}
+
+var ts []Todo
+
+func save(ts []Todo) {
+	b, _ := json.Marshal(ts)
+	_ = os.WriteFile("todos.json", b, 0o644)
+}
+
+func main() {
+	// BUG: never calls load(), so a fresh ` + "`list`" + ` run sees nothing —
+	// the v0.1.58 test-drive failure.
+	switch os.Args[1] {
+	case "add":
+		ts = append(ts, Todo{ID: len(ts) + 1, Text: os.Args[2]})
+		save(ts)
+		fmt.Println("Added:", os.Args[2])
+	case "list":
+		for _, t := range ts {
+			fmt.Printf("%d %s\n", t.ID, t.Text)
+		}
+	}
+}
+`
+
+func TestSmokeBehavioralStepsTodoWorking(t *testing.T) {
+	// A todo app with working persistence: `add buy milk` then a FRESH `list`
+	// run must show the item — the cross-invocation assertion that catches the
+	// dead-persistence bug found in the v0.1.58 live test drive.
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module todo\n\ngo 1.22\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "main.go"), []byte(workingTodo), 0o644)
+
+	tool := &smokeTool{ws: ws}
+	res, err := tool.Execute(context.Background(), []byte(`{"steps":[
+		{"args":["add","buy milk"],"expect":"Added: buy milk"},
+		{"args":["list"],"expect":"buy milk"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "runtime_smoke PASS") {
+		t.Errorf("working todo should pass behavioral steps, got: %s", res)
+	}
+}
+
+func TestSmokeBehavioralStepsTodoBrokenPersistence(t *testing.T) {
+	// The broken todo (never loads on a fresh run) compiles and runs but a
+	// fresh `list` shows nothing. The behavioral probe must catch it even
+	// though a crash-only smoke would PASS.
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module todo\n\ngo 1.22\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "main.go"), []byte(brokenTodo), 0o644)
+
+	tool := &smokeTool{ws: ws}
+	res, err := tool.Execute(context.Background(), []byte(`{"steps":[
+		{"args":["add","buy milk"],"expect":"Added: buy milk"},
+		{"args":["list"],"expect":"buy milk"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "runtime_smoke FAIL") {
+		t.Errorf("broken persistence should FAIL behavioral steps, got: %s", res)
+	}
+	if !strings.Contains(res, "missing \"buy milk\"") {
+		t.Errorf("FAIL should cite the missing output, got: %s", res)
+	}
+}
+
+func TestSmokeBehavioralStepsInteractive(t *testing.T) {
+	// A stdin-driven interactive app: each step feeds input, output must
+	// contain the expected echo.
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "main.py"), []byte(`while True:
+    line = input()
+    if line == "q": break
+    print("echo", line)
+`), 0o644)
+	tool := &smokeTool{ws: ws}
+	res, err := tool.Execute(context.Background(), []byte(`{"steps":[
+		{"input":"hello\n","expect":"echo hello"},
+		{"input":"q\n","expect":""}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "runtime_smoke PASS") {
+		t.Errorf("interactive echo with steps should pass, got: %s", res)
+	}
+}
+
+func TestSmokeBehavioralStepsExpectFail(t *testing.T) {
+	// The probe asserts output; when the expected text is absent the gate must
+	// fail even though the program runs fine (behavioral bug, not a crash).
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "main.py"), []byte(`print("no data here")`), 0o644)
+	tool := &smokeTool{ws: ws}
+	res, err := tool.Execute(context.Background(), []byte(`{"steps":[
+		{"input":"","expect":"the missing thing"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "runtime_smoke FAIL") || !strings.Contains(res, "missing") {
+		t.Errorf("expected FAIL citing the missing text, got: %s", res)
+	}
+}

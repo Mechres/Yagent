@@ -22,15 +22,27 @@ import (
 // crashes (panic / segfault / assertion / non-zero exit with no output). It is
 // the codegen-mode companion to workspace_diagnostics: diagnostics prove the
 // code *compiles*, smoke proves it *runs without crashing* — the two failures
-// a small model's greenfield output actually has.
+// a small model's greenfield output actually has. An optional `steps` probe
+// raises the bar to *behaves*: each step runs the program with its own stdin
+// and asserts the output contains the expected text (e.g. a todo app: add an
+// item, then a fresh `list` run must show it — catching dead persistence).
 type smokeTool struct {
 	ws       string
 	lookPath func(string) (string, error) // injectable in tests; nil = exec.LookPath
 	buildCmd func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-var smokeSchema = fnSchema("runtime_smoke", "build and briefly run the program the agent just wrote, feeding it minimal input, to prove it doesn't crash (panic, segfault, assertion, or immediate exit with no output). Deterministic — use it after fs_write/fs_edit/fs_patch in codegen mode, alongside workspace_diagnostics, before declaring a program complete.",
-	map[string]any{}, []string{})
+var smokeSchema = fnSchema("runtime_smoke", "build and briefly run the program the agent just wrote, feeding it minimal input, to prove it doesn't crash (panic, segfault, assertion, or immediate exit with no output). Optional `steps` — a list of {args, input, expect} probes — assert the program *behaves*: each step runs the program with the given argv and stdin and the output must contain the expected text (fresh process per step, so state persists via files). Use it after fs_write/fs_edit/fs_patch in codegen mode, alongside workspace_diagnostics, before declaring a program complete.",
+	map[string]any{
+		"steps": map[string]any{"type": "array", "items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"args":   arrayProp("command-line arguments for this run (empty = none)"),
+				"input":  strProp("stdin to feed this run (default: minimal q/newlines)"),
+				"expect": strProp("text the program output must contain for this step to pass"),
+			},
+		}, "description": "optional behavioral assertions: [{args, input, expect}, ...]"},
+	}, []string{})
 
 const (
 	smokeTimeout   = 12 * time.Second
@@ -45,22 +57,20 @@ func (t *smokeTool) Schema() llm.ToolSchema { return smokeSchema }
 func (t *smokeTool) Risk() RiskLevel        { return RiskReadOnly }
 
 func (t *smokeTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
-	if err := decodeArgs(raw, &struct{}{}); err != nil {
+	var args struct {
+		Steps []smokeStep `json:"steps"`
+	}
+	if err := decodeArgs(raw, &args); err != nil {
 		return "", err
 	}
-	return t.smoke(ctx)
+	return t.smoke(ctx, args.Steps)
 }
 
-// smokeResult is the deterministic verdict + evidence.
-type smokeResult struct {
-	skip   bool   // no smoke runner for this project type
-	ok     bool   // survived the run window without crashing
-	detail string // crash reason or a sample of stdout
-	status string // short summary for the model ("ran ~3s, exited 0")
-}
-
-// Smoke determines build+run plan for the workspace and executes it.
-func (t *smokeTool) smoke(ctx context.Context) (string, error) {
+// smoke determines build+run plan for the workspace and executes it. With steps
+// it runs a behavioral probe: each step launches a fresh process (state
+// persists via files on disk), feeds the step's stdin, and asserts the output
+// contains the expected text.
+func (t *smokeTool) smoke(ctx context.Context, steps []smokeStep) (string, error) {
 	bin, clean, ok := t.buildPlan(ctx)
 	if !ok {
 		return "runtime_smoke: no smoke runner for this project (supported: Go, C/C++, Python; a JS/TS project needs a browser DOM). The program could not be executed, so its runtime safety is unverified.", nil
@@ -70,7 +80,10 @@ func (t *smokeTool) smoke(ctx context.Context) (string, error) {
 			defer clean()
 		}
 	}
-	res := t.runSmoke(ctx, bin)
+	if len(steps) > 0 {
+		return t.probe(ctx, bin, steps)
+	}
+	res := t.runSmoke(ctx, bin, nil, smokeScriptedInput)
 	if res.skip {
 		return "runtime_smoke: no smoke runner for this project.", nil
 	}
@@ -78,6 +91,43 @@ func (t *smokeTool) smoke(ctx context.Context) (string, error) {
 		return fmt.Sprintf("runtime_smoke FAIL: %s\n%s", res.detail, res.status), nil
 	}
 	return fmt.Sprintf("runtime_smoke PASS: %s\n%s", res.status, res.detail), nil
+}
+
+// probe runs each behavioral step and reports PASS only when every step's
+// output contains its expected text (and no step crashed).
+func (t *smokeTool) probe(ctx context.Context, bin string, steps []smokeStep) (string, error) {
+	for i, step := range steps {
+		input := step.Input
+		if input == "" {
+			input = smokeScriptedInput
+		}
+		res := t.runSmoke(ctx, bin, step.Args, input)
+		if res.skip {
+			return "runtime_smoke FAIL: no smoke runner for this project.", nil
+		}
+		if !res.ok {
+			return fmt.Sprintf("runtime_smoke FAIL: step %d crashed\n%s\n%s", i+1, res.detail, res.status), nil
+		}
+		if step.Expect != "" && !strings.Contains(res.detail, step.Expect) {
+			return fmt.Sprintf("runtime_smoke FAIL: step %d output missing %q\n%s", i+1, step.Expect, capResult(res.detail, smokeMaxOutput)), nil
+		}
+	}
+	return fmt.Sprintf("runtime_smoke PASS: all %d behavioral step(s) produced the expected output", len(steps)), nil
+}
+
+// smokeStep is one behavioral assertion.
+type smokeStep struct {
+	Args   []string
+	Input  string
+	Expect string
+}
+
+// smokeResult is the deterministic verdict + evidence.
+type smokeResult struct {
+	skip   bool   // no smoke runner for this project type
+	ok     bool   // survived the run window without crashing
+	detail string // crash reason or a sample of stdout
+	status string // short summary for the model ("ran ~3s, exited 0")
 }
 
 // buildPlan returns the runnable binary path (or "" to run a script directly),
@@ -168,16 +218,17 @@ func hasPythonEntry(ws string) bool {
 	return false
 }
 
-// runSmoke executes the runnable target with scripted stdin and judges survival.
-func (t *smokeTool) runSmoke(ctx context.Context, bin string) smokeResult {
+// runSmoke executes the runnable target with the given args+stdin and judges
+// survival: did it crash, or did it survive (clean exit or alive to timeout)?
+func (t *smokeTool) runSmoke(ctx context.Context, bin string, args []string, input string) smokeResult {
 	var (
 		cmd *exec.Cmd
 		dir = t.ws
 	)
 	if bin != "" {
-		cmd = exec.CommandContext(ctx, bin)
+		cmd = exec.CommandContext(ctx, bin, args...)
 	} else {
-		// python3 <entry.py>
+		// python3 <entry.py> <args...>
 		entry := "main.py"
 		if _, err := os.Stat(filepath.Join(t.ws, "main.py")); err != nil {
 			entries, _ := os.ReadDir(t.ws)
@@ -188,12 +239,12 @@ func (t *smokeTool) runSmoke(ctx context.Context, bin string) smokeResult {
 				}
 			}
 		}
-		cmd = exec.CommandContext(ctx, "python3", entry)
+		cmd = exec.CommandContext(ctx, "python3", append([]string{entry}, args...)...)
 	}
 	cmd.Dir = dir
 	cmd.Env = scrubEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Stdin = strings.NewReader(smokeScriptedInput)
+	cmd.Stdin = strings.NewReader(input)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf

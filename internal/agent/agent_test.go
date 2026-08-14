@@ -2088,13 +2088,61 @@ func TestCodegenSmokeGateCatchesCrash(t *testing.T) {
 	defer s.mu.Unlock()
 	var sawCrash bool
 	for _, req := range s.requests {
-		if strings.Contains(string(req), "CRASHED when run") {
+		if strings.Contains(string(req), "FAILED runtime_smoke") {
 			sawCrash = true
 			break
 		}
 	}
 	if !sawCrash {
 		t.Error("smoke gate did not feed the crash report back")
+	}
+}
+
+func TestCodegenSmokeGateBehavioralSteps(t *testing.T) {
+	// The model writes a todo app with dead persistence (never reloads on a
+	// fresh run — the exact bug from the v0.1.58 live test drive). It compiles
+	// and runs, so the crash-only gate can't see it; the steps probe must.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module todo\n\ngo 1.22\n")
+
+	s := newScriptedLLM(t, [][]string{
+		// write the broken todo app
+		toolCall("c1", "fs_write", `{"path":"main.go","content":"package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n)\n\ntype Todo struct {\n\tID int\n\tText string\n}\n\nvar ts []Todo\n\nfunc save() {\n\tb, _ := json.Marshal(ts)\n\t_ = os.WriteFile(\"todos.json\", b, 0o644)\n}\n\nfunc main() {\n\tswitch os.Args[1] {\n\tcase \"add\":\n\t\tts = append(ts, Todo{len(ts) + 1, os.Args[2]})\n\t\tsave()\n\t\tfmt.Println(\"Added:\", os.Args[2])\n\tcase \"list\":\n\t\tfor _, t := range ts {\n\t\t\tfmt.Println(t.ID, t.Text)\n\t\t}\n\t}\n}\n"}`),
+		// the model runs smoke with steps: add then a fresh list
+		toolCall("c2", "runtime_smoke", `{"steps":[{"args":["add","buy milk"],"expect":"Added: buy milk"},{"args":["list"],"expect":"buy milk"}]}`),
+		// probe FAILS (missing "buy milk" in the fresh list) -> gate refuses
+		finalContent("the todo app is complete"),
+		// model fixes persistence by loading on start
+		toolCall("c3", "fs_write", `{"path":"main.go","content":"package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n)\n\ntype Todo struct {\n\tID int\n\tText string\n}\n\nfunc load() []Todo {\n\tvar ts []Todo\n\tif b, err := os.ReadFile(\"todos.json\"); err == nil {\n\t\t_ = json.Unmarshal(b, &ts)\n\t}\n\treturn ts\n}\n\nfunc main() {\n\tts := load()\n\tswitch os.Args[1] {\n\tcase \"add\":\n\t\tts = append(ts, Todo{len(ts) + 1, os.Args[2]})\n\t\tb, _ := json.Marshal(ts)\n\t\t_ = os.WriteFile(\"todos.json\", b, 0o644)\n\t\tfmt.Println(\"Added:\", os.Args[2])\n\tcase \"list\":\n\t\tfor _, t := range ts {\n\t\t\tfmt.Println(t.ID, t.Text)\n\t\t}\n\t}\n}\n"}`),
+		toolCall("c4", "runtime_smoke", `{"steps":[{"args":["add","buy milk"],"expect":"Added: buy milk"},{"args":["list"],"expect":"buy milk"}]}`),
+		finalContent("fixed persistence, now the fresh list shows the item"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 12, Codegen: true}, ws)
+
+	answer, err := a.Run(context.Background(), "build a todo app")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "fixed persistence, now the fresh list shows the item" {
+		t.Errorf("answer = %q", answer)
+	}
+	// the behavioral FAIL must have been fed back (as the probe result, which
+	// the gate re-runs at the final answer too)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var sawBehavioralFail bool
+	for _, req := range s.requests {
+		// JSON bodies escape quotes, so match the unescaped parts.
+		if strings.Contains(string(req), "FAILED runtime_smoke") &&
+			strings.Contains(string(req), "step 2 output missing") {
+			sawBehavioralFail = true
+			break
+		}
+	}
+	if !sawBehavioralFail {
+		t.Error("behavioral probe FAIL was not fed back")
 	}
 }
 
