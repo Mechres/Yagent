@@ -62,6 +62,10 @@ type Options struct {
 	// compile-gated final answers, plan-narration-as-stall). Also auto-enabled
 	// for goal and playbook modes.
 	Codegen bool
+	// Checks are deterministic goal-success predicates applied to goal mode's
+	// DONE gate (repeatable --check, e.g. "main.go contains config.New"). A
+	// DONE verdict is refused while any fails — catches "copy instead of move".
+	Checks []agent.SuccessCheck
 }
 
 // replAskUser prompts on stdin with a numbered choice list (or free text) and
@@ -178,7 +182,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			return fmt.Errorf("resume goal: could not find the goal in session %s", opts.ResumeGoal)
 		}
 		fmt.Printf("resuming goal from checkpoint — %q\n", goal)
-		return runGoalMode(ctx, client, cfg, env, goal, opts.Rounds, opts.YOLO, opts.Trace)
+		return runGoalMode(ctx, client, cfg, env, goal, opts.Rounds, opts.YOLO, opts.Trace, opts.Checks)
 	}
 	// Playbook mode: run a declarative multi-stage workflow, then exit (P8).
 	if opts.Playbook != "" {
@@ -190,7 +194,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		defer env.vs.Close()
 		defer env.projVS.Close()
 		defer env.idx.Close()
-		return runPlaybookMode(ctx, client, cfg, env, opts.Playbook, opts.YOLO, opts.Trace)
+		return runPlaybookMode(ctx, client, cfg, env, opts.Playbook, opts.YOLO, opts.Trace, opts.Checks)
 	}
 	// Goal mode: autonomous loop toward a goal, then exit.
 	if opts.Goal != "" {
@@ -202,7 +206,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		defer env.vs.Close()
 		defer env.projVS.Close()
 		defer env.idx.Close()
-		return runGoalMode(ctx, client, cfg, env, opts.Goal, opts.Rounds, opts.YOLO, opts.Trace)
+		return runGoalMode(ctx, client, cfg, env, opts.Goal, opts.Rounds, opts.YOLO, opts.Trace, opts.Checks)
 	}
 	// TUI by default on a real terminal; --plain (or piped stdin) falls back
 	// to the streaming REPL.
@@ -360,7 +364,7 @@ done:
 // runPlaybookMode executes a declarative playbook's phases in order, each as an
 // autonomous goal run scoped to the phase's tool subset (P8). The workspace is
 // snapshotted before every phase so a failed phase can be rolled back.
-func runPlaybookMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, name string, yolo bool, trace io.Writer) error {
+func runPlaybookMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, name string, yolo bool, trace io.Writer, checks []agent.SuccessCheck) error {
 	ws, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
@@ -390,6 +394,7 @@ func runPlaybookMode(ctx context.Context, client *llm.Client, cfg *config.Config
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
 		},
 		trace)
+	ag.SetSuccessChecks(checks)
 
 	executePlaybook(ctx, client, cfg, env, ag, w, pb)
 	if err := ag.Finish(ctx); err != nil {
@@ -559,7 +564,7 @@ type chatEnv struct {
 // continue. The workspace is snapshotted before the run and after every
 // completed round (so `--resume-goal` can roll back to the last good state).
 // Ends with the session id for later resume.
-func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, goal string, rounds int, yolo bool, trace io.Writer) error {
+func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, goal string, rounds int, yolo bool, trace io.Writer, checks []agent.SuccessCheck) error {
 	w := os.Stdout
 	reader := bufio.NewReader(os.Stdin)
 	ap := newToggleableApprover(&replApprover{reader: reader, writer: w})
@@ -582,6 +587,7 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
 		},
 		trace)
+	ag.SetSuccessChecks(checks)
 
 	fmt.Printf("goal mode — working toward: %s\n", goal)
 	if env.forkSource != "" {

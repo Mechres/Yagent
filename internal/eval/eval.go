@@ -71,6 +71,9 @@ type Task struct {
 	GoalGate bool `yaml:"goal_gate"`
 	// TestGate refuses a DONE verdict while the unit tests fail (test_runner).
 	TestGate bool `yaml:"test_gate"`
+	// SuccessChecks are goal-success predicates ("file:contains:text" style)
+	// refused at the DONE gate until they pass.
+	SuccessChecks []string `yaml:"success_checks"`
 	// GoalMemorize persists each goal round's facts to L3 memory.
 	GoalMemorize bool `yaml:"goal_memorize"`
 	// Codegen switches the loop to greenfield-code strategy: whole-file writes,
@@ -251,6 +254,7 @@ func Run(t *testing.T, task Task) {
 		TestGate:        task.TestGate,
 		GoalMemorize:    task.GoalMemorize,
 		Codegen:         task.Codegen,
+		SuccessChecks:   parseEvalChecks(task.SuccessChecks),
 	}, ws)
 
 	inputs := task.Inputs
@@ -464,6 +468,23 @@ func (a *taskApprover) filterPatch(call llm.ToolCall) (agent.Approval, error) {
 	}
 	out, _ := json.Marshal(map[string]string{"patch": rebuilt})
 	return agent.Approval{OK: true, Args: out}, nil
+}
+
+// parseEvalChecks converts eval success_checks ("main.go:config.Config") into
+// agent.SuccessCheck predicates. The path:text pair form matches SuccessCheck's
+// internal encoding; "path exists" produces a FileExists check.
+func parseEvalChecks(checks []string) []agent.SuccessCheck {
+	var out []agent.SuccessCheck
+	for _, c := range checks {
+		if strings.HasSuffix(c, " exists") {
+			out = append(out, agent.SuccessCheck{FileExists: strings.TrimSuffix(c, " exists")})
+			continue
+		}
+		if i := strings.IndexByte(c, ':'); i > 0 {
+			out = append(out, agent.SuccessCheck{FileContains: c})
+		}
+	}
+	return out
 }
 
 // fixedSummaryLLM always returns a fixed message; used as the budget

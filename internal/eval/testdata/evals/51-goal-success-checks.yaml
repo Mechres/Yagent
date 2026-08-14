@@ -1,0 +1,40 @@
+name: goal-success-checks
+description: "v0.1.65 — goal success predicates refuse a DONE where the refactor never happened: main.go still uses the old package (the 'copy instead of move' failure the compile gate is blind to)"
+goal_gate: true
+test_gate: true
+success_checks: ["main.go:config.Config"]
+rounds: 4
+files:
+  go.mod: |
+    module stress
+
+    go 1.22
+  pkg/config.go: |
+    package pkg
+
+    type Config struct {
+        Host string
+    }
+  main.go: |
+    package main
+
+    import "stress/pkg"
+
+    func main() {
+        var c pkg.Config
+        _ = c
+    }
+goal: move Config into a new package pkg/config and rewire main.go to use it
+steps:
+  # the model creates the new package but never rewires main.go (copy, not move)
+  - tool_call: {name: fs_write, args: '{"path":"pkg/config/config.go","content":"package config\n\ntype Config struct {\n\tHost string\n}\n\nfunc New() Config {\n\treturn Config{Host: \"localhost\"}\n}\n"}'}
+  - answer: moved Config to pkg/config with New()
+  - answer: DONE the refactor is complete
+  # the success predicate fires: main.go still uses stress/pkg
+  - tool_call: {name: fs_edit, args: '{"path":"main.go","old_string":"import \"stress/pkg\"\n","new_string":"import \"stress/pkg/config\"\n"}'}
+  - tool_call: {name: fs_edit, args: '{"path":"main.go","old_string":"var c pkg.Config","new_string":"var c config.Config"}'}
+  - answer: rewired main.go to the new package
+  - answer: DONE now main.go uses config.Config
+assert:
+  requests_contain: ["success predicates are not satisfied"]
+  final_answer_contains: "rewired"

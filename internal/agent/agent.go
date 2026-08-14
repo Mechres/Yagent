@@ -262,6 +262,14 @@ type Config struct {
 	// UI-enabled.
 	TestGate bool
 
+	// SuccessChecks are deterministic goal-success predicates (the playbook
+	// checks: mechanism ported to goal mode): after GoalGate/TestGate clear, a
+	// DONE verdict is also refused while any file assertion fails. This catches
+	// the "copy instead of move" failure where the workspace still compiles (so
+	// the compile gate is blind) but the refactor never actually happened —
+	// e.g. `--check "main.go contains config.New"`. UI-enabled.
+	SuccessChecks []SuccessCheck
+
 	// GoalMemorize, when enabled, makes RunGoal save each round's deterministic
 	// facts (touched paths, last tool failure) into the L3 memory store after
 	// the round, so long multi-round goals stay oriented without re-reading
@@ -290,6 +298,55 @@ type Config struct {
 	// InitialHistory/InitialSummary seed a resumed session (chat --continue).
 	InitialHistory []llm.Message
 	InitialSummary string
+}
+
+// SuccessCheck is one deterministic goal-success predicate (ported from the
+// playbook checks: mechanism — same shape, evaluated by the goal DONE gate).
+type SuccessCheck struct {
+	FileContains    string `json:"file_contains"`     // "path:text" — must appear
+	FileNotContains string `json:"file_not_contains"` // "path:text" — must not appear
+	FileExists      string `json:"file_exists"`
+}
+
+// Eval runs the check against the workspace and returns a failure description
+// ("" = passed).
+func (c SuccessCheck) Eval(ws string) string {
+	if c.FileContains != "" {
+		path, text, ok := splitCheckPair(c.FileContains)
+		if !ok {
+			return "malformed file_contains (expected \"path:text\")"
+		}
+		data, err := os.ReadFile(filepath.Join(ws, path))
+		if err != nil || !strings.Contains(string(data), text) {
+			return fmt.Sprintf("file %s does not contain %q", path, text)
+		}
+	}
+	if c.FileNotContains != "" {
+		path, text, ok := splitCheckPair(c.FileNotContains)
+		if !ok {
+			return "malformed file_not_contains (expected \"path:text\")"
+		}
+		data, err := os.ReadFile(filepath.Join(ws, path))
+		if err == nil && strings.Contains(string(data), text) {
+			return fmt.Sprintf("file %s contains %q (should not)", path, text)
+		}
+	}
+	if c.FileExists != "" {
+		if _, err := os.Stat(filepath.Join(ws, c.FileExists)); err != nil {
+			return fmt.Sprintf("file %s does not exist", c.FileExists)
+		}
+	}
+	return ""
+}
+
+// splitCheckPair splits "path:text" into its two parts. The first colon splits;
+// a Windows drive letter is not a concern (workspace-relative paths).
+func splitCheckPair(s string) (string, string, bool) {
+	i := strings.IndexByte(s, ':')
+	if i <= 0 || i == len(s)-1 {
+		return "", "", false
+	}
+	return s[:i], s[i+1:], true
 }
 
 // Approval is an approver's verdict. Args, when non-nil, overrides the tool
@@ -517,6 +574,14 @@ func (a *Agent) SetRegistry(reg *tools.Registry) {
 func (a *Agent) SetSessionID(id string) {
 	a.mu.Lock()
 	a.cfg.SessionID = id
+	a.mu.Unlock()
+}
+
+// SetSuccessChecks installs the deterministic goal-success predicates applied
+// by the DONE gate (wired after the agent is built from UI flags).
+func (a *Agent) SetSuccessChecks(checks []SuccessCheck) {
+	a.mu.Lock()
+	a.cfg.SuccessChecks = append([]SuccessCheck(nil), checks...)
 	a.mu.Unlock()
 }
 
@@ -1105,6 +1170,20 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 					}
 				}
 			}
+			// Goal success predicates (the "copy instead of move" gate): the
+			// compile/test gates only verify the workspace still builds — they
+			// are blind to a DONE where the refactor never happened (old code
+			// intact, so everything stays green). Deterministic file assertions
+			// catch that: `--check "main.go contains config.New"` refuses DONE
+			// until main.go actually uses the new package.
+			if fails := a.successCheckFails(); len(fails) > 0 {
+				msg := "Deterministic completion check: the goal's success predicates are not satisfied. You reported DONE, but the checks below still fail — do the actual work, then re-report DONE.\n" +
+					strings.Join(fails, "\n")
+				if _, aerr := a.appendMessage(ctx, llm.Message{Role: "user", Content: msg}); aerr != nil {
+					return last, aerr
+				}
+				continue // DONE refused; the declared goal conditions must hold
+			}
 			return last, nil
 		}
 	}
@@ -1188,6 +1267,22 @@ func (a *Agent) testGateCheck(ctx context.Context) string {
 	}
 	return "Deterministic completion check: unit tests FAIL. " +
 		"You reported DONE, but the tests below are failing — fix them, then re-run test_runner and report DONE again.\n\n" + result
+}
+
+// successCheckFails evaluates the configured goal-success predicates against
+// the workspace and returns each failure description (empty = all passed).
+// Called by the DONE gate after the compile/test gates clear.
+func (a *Agent) successCheckFails() []string {
+	if len(a.cfg.SuccessChecks) == 0 {
+		return nil
+	}
+	var fails []string
+	for _, c := range a.cfg.SuccessChecks {
+		if msg := c.Eval(a.workspace); msg != "" {
+			fails = append(fails, "  - "+msg)
+		}
+	}
+	return fails
 }
 
 // smokeGateCheck runs runtime_smoke deterministically and returns a DONE-

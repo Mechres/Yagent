@@ -61,6 +61,7 @@ func TestLiveGoalStress(t *testing.T) {
 		IndexAutoInject: false,
 		VerifyWrites:    true, // match production goal mode (deterministic done-gate)
 		GoalGate:        true, // refuse DONE while the static check fails (2026-08-13 fix)
+		TestGate:        true, // refuse DONE while the unit tests fail (v0.1.63)
 		GoalMemorize:    true, // persist round facts to L3 memory
 	}, ws)
 

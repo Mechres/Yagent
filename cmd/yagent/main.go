@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mechres/Yagent/internal/agent"
 	"github.com/Mechres/Yagent/internal/bench"
 	"github.com/Mechres/Yagent/internal/config"
 	"github.com/Mechres/Yagent/internal/dataset"
@@ -24,6 +25,39 @@ import (
 	"github.com/Mechres/Yagent/internal/skills"
 	"github.com/Mechres/Yagent/internal/ui"
 )
+
+// stringList is a repeatable flag value ("-x a -x b").
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ", ") }
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// parseSuccessChecks converts the --check flag strings ("main.go contains
+// config.New", "pkg/config.go exists", "main.go !contains stress/pkg") into
+// agent.SuccessCheck predicates. A malformed entry is a hard error the user
+// must fix (better than silently running ungated).
+func parseSuccessChecks(flags []string) []agent.SuccessCheck {
+	var out []agent.SuccessCheck
+	for _, f := range flags {
+		switch {
+		case strings.Contains(f, " contains "):
+			parts := strings.SplitN(f, " contains ", 2)
+			out = append(out, agent.SuccessCheck{FileContains: parts[0] + ":" + parts[1]})
+		case strings.Contains(f, " !contains "):
+			parts := strings.SplitN(f, " !contains ", 2)
+			out = append(out, agent.SuccessCheck{FileNotContains: parts[0] + ":" + parts[1]})
+		case strings.HasSuffix(f, " exists"):
+			out = append(out, agent.SuccessCheck{FileExists: strings.TrimSuffix(f, " exists")})
+		default:
+			fmt.Fprintf(os.Stderr, "error: malformed --check %q (use \"<file> contains <text>\", \"<file> !contains <text>\", or \"<file> exists\")\n", f)
+			os.Exit(2)
+		}
+	}
+	return out
+}
 
 // version is overridden at build time via
 // -ldflags "-X main.version=<git describe output>" (see Makefile).
@@ -66,6 +100,8 @@ func main() {
 		plain := fs.Bool("plain", false, "force the plain REPL instead of the TUI")
 		yolo := fs.Bool("yolo", false, "auto-approve every write/destructive tool and apply skills immediately")
 		codegen := fs.Bool("codegen", false, "greenfield-code mode: whole-file writes, compile-gated final answers (auto-enabled by --goal)")
+		var checkFlags stringList
+		fs.Var(&checkFlags, "check", "goal-success predicate (repeatable): \"<file> contains <text>\", \"<file> !contains <text>\", or \"<file> exists\"; the goal DONE verdict is refused until all pass")
 		if err := fs.Parse(args[1:]); err != nil {
 			os.Exit(2)
 		}
@@ -104,7 +140,7 @@ func main() {
 		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{
 			Plain: *plain, YOLO: *yolo, Fork: *forkID, Goal: *goal, Rounds: *rounds,
 			ResumeGoal: *resumeGoal, Playbook: *playbookName, Trace: trace,
-			Codegen: *codegen,
+			Codegen: *codegen, Checks: parseSuccessChecks(checkFlags),
 		}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
@@ -237,7 +273,7 @@ _yagent() {
     local cur
     cur="${COMP_WORDS[COMP_CWORD]}"
     local commands="chat sessions skills doctor completion playbook calibrate bench export-dataset init backup memory"
-    local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo --codegen"
+    local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo --codegen --check"
     local skills_cmds="list import"
     local scopes="global project"
     if [ "$COMP_CWORD" -eq 1 ]; then
@@ -268,7 +304,7 @@ const zshCompletion = `#compdef yagent
 # yagent zsh completion — add this directory to your fpath and symlink to _yagent
 _arguments '1:command:(chat sessions skills doctor completion playbook calibrate bench export-dataset init backup memory)' '*: :->args'
 case $words[1] in
-  chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--playbook=[run playbook]:name:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' '--codegen[greenfield-code mode]' ;;
+  chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--playbook=[run playbook]:name:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' '--codegen[greenfield-code mode]' '--check=[goal success predicate (repeatable)]:check:' ;;
   skills) _arguments '1:skill command:(list import)' '*: :->file' ;;
   export-dataset) _arguments '--output=[output file]:file:_files' '--format=[format]:format:(openai sharegpt dpo)' '--session=[session id]:id:' '--min-messages=[min messages]:n:' ;;
   calibrate) _arguments '--write[write sampling to config]' ;;
@@ -281,7 +317,7 @@ esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] [--codegen] | yagent sessions [search <q>|export <id>] | yagent memory [list|count|search <q>|delete <id|--all>|export <file>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--check \"<file> contains <text>\"|!contains|exists]... [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] [--codegen] | yagent sessions [search <q>|export <id>] | yagent memory [list|count|search <q>|delete <id|--all>|export <file>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 

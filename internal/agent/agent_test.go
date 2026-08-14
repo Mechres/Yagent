@@ -151,6 +151,9 @@ func setup(t *testing.T, s *scriptedLLM, allow bool, maxIter int) (*Agent, *stub
 
 func writeWorkspaceFile(t *testing.T, ws, name, content string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(ws, name)), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(ws, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2431,6 +2434,86 @@ func TestTestsFailed(t *testing.T) {
 		if c.want == "clean" && TestsFailed(c.in) {
 			t.Errorf("TestsFailed(%q) = true, want false", c.in)
 		}
+	}
+}
+
+func TestRunGoalSuccessChecksRefuseCopyInsteadOfMove(t *testing.T) {
+	// The stress-test finding (run 2, 2026-08-14): a "copy instead of move"
+	// refactor — the model adds the new package but leaves the old one and the
+	// callers untouched, so everything still compiles and the compile/test
+	// gates are BLIND to it. A --check predicate ("main.go contains config.New")
+	// must refuse that DONE.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module stress\n\ngo 1.22\n")
+	// fixture: old package + caller + test all intact (the "copy" state)
+	writeWorkspaceFile(t, ws, "pkg/config.go", "package pkg\n\ntype Config struct{ Host string }\n")
+	writeWorkspaceFile(t, ws, "main.go", "package main\n\nimport \"stress/pkg\"\n\nfunc main() {\n\tvar c pkg.Config\n\t_ = c\n}\n")
+	writeWorkspaceFile(t, ws, "pkg_test.go", "package main\n\nimport \"testing\"\n\nfunc TestT(t *testing.T) {}\n")
+
+	s := newScriptedLLM(t, [][]string{
+		// the model does a "copy": creates the new package but never rewires
+		toolCall("c1", "fs_write", `{"path":"pkg/config/config.go","content":"package config\n\ntype Config struct {\n\tHost string\n}\n\nfunc New() Config {\n\treturn Config{Host: \"localhost\"}\n}\n"}`),
+		finalContent("moved Config to pkg/config with New()"),
+		finalContent("DONE the refactor is complete"),
+		// the success predicate fires: main.go still uses stress/pkg
+		toolCall("c2", "fs_edit", `{"path":"main.go","old_string":"import \"stress/pkg\"\n","new_string":"import \"stress/pkg/config\"\n"}`),
+		toolCall("c3", "fs_edit", `{"path":"main.go","old_string":"var c pkg.Config","new_string":"var c config.Config"}`),
+		finalContent("rewired main.go to the new package"),
+		finalContent("DONE now main.go uses config.New"),
+	})
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10, GoalGate: true, TestGate: true,
+			SuccessChecks: []SuccessCheck{{FileContains: "main.go:config.Config"}}}, ws)
+
+	var rounds []int
+	answer, err := a.RunGoal(context.Background(), "move Config to pkg/config", 5, func(r int, _ string) {
+		rounds = append(rounds, r)
+	})
+	if err != nil {
+		t.Fatalf("RunGoal: %v", err)
+	}
+	if len(rounds) < 2 {
+		t.Errorf("success predicate did not force a second round: rounds=%v", rounds)
+	}
+	// RunGoal returns the final round's Run answer (the DONE verdict is consumed
+	// by the gate, not returned).
+	if answer != "rewired main.go to the new package" {
+		t.Errorf("answer = %q", answer)
+	}
+	// the predicate failure must have been fed back
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sawCheck := false
+	for _, req := range s.requests {
+		if strings.Contains(string(req), "success predicates are not satisfied") {
+			sawCheck = true
+			break
+		}
+	}
+	if !sawCheck {
+		t.Error("success predicate failure was not fed back")
+	}
+}
+
+func TestSuccessCheckEval(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "main.go", "package main\n\nimport \"stress/pkg\"\nfunc main() { var c pkg.Config; _ = c }\n")
+
+	if msg := (SuccessCheck{FileContains: "main.go:config.New"}).Eval(ws); msg == "" {
+		t.Error("missing config.New should fail the contains check")
+	}
+	if msg := (SuccessCheck{FileContains: "main.go:stress/pkg"}).Eval(ws); msg != "" {
+		t.Errorf("present text wrongly failed: %q", msg)
+	}
+	if msg := (SuccessCheck{FileNotContains: "main.go:stress/pkg"}).Eval(ws); msg == "" {
+		t.Error("present forbidden text should fail !contains")
+	}
+	if msg := (SuccessCheck{FileExists: "main.go"}).Eval(ws); msg != "" {
+		t.Errorf("existing file wrongly failed: %q", msg)
+	}
+	if msg := (SuccessCheck{FileExists: "missing.go"}).Eval(ws); msg == "" {
+		t.Error("missing file should fail exists")
 	}
 }
 

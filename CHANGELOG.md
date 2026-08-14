@@ -2,6 +2,23 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.65 — 2026-08-14
+
+### Added
+- **Goal success predicates** — repeatable `--check` flags
+  (`"<file> contains <text>"`, `"<file> !contains <text>"`, `"<file> exists"`)
+  install deterministic goal-success conditions on the DONE gate
+  (`agent.SuccessChecks`, `agent.SuccessCheck.Eval`). A DONE verdict is refused
+  while any predicate fails, and the failures are fed back for another round.
+  This closes the gap the 2026-08-14 live stress re-measure exposed: a
+  **"copy instead of move"** refactor where the model adds the new package but
+  leaves the old one and the callers untouched — everything still compiles (go
+  vet/test pass), so the compile and test gates are blind to the fact that the
+  actual move never happened. `--check "main.go contains config.Config"` refuses
+  DONE until the caller is really rewired.
+- **Golden eval 51** — goal-success-checks: the copy-instead-of-move DONE is
+  refused and only accepted after main.go uses the new package.
+
 ## v0.1.64 — 2026-08-14
 
 ### Added
