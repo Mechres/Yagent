@@ -461,12 +461,50 @@ func evaluatePhaseChecks(ws string, env *chatEnv, phase playbook.Phase) []string
 		fails = append(fails, c.Evaluate(ws)...)
 		if c.DiagnosticsPass {
 			res := runDiagnosticsCheck(env)
-			if res != "" && !strings.Contains(res, "no diagnostics configured") && !strings.Contains(res, "(no output)") {
+			// Use the same determination as the goal gate: a checker that
+			// outputs an informational banner on success must not fail the
+			// phase (agy #3).
+			if agent.DiagnosticsFailed(res) {
 				fails = append(fails, "workspace_diagnostics reported problems")
+			}
+		}
+		if c.TestsPass != "" {
+			if err := runTestsCheck(env, c.TestsPass); err != nil {
+				fails = append(fails, err.Error())
 			}
 		}
 	}
 	return fails
+}
+
+// runTestsCheck runs the project's unit tests (optionally filtered by a test
+// name) via test_runner and reports success/failure (agy #2).
+func runTestsCheck(env *chatEnv, filter string) error {
+	tool, ok := env.registry.Get("test_runner")
+	if !ok {
+		return fmt.Errorf("tests check requires test_runner (not registered)")
+	}
+	args := `{"scope":"package"}`
+	if filter != "" {
+		args = fmt.Sprintf(`{"scope":"symbol","symbol":%q}`, filter)
+	}
+	res, err := tool.Execute(context.Background(), json.RawMessage(args))
+	if err != nil {
+		return fmt.Errorf("tests check failed: %v", err)
+	}
+	// test_runner returns pruned output; failures surface FAIL / error: lines.
+	if strings.Contains(res, "FAIL") || strings.HasPrefix(strings.TrimSpace(res), "error:") {
+		return fmt.Errorf("tests failed: %s", truncateForCheck(res, 200))
+	}
+	return nil
+}
+
+func truncateForCheck(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // runDiagnosticsCheck executes the workspace_diagnostics tool for a success

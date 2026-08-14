@@ -93,6 +93,29 @@ phases:
 	if !pb.Phases[0].HasChecks() || len(pb.Phases[0].Checks) != 2 {
 		t.Errorf("phase checks = %+v", pb.Phases[0].Checks)
 	}
+
+	// a phase with a tests: predicate parses and is detected as having checks
+	writePlaybook(t, ws, "tdd", `name: tdd
+phases:
+  - goal: "implement and verify"
+    checks:
+      - tests: physics
+      - diagnostics: true
+`)
+	pb2, err := Load(ws, "tdd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := pb2.Phases[0].Checks
+	if len(ch) != 2 || !pb2.Phases[0].HasChecks() {
+		t.Fatalf("tdd phase checks = %+v", ch)
+	}
+	if ch[0].TestsPass != "physics" {
+		t.Errorf("TestsPass = %q, want physics", ch[0].TestsPass)
+	}
+	if !ch[1].DiagnosticsPass {
+		t.Errorf("DiagnosticsPass = false, want true")
+	}
 }
 
 func TestLoadValidation(t *testing.T) {

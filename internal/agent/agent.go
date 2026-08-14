@@ -902,7 +902,7 @@ func (a *Agent) goalGateCheck(ctx context.Context) string {
 	if result == "" || strings.Contains(result, "no diagnostics configured") {
 		return ""
 	}
-	if !diagnosticsFailed(result) {
+	if !DiagnosticsFailed(result) {
 		return ""
 	}
 	return "Deterministic completion check: the workspace still fails its static check. " +
@@ -910,9 +910,10 @@ func (a *Agent) goalGateCheck(ctx context.Context) string {
 		errorFixHints(result)
 }
 
-// diagnosticsFailed reports whether a workspace_diagnostics result indicates
+// DiagnosticsFailed reports whether a workspace_diagnostics result indicates
 // actual failures (compile/lint errors) rather than a clean or empty run.
-func diagnosticsFailed(result string) bool {
+// Exported so the playbook runner can reuse the same determination (agy #3).
+func DiagnosticsFailed(result string) bool {
 	for _, ln := range strings.Split(result, "\n") {
 		t := strings.TrimSpace(ln)
 		if t == "" {
@@ -964,9 +965,20 @@ func errorFixHints(result string) string {
 	if strings.Contains(lower, "unresolved import") || strings.Contains(lower, "e0432") {
 		hints = append(hints, "HINT (Rust): an import does not resolve — the module path or feature is wrong. Use code_topology to see the package layout, then fix the use statement with fs_edit.")
 	}
+	// Rust: cannot find a type/function in this scope (E0425/E0433/E0412).
+	if strings.Contains(lower, "cannot find") || strings.Contains(lower, "e0425") ||
+		strings.Contains(lower, "e0433") || strings.Contains(lower, "e0412") {
+		hints = append(hints, "HINT (Rust): a name is not in scope — either it is unimported (add a use statement) or missing from Cargo dependencies. Use index_search symbol:<name> or code_topology to locate it, then add the use/mod declaration with fs_edit.")
+	}
 	// Python: module not found.
-	if strings.Contains(lower, "modulenotfounderror") || strings.Contains(lower, "no module named") {
-		hints = append(hints, "HINT (Python): an import does not resolve — check the package is installed or the import path is correct (relative vs absolute). Use grep to find where the module is defined, then fix the import with fs_edit.")
+	if strings.Contains(lower, "modulenotfounderror") || strings.Contains(lower, "no module named") ||
+		strings.Contains(lower, "importerror") {
+		hints = append(hints, "HINT (Python): an import does not resolve — check the package is installed (pip/uv) or the import path is correct (relative vs absolute, active virtualenv). Use grep to find where the module is defined, then fix the import or requirements with fs_edit.")
+	}
+	// C/C++: undefined reference / missing header at link time.
+	if strings.Contains(lower, "undefined reference") || strings.Contains(lower, "fatal error") ||
+		strings.Contains(lower, "no such file or directory") {
+		hints = append(hints, "HINT (C/C++): a symbol is undefined or a header is missing — typically a missing #include or a missing link flag/library. Check the build file (Makefile/CMakeLists) for the right -l/--libs and the include paths, then fix with fs_edit. Do NOT create a header or stub file to silence the error.")
 	}
 	// Generic compile failure fallback.
 	if strings.Contains(lower, "build failed") || strings.Contains(lower, "compile error") {
@@ -1002,6 +1014,38 @@ func (a *Agent) taskLedger() string {
 		fmt.Fprintf(&b, "\n- last failure: %s", e)
 	}
 	return b.String()
+}
+
+// memoryOverlapsLedger reports whether a recalled memory text restates
+// something already in the TASK STATE block — a touched path (GoalMemorize
+// saves "goal work touched file X" facts) or the current failure — so the
+// same fact isn't injected twice in one context (agy #6).
+func (a *Agent) memoryOverlapsLedger(text string) bool {
+	a.mu.RLock()
+	touched := append([]string(nil), a.touchedPaths...)
+	lastErr := a.lastToolError
+	a.mu.RUnlock()
+	if len(touched) == 0 && lastErr == "" {
+		return false
+	}
+	for _, p := range touched {
+		if strings.Contains(text, p) {
+			return true
+		}
+	}
+	if lastErr != "" {
+		// GoalMemorize saves "goal attempt failed: <error>" — the memory text
+		// contains the error verbatim, so a substring match on the first 40
+		// chars of the failure is a reliable overlap signal.
+		e := strings.ToLower(strings.TrimSpace(lastErr))
+		if len(e) > 40 {
+			e = e[:40]
+		}
+		if e != "" && strings.Contains(strings.ToLower(text), e) {
+			return true
+		}
+	}
+	return false
 }
 
 // memorizeGoalRound persists the round's deterministic facts to the L3 memory
@@ -1261,6 +1305,12 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 	for _, m := range memories {
 		if m.SessionID != "" && m.SessionID == a.cfg.SessionID {
 			continue // dedupe against this session's own messages
+		}
+		// Dedup against the TASK STATE ledger (agy #6): a memory restating a
+		// path that's already in touchedPaths, or the current failure, would
+		// be redundant in the same system message. Save ~50-100 tokens/turn.
+		if a.memoryOverlapsLedger(m.Text) {
+			continue
 		}
 		fmt.Fprintf(&b, "- user fact: %s\n", m.Text)
 	}
@@ -2054,6 +2104,20 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 			if len(a.touchedPaths) > 5 {
 				a.touchedPaths = a.touchedPaths[len(a.touchedPaths)-5:]
 			}
+		} else if name == "fs_patch" {
+			// fs_patch takes a multi-file unified diff, so the args have no
+			// single "path" — parse the targets from the tool result
+			// ("patched N file(s): a.go, b.go") so patches appear in the
+			// progress ledger and L3 goal memory too.
+			for _, f := range patchTargetFiles(result) {
+				if f == "" || slices.Contains(a.touchedPaths, f) {
+					continue
+				}
+				a.touchedPaths = append(a.touchedPaths, f)
+				if len(a.touchedPaths) > 5 {
+					a.touchedPaths = a.touchedPaths[len(a.touchedPaths)-5:]
+				}
+			}
 		}
 	}
 	if strings.HasPrefix(result, "error:") {
@@ -2079,6 +2143,29 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	slog.Debug("tool executed", "tool", name)
 	armed = true // a successful call arms the dedup for an identical repeat
 	return result
+}
+
+// patchTargetFiles extracts the file paths from an fs_patch tool result
+// ("patched 2 file(s): a.go, b.go"), so multi-file patches can be tracked in
+// the progress ledger / goal memory (agy #1).
+func patchTargetFiles(result string) []string {
+	const prefix = "patched "
+	if !strings.HasPrefix(result, prefix) {
+		return nil
+	}
+	// "patched 2 file(s): a.go, b.go" — take everything after the colon.
+	colon := strings.Index(result, ": ")
+	if colon < 0 {
+		return nil
+	}
+	var out []string
+	for _, f := range strings.Split(result[colon+2:], ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func buildSystemPrompt(workspace string) string {

@@ -1610,6 +1610,48 @@ func TestStripInstructionEcho(t *testing.T) {
 	}
 }
 
+func TestPatchTargetFiles(t *testing.T) {
+	// agy #1: fs_patch results must expose the patched file list for the
+	// progress ledger / goal memory.
+	if got := patchTargetFiles("patched 2 file(s): a.go, b.go"); len(got) != 2 || got[0] != "a.go" || got[1] != "b.go" {
+		t.Errorf("patchTargetFiles = %v", got)
+	}
+	if got := patchTargetFiles("patched 1 file(s): pkg/main.cpp"); len(got) != 1 || got[0] != "pkg/main.cpp" {
+		t.Errorf("patchTargetFiles single = %v", got)
+	}
+	if got := patchTargetFiles("error: something"); got != nil {
+		t.Errorf("patchTargetFiles error = %v, want nil", got)
+	}
+	if got := patchTargetFiles("no changes applied"); got != nil {
+		t.Errorf("patchTargetFiles noop = %v, want nil", got)
+	}
+}
+
+func TestMemoryOverlapsLedger(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{}, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 3}, ws)
+
+	a.mu.Lock()
+	a.touchedPaths = []string{"internal/parser/lex.go"}
+	a.lastToolError = "fs_edit: old_string not found in main.go"
+	a.mu.Unlock()
+
+	// a memory restating a touched path is redundant -> overlapped
+	if !a.memoryOverlapsLedger("goal work touched file internal/parser/lex.go") {
+		t.Error("memory restating a touched path should be deduped")
+	}
+	// a memory about the current failure is redundant
+	if !a.memoryOverlapsLedger("goal attempt failed: fs_edit: old_string not found in main.go") {
+		t.Error("memory restating the failure should be deduped")
+	}
+	// unrelated facts are kept
+	if a.memoryOverlapsLedger("the user prefers tabs over spaces") {
+		t.Error("unrelated memory should not be deduped")
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",
@@ -2049,7 +2091,11 @@ func TestErrorFixHints(t *testing.T) {
 		{"a.go:4:2: imported and not used: \"fmt\"\n", "HINT (Go)"},
 		{"src/x.ts:2:1 - error TS2304: Cannot find name 'Foo'.\n", "HINT (TS)"},
 		{"error[E0432]: unresolved import `missing`\n", "HINT (Rust)"},
+		{"error[E0425]: cannot find value `foo` in this scope\n", "HINT (Rust)"},
 		{"ModuleNotFoundError: No module named 'requests'\n", "HINT (Python)"},
+		{"ImportError: cannot import name 'x' from 'y'\n", "HINT (Python)"},
+		{"/usr/bin/ld: undefined reference to `gladLoadGL'\n", "HINT (C/C++)"},
+		{"main.c:3:10: fatal error: texture.h: No such file or directory\n", "HINT (C/C++)"},
 		{"# pkg\nFAIL\tpkg [build failed]\n", "HINT:"},
 		{"all checks passed\n", ""},
 		{"", ""},
@@ -2079,11 +2125,11 @@ func TestDiagnosticsFailed(t *testing.T) {
 		{"no diagnostics configured for this project\n", "clean (handled by caller)"},
 	}
 	for _, c := range cases {
-		if c.want == "fail" && !diagnosticsFailed(c.in) {
-			t.Errorf("diagnosticsFailed(%q) = false, want true", c.in)
+		if c.want == "fail" && !DiagnosticsFailed(c.in) {
+			t.Errorf("DiagnosticsFailed(%q) = false, want true", c.in)
 		}
-		if c.want == "clean" && diagnosticsFailed(c.in) {
-			t.Errorf("diagnosticsFailed(%q) = true, want false", c.in)
+		if c.want == "clean" && DiagnosticsFailed(c.in) {
+			t.Errorf("DiagnosticsFailed(%q) = true, want false", c.in)
 		}
 	}
 }

@@ -32,7 +32,7 @@ func (t *environmentTool) Schema() llm.ToolSchema { return environmentSchema }
 func (t *environmentTool) Risk() RiskLevel        { return RiskReadOnly }
 
 // envBinaries are the toolchain commands worth probing (name -> semantic label).
-var envBinaries = []string{"go", "gcc", "cc", "clang", "rustc", "cargo", "node", "npm", "python3", "pkg-config", "bwrap", "docker"}
+var envBinaries = []string{"go", "gcc", "cc", "clang", "rustc", "cargo", "node", "npm", "python3", "make", "cmake", "git", "pkg-config", "bwrap", "docker"}
 
 func (t *environmentTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	if err := decodeArgs(raw, &struct{}{}); err != nil {

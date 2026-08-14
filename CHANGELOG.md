@@ -2,6 +2,26 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.53 — 2026-08-14
+
+### Added
+- **fs_patch tracked in the progress ledger / goal memory.** Multi-file patches
+  now appear in TASK STATE and L3 goal facts (parsed from the tool result),
+  not just single-path writes.
+- **Playbook `tests:` success predicate.** Phases can require passing unit
+  tests (optionally filtered by symbol) before completing — evaluated via
+  test_runner, supporting TDD/refactor workflows.
+- **Playbook diagnostics check aligned with `DiagnosticsFailed`.** Exported
+  `agent.DiagnosticsFailed`; the phase check uses the same failure
+  determination as the goal gate (informational banners no longer
+  false-reject).
+- **code_environment** now audits make, cmake and git.
+- **errorFixHints** gained Rust cannot-find-in-scope, Python ImportError, and
+  C/C++ undefined-reference/missing-header micro-recipes (with a "don't create
+  stub headers" guard).
+- **Recall/task-ledger dedup.** Recalled memories restating a touched path or
+  the current failure are filtered from the same system message.
+
 ## v0.1.50 — 2026-08-14
 
 ### Added

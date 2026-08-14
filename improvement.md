@@ -1131,3 +1131,26 @@ A holistic codebase review uncovered six concrete consistency, tool-visibility, 
   `init`, `backup`, `export-dataset`, `--format dpo`, `--min-messages`, and
   `--repeat`.
 
+
+## agy review batch 2026-08-14 round 2 (6 proposals — all shipped)
+
+- ✅ **fs_patch targets in the progress ledger / goal memory** (#1) — touchedPaths
+  now parses fs_patch's result ("patched N file(s): a.go, b.go") so multi-file
+  patches appear in TASK STATE and L3 goal memory, not just single-path writes.
+- ✅ **playbook `tests:` success predicate** (#2) — phases can require passing
+  unit tests (optionally filtered by symbol name) before completing; evaluated
+  via test_runner, like the diagnostics check. Supports TDD/refactor phases.
+- ✅ **playbook diagnostics check aligned with DiagnosticsFailed** (#3) —
+  exported `agent.DiagnosticsFailed`; the phase check now uses the same
+  failure determination as the goal gate, so an informational banner on a
+  clean run no longer false-rejects a phase.
+- ✅ **code_environment toolchain completeness** (#4) — added make, cmake, git
+  to the audited binaries, so C/C++ and repo tooling availability is known
+  before the model runs commands.
+- ✅ **errorFixHints expansion** (#5) — new micro-recipes for Rust
+  cannot-find-in-scope (E0425/E0433/E0412), Python ImportError, and C/C++
+  undefined-reference / missing-header (with an explicit "do NOT create a stub
+  header" guard). Covered by the extended TestErrorFixHints.
+- ✅ **recall/task-ledger dedup** (#6) — recalled memories that restate a path
+  in touchedPaths or the current failure (GoalMemorize facts) are filtered
+  from the same system message, saving ~50-100 tokens/turn on long runs.

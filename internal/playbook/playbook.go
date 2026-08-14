@@ -47,6 +47,10 @@ type Check struct {
 	// DiagnosticsPass requires workspace_diagnostics to report a clean run; the
 	// runner evaluates it (it needs the tool runtime).
 	DiagnosticsPass bool `yaml:"diagnostics"`
+	// TestsPass requires the unit tests to pass (e.g. TDD/refactor phases). It
+	// is evaluated by the runner via test_runner; the value is a test filter
+	// (symbol name) or empty for the whole suite.
+	TestsPass string `yaml:"tests"`
 }
 
 // Evaluate runs the file-based predicates against the workspace and returns a
