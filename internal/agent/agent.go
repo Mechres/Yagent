@@ -260,6 +260,13 @@ type Config struct {
 	// weakness. Requires Vectors/ProjectVectors. UI-enabled.
 	GoalMemorize bool
 
+	// Codegen, when enabled, switches the loop to a greenfield-code strategy
+	// that small local models actually succeed with: whole-file fs_write over
+	// incremental fs_edit, compile-driven fixes (only the compiler-named
+	// lines), and treating a final answer that *narrates remaining work* as a
+	// stall that gets fed back until the work is done. UI-enabled.
+	Codegen bool
+
 	// Trace, when set, receives a per-section dump of every assembled context
 	// with token estimates (B2, `yagent chat --trace <file>`). The segments sum
 	// to ContextUsage.
@@ -402,6 +409,10 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 	if cfg.Summarizer == nil {
 		cfg.Summarizer = llm
 	}
+	sys := buildSystemPrompt(workspace)
+	if cfg.Codegen {
+		sys += codegenPromptSuffix
+	}
 	a := &Agent{
 		cfg:            cfg,
 		llm:            llm,
@@ -409,7 +420,7 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 		registry:       reg,
 		approver:       approver,
 		workspace:      workspace,
-		systemPrompt:   buildSystemPrompt(workspace),
+		systemPrompt:   sys,
 		runningSummary: cfg.InitialSummary,
 	}
 	a.sysTokens = a.tokensFor(shortCtx(), a.systemPrompt)
@@ -614,6 +625,23 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 					continue
 				}
 			}
+			// Codegen stall nudge: the model wrote files this turn but is ending
+			// with a plan ("next steps: add input handling") instead of doing
+			// the remaining work. Feed it back so the turn cannot end on
+			// narration. Fire once per turn, after the prose-permission nudge.
+			if a.cfg.Codegen && !nudged {
+				a.mu.RLock()
+				wrote := a.turnWrote
+				a.mu.RUnlock()
+				if wrote && planNarrationStall(resp.Message.Content) {
+					nudged = true
+					nudge := "Your answer narrates remaining work (\"next steps...\", \"you can add...\") instead of doing it. Do the remaining work NOW with the tools: fs_write the missing file(s), run workspace_diagnostics, and fix what it reports. Only give your final answer when the program is complete and compiles."
+					if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: nudge}); err != nil {
+						return "", err
+					}
+					continue
+				}
+			}
 			// Verify-don't-trust barrier (Luna #3): the model wrote files this
 			// turn but never ran diagnostics — run it deterministically before
 			// accepting "done" and feed the result back.
@@ -627,6 +655,24 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 					a.mu.Unlock()
 					if verify := a.verifyBarrier(ctx); verify != "" {
 						if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: verify}); err != nil {
+							return "", err
+						}
+						continue
+					}
+				}
+			}
+			// Codegen compile gate: refuse a final answer while the workspace
+			// still fails its static check — but only when this turn actually
+			// wrote files (a pure Q&A turn in codegen mode must not trigger a
+			// build). Same determinism as the goal gate (the model can't talk
+			// its way past a failing build), bounded by MaxIterations.
+			if a.cfg.Codegen {
+				a.mu.RLock()
+				wrote := a.turnWrote
+				a.mu.RUnlock()
+				if wrote {
+					if gate := a.goalGateCheck(ctx); gate != "" {
+						if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: gate}); err != nil {
 							return "", err
 						}
 						continue
@@ -1245,6 +1291,14 @@ var intentWord = regexp.MustCompile(`(?i)\b(will|let me|i'll|going to|use|should
 // clarify. Small models stall this way on long, demanding prompts.
 var permissionAsk = regexp.MustCompile(`(?i)\b(do you want me to|should i|may i|can i|would you like me to|need to ask you?|let me know if you|shall i)\b`)
 
+// planNarrationRe matches a final answer that *narrates remaining work* instead
+// of doing it — the codegen-mode anti-pattern where a small model writes a few
+// files, then ends with "next steps are..." / "you can now add..." / "to
+// finish, implement...". These are futures a deliverable that the model chose
+// to describe rather than produce. Gated in Run to codegen mode + wrote-this-
+// turn, so a genuinely complete answer is never intercepted.
+var planNarrationRe = regexp.MustCompile(`(?i)\b(?:next step|next steps|remaining work|still to do|left to do|to finish|to complete|you can (?:now )?add|you can (?:now )?implement|you (?:should|can|need to|will need to) add|you (?:should|can|need to|will need to) implement|from here|then add|and add|finish by|implement (?:the|a|your))`)
+
 // prosePermissionNudge returns a nudge when the final-answer draft is a prose
 // permission-ask (stall) rather than a deliverable. The model is nudged to use
 // clarify or just complete the task — never auto-executed.
@@ -1281,8 +1335,30 @@ func proseToolNudge(content string) string {
 	return ""
 }
 
+// planNarrationStall reports whether a codegen-mode final answer narrates
+// remaining work instead of performing it. It scans text outside code fences
+// (a fenced deliverable is a real artifact, not narration) and looks for
+// future-tense "next step" / "you can add" phrasing. The caller gates on
+// wrote-this-turn so a pure planning reply to a "how would I..." question is
+// not misread.
+func planNarrationStall(content string) bool {
+	inFence := false
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if planNarrationRe.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
 // ackFillerRe matches trailing acknowledgment-filler phrases that reasoning
-// models append to their answers ("Understood. I will proceed without...",
 // "Let me know if you'd like...", "I'm here to help..."). Stripped from the
 // end of a final answer deterministically.
 var ackFillerRe = regexp.MustCompile(`(?i)(?:\s*(?:Understood|I will|I'll|OK|Okay|Got it|Let me know if|Please let me know if|Feel free to|I'?m here to help|Is there anything else|Anything else|Do you have any other|I hope this helps|Proceeding with the task|Proceeding)[^.!?]*[.!?]?|(?:\s*[^.!?]*(?:without unnecessary pauses|without pausing for confirmation|without stopping for confirmation|requests for confirmation)[^.!?]*[.!?]?))*$`)
@@ -2295,6 +2371,19 @@ Worked examples:
 - An fs_edit fails with "old_string not found": re-read the file, copy the exact text, and retry — never guess the old text.`, workspace) +
 		repoInstructions(workspace)
 }
+
+// codegenPromptSuffix is appended to the system prompt when Codegen mode is
+// active. It steers small local models toward the strategy they actually
+// succeed with on greenfield work: one complete whole-file fs_write per file,
+// compile-driven fixes limited to the exact lines the compiler names, and an
+// explicit ban on ending with a plan instead of the work.
+var codegenPromptSuffix = `
+
+Codegen mode — you are building a new program from scratch. Follow this strategy:
+- Write each file with a SINGLE complete fs_write call. Do not build files incrementally with fs_edit. A whole-file write that is complete is always better than a series of partial edits.
+- After writing, run the real build (workspace_diagnostics) and fix ONLY the exact errors the compiler names. fs_read the exact lines it cites, then make one targeted edit. Never blind-edit a file because you "think" it might be wrong.
+- Do not end your turn with a plan, a list of "next steps", or instructions the user could follow instead of you. If work remains, DO it now. Only give a final answer when the program is complete and compiles.
+`
 
 // maxInstructionsBytes caps auto-discovered developer-instruction files so a
 // big AGENTS.md can't crowd out the rest of the context.

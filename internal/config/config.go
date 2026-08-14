@@ -57,6 +57,12 @@ type Config struct {
 	// stream on a 12 GB card usually means the KV cache spilled out of VRAM;
 	// the agent then force-prunes old tool output to pull context back.
 	VramThresholdTPS float64 `yaml:"vram_threshold_tps"`
+	// Codegen switches the agent loop to a greenfield-code strategy tuned for
+	// small local models: whole-file fs_write over incremental fs_edit,
+	// compile-driven fixes (refuse a final answer while the static check
+	// fails), and plan-narration-as-stall (a final answer that lists "next
+	// steps" is fed back until the work is done).
+	Codegen bool `yaml:"codegen"`
 	// Path is the config file this was loaded from ("" when none existed);
 	// used to persist runtime toggles like skills.write_approval.
 	Path string `yaml:"-"`
@@ -450,6 +456,7 @@ func Settings() []SettingKey {
 		{Key: "skills.project_dir", Label: "Skills project dir"},
 		{Key: "shell.sandbox", Label: "Shell sandbox", Options: []string{"", "bwrap"}},
 		{Key: "vram_threshold_tps", Label: "VRAM pressure t/s threshold (0 = off; auto-prunes context when streaming slows)"},
+		{Key: "codegen", Label: "Codegen mode (whole-file writes + compile-gated final answers)", Options: []string{"false", "true"}},
 		{Key: "consult.server_url", Label: "Consult server URL"},
 		{Key: "consult.model", Label: "Consult model"},
 		{Key: "consult.api_key", Label: "Consult API key"},
@@ -508,6 +515,8 @@ func (c *Config) Get(key string) string {
 		return c.Shell.Sandbox
 	case "vram_threshold_tps":
 		return strconv.FormatFloat(c.VramThresholdTPS, 'f', -1, 64)
+	case "codegen":
+		return strconv.FormatBool(c.Codegen)
 	case "consult.server_url":
 		return c.Consult.ServerURL
 	case "consult.model":
@@ -601,6 +610,7 @@ func validateKey(parts []string, value string) error {
 		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
 		"shell.sandbox":      true,
 		"vram_threshold_tps": true,
+		"codegen":            true,
 		"consult.server_url": true, "consult.model": true, "consult.api_key": true,
 		"consult.cmd":           true,
 		"summarizer.server_url": true, "summarizer.model": true,
@@ -654,7 +664,7 @@ func validateKey(parts []string, value string) error {
 		if err != nil || n < 0 {
 			return &ValidationError{msg: "sampling.reasoning_max_tokens must be a non-negative integer (0 = off)"}
 		}
-	case "ui.show_reasoning", "ui.loop_guard":
+	case "ui.show_reasoning", "ui.loop_guard", "codegen":
 		if value != "true" && value != "false" {
 			return &ValidationError{msg: key + " must be true or false"}
 		}

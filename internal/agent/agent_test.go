@@ -1196,6 +1196,27 @@ func TestProseToolNudge(t *testing.T) {
 	}
 }
 
+func TestPlanNarrationStall(t *testing.T) {
+	// future-tense remaining-work narration -> stall
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"I wrote main.go. Next steps: add input handling.", true},
+		{"To finish, you can add collision detection.", true},
+		{"Done. Remaining work: wire up the game loop.", true},
+		{"From here, implement the rotate method, then add scoring.", true},
+		{"The program is complete and compiles cleanly.", false},
+		{"Here is the finished main.go:\n```go\nfunc main() {}\n```", false},
+		{"I used fs_write to write the whole file in one call.", false},
+	}
+	for _, c := range cases {
+		if got := planNarrationStall(c.in); got != c.want {
+			t.Errorf("planNarrationStall(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 func TestRunNudgesProseToolCall(t *testing.T) {
 	// the model narrates fs_read in prose; the loop nudges, then the model
 	// emits the real call and answers.

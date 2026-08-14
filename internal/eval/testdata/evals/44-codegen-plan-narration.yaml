@@ -1,0 +1,16 @@
+name: codegen-plan-narration
+description: codegen mode feeds a "next steps..." final answer back until the work is done (greenfield build of a program)
+codegen: true
+files:
+  README.md: |
+    # workspace
+input: build a tetris game in main.go
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nfunc main() {\n}\n"}'}
+  - answer: "I wrote main.go. Next steps: add input handling and the piece-shape logic. To finish, implement rotate and collision detection, then wire up the game loop."
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nfunc main() {\n\t// complete tetris implementation\n\tprintln(\"tetris ready\")\n}\n"}'}
+  - answer: "main.go now contains the complete Tetris game."
+assert:
+  requests_contain: ["Do the remaining work NOW"]
+  file_contains: [{path: main.go, text: "complete tetris implementation"}]
+  final_answer_contains: "complete"

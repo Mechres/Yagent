@@ -71,6 +71,9 @@ type Task struct {
 	GoalGate bool `yaml:"goal_gate"`
 	// GoalMemorize persists each goal round's facts to L3 memory.
 	GoalMemorize bool `yaml:"goal_memorize"`
+	// Codegen switches the loop to greenfield-code strategy: whole-file writes,
+	// compile-gated final answers, and plan-narration-as-stall.
+	Codegen bool `yaml:"codegen"`
 	// PatchFilter exercises the fs_patch per-hunk approval path: when set, the
 	// harness approves the patch with rewritten args containing only the named
 	// hunk subset ("first_hunk" | "last_hunk"), so the eval can assert that
@@ -244,6 +247,7 @@ func Run(t *testing.T, task Task) {
 		VerifyWrites:    task.VerifyWrites,
 		GoalGate:        task.GoalGate,
 		GoalMemorize:    task.GoalMemorize,
+		Codegen:         task.Codegen,
 	}, ws)
 
 	inputs := task.Inputs

@@ -86,6 +86,12 @@ shell:
 # (also YAGENT_VRAM_THRESHOLD_TPS)
 vram_threshold_tps: 5
 
+# Codegen mode: switch the agent loop to a greenfield-code strategy tuned for
+# small local models. Whole-file fs_write over incremental fs_edit, a final
+# answer is refused while the workspace static check still fails, and a "next
+# steps..." narration is fed back until the work is done.
+# codegen: true
+
 consult:                      # the `consult` tool (advisor). Disabled until set.
   # server_url: http://localhost:11434
   # model: qwen2.5-coder:14b
