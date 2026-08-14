@@ -65,6 +65,7 @@ func main() {
 		traceFile := fs.String("trace", "", "write a per-context prompt dump (with token estimates) to this file")
 		plain := fs.Bool("plain", false, "force the plain REPL instead of the TUI")
 		yolo := fs.Bool("yolo", false, "auto-approve every write/destructive tool and apply skills immediately")
+		codegen := fs.Bool("codegen", false, "greenfield-code mode: whole-file writes, compile-gated final answers (auto-enabled by --goal)")
 		if err := fs.Parse(args[1:]); err != nil {
 			os.Exit(2)
 		}
@@ -103,6 +104,7 @@ func main() {
 		if err := ui.RunChat(context.Background(), client, cfg, *continueID, ui.Options{
 			Plain: *plain, YOLO: *yolo, Fork: *forkID, Goal: *goal, Rounds: *rounds,
 			ResumeGoal: *resumeGoal, Playbook: *playbookName, Trace: trace,
+			Codegen: *codegen,
 		}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
@@ -230,7 +232,7 @@ _yagent() {
     local cur
     cur="${COMP_WORDS[COMP_CWORD]}"
     local commands="chat sessions skills doctor completion playbook calibrate bench export-dataset init backup"
-    local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo"
+    local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo --codegen"
     local skills_cmds="list import"
     local scopes="global project"
     if [ "$COMP_CWORD" -eq 1 ]; then
@@ -261,7 +263,7 @@ const zshCompletion = `#compdef yagent
 # yagent zsh completion — add this directory to your fpath and symlink to _yagent
 _arguments '1:command:(chat sessions skills doctor completion playbook calibrate bench export-dataset init backup)' '*: :->args'
 case $words[1] in
-  chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--playbook=[run playbook]:name:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' ;;
+  chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--playbook=[run playbook]:name:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' '--codegen[greenfield-code mode]' ;;
   skills) _arguments '1:skill command:(list import)' '*: :->file' ;;
   export-dataset) _arguments '--output=[output file]:file:_files' '--format=[format]:format:(openai sharegpt dpo)' '--session=[session id]:id:' '--min-messages=[min messages]:n:' ;;
   calibrate) _arguments '--write[write sampling to config]' ;;
@@ -273,7 +275,7 @@ esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] [--codegen] | yagent sessions [search <q>|export <id>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 

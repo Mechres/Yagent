@@ -5,9 +5,10 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## v0.1.58 — 2026-08-14
 
 ### Added
-- **Codegen mode** (`codegen: true`, `/set codegen true`, `/settings`) — a
-  greenfield-code strategy for small local models, so "build a program from
-  scratch" turns succeed where incremental editing loops:
+- **Codegen mode** (`codegen: true`, `/set codegen true`, `/settings`, `yagent
+  chat --codegen`) — a greenfield-code strategy for small local models, so
+  "build a program from scratch" turns succeed where incremental editing
+  loops:
   - System prompt steers toward **one complete whole-file `fs_write` per file**
     instead of incremental `fs_edit` on text the model can't reproduce
     byte-for-byte.
@@ -17,6 +18,9 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   - **Plan-narration-as-stall** — a final answer that lists "next steps...",
     "to finish, you can add...", etc. (instead of doing the work) is fed back
     until the work is done.
+  - **Auto-inherited by `--goal`, `--resume-goal` and playbook modes** — the
+    autonomous build modes always run in codegen strategy; `--codegen` also
+    switches interactive chat to it.
 - **Golden eval 44** — codegen-plan-narration locks in the stall feed-back.
 
 ## v0.1.57 — 2026-08-14

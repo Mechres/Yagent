@@ -52,6 +52,10 @@ type Options struct {
 	// Trace, when set, receives a per-section dump of every assembled context
 	// with token estimates (B2, `yagent chat --trace <file>`).
 	Trace io.Writer
+	// Codegen switches the loop to greenfield-code strategy (whole-file writes,
+	// compile-gated final answers, plan-narration-as-stall). Also auto-enabled
+	// for goal and playbook modes.
+	Codegen bool
 }
 
 // replAskUser prompts on stdin with a numbered choice list (or free text) and
@@ -140,6 +144,11 @@ func (t *toggleableApprover) IsYOLO() bool {
 //	/skills approval on|off
 //	/skill-name            load a SKILL.md into context
 func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, continueID string, opts Options) error {
+	// Codegen: explicit --codegen flag wins, and autonomous goal/playbook
+	// modes always inherit it (they exist to build things, not to chat).
+	if opts.Codegen || opts.Goal != "" || opts.ResumeGoal != "" || opts.Playbook != "" {
+		cfg.Codegen = true
+	}
 	// Goal-mode resume: restore the goal checkpoint, continue the session, and
 	// pick the goal back up from its last user message (C2).
 	if opts.ResumeGoal != "" {

@@ -906,6 +906,27 @@ func TestRepoInstructionsPrecedenceAndCap(t *testing.T) {
 	}
 }
 
+func TestCodegenModeAppendsPromptSuffix(t *testing.T) {
+	// The system prompt carries the greenfield-code strategy only when Codegen
+	// is enabled — the loop can't accidentally codegen a pure chat turn.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{})
+	client := llm.NewClient("http://127.0.0.1:1", "test-model")
+
+	off := New(client, reg, nil, Config{MaxIterations: 4}, ws)
+	if strings.Contains(off.systemPrompt, "Codegen mode") {
+		t.Error("codegen suffix present without Codegen enabled")
+	}
+
+	on := New(client, reg, nil, Config{MaxIterations: 4, Codegen: true}, ws)
+	if !strings.Contains(on.systemPrompt, "Codegen mode") {
+		t.Error("codegen suffix missing with Codegen enabled")
+	}
+	if !strings.Contains(on.systemPrompt, "SINGLE complete fs_write") {
+		t.Error("whole-file write rule missing from the codegen suffix")
+	}
+}
+
 func TestBudgetPrunesToolOutputsBeforeSummarizing(t *testing.T) {
 	ws := t.TempDir()
 	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
