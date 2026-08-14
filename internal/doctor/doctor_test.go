@@ -138,3 +138,38 @@ func TestDoctorProjectToolchain(t *testing.T) {
 		t.Errorf("no toolchain check for a go.mod project: %+v", rep.Checks)
 	}
 }
+
+func TestAddServerPerfLargeContextWarns(t *testing.T) {
+	// a server reporting f16 KV with a large configured context should warn
+	// about KV spill risk (agy #5).
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/props" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"total_slots": 1,
+				"default_generation_settings": map[string]any{
+					"n_ctx":        32768,
+					"cache_type_k": "f16",
+					"cache_type_v": "f16",
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	var rep Report
+	rep.addServerPerf(&config.Config{ServerURL: ts.URL, ContextWindow: 32768})
+	found := false
+	for _, c := range rep.Checks {
+		if c.Name == "server perf" {
+			found = true
+			if c.Status != StatusWarn || !strings.Contains(c.Detail, "q8_0") {
+				t.Errorf("server perf = %s %s, want WARN with q8_0 hint", c.Status, c.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no server perf check produced: %+v", rep.Checks)
+	}
+}

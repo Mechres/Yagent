@@ -132,6 +132,13 @@ func TestNearestLineHint(t *testing.T) {
 	if hint := nearestLineHint(content, "completely unrelated text here"); hint != "" {
 		t.Errorf("unexpected hint = %q", hint)
 	}
+	// multi-line targets (agy #1): a small slip in a function header should
+	// locate the correct 3-line window, not fail entirely
+	multi := "package demo\n\nfunc ProcessData(ctx context.Context, req Request) (*Response, error) {\n    if req.ID == \"\" {\n        return nil, ErrInvalidID\n    }\n    return process(req)\n}\n"
+	hint = nearestLineHint(multi, "func ProcessData(ctx context.Context, req Request) (*Response, error) {\n    if req.ID == \"\" {\n        return nil, ErrInvalidID")
+	if !strings.Contains(hint, "lines 3-5") {
+		t.Errorf("multi-line hint = %q, want lines 3-5", hint)
+	}
 	// wired into fs_edit: a bad old_string reports the nearest line
 	ws := t.TempDir()
 	writeFile(t, ws, "a.go", content)

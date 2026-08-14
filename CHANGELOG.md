@@ -2,6 +2,22 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.57 — 2026-08-14
+
+### Added
+- **Multi-line nearestLineHint** — fs_edit's nearest-match hint now handles
+  multi-line old_string targets via window matching, so a small multi-line
+  slip recovers in one turn.
+- **Conversational gating** — semantic code/memory lookup is skipped for pure
+  continuations ("ok", "continue", "thanks", short no-signal phrases), saving
+  an embedding call and context tokens on quick turns.
+- **ROOT GOAL anchor** — goal-mode TASK STATE pins the original objective at
+  the top of every request, preventing objective drift across long runs.
+- **Oscillating edit-loop detector** — an A-B-A-B 2-file flip-flop is detected
+  and the model is nudged to understand the dependency instead of looping.
+- **Server perf diagnostics** — yagent doctor probes KV-cache quantization and
+  flags large-context spill risk on ≤12 GB GPUs with optimal launch flags.
+
 ## v0.1.53 — 2026-08-14
 
 ### Added

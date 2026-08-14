@@ -391,6 +391,10 @@ func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
 type ServerProps struct {
 	NCtx  int // the server's real context window (default_generation_settings.n_ctx)
 	Slots int // total generation slots
+	// CacheK / CacheV are the KV cache quantization types (e.g. "q8_0", "f16")
+	// when the server exposes them (agy #5 — newer llama.cpp builds).
+	CacheK string
+	CacheV string
 }
 
 // ProbeServerProps fetches llama.cpp /props (P2 context-window autodetect).
@@ -414,14 +418,25 @@ func (c *Client) ProbeServerProps(ctx context.Context) (ServerProps, bool) {
 	var props struct {
 		TotalSlots                int `json:"total_slots"`
 		DefaultGenerationSettings struct {
-			NCtx int `json:"n_ctx"`
+			NCtx       int     `json:"n_ctx"`
+			CacheTypeK *string `json:"cache_type_k,omitempty"`
+			CacheTypeV *string `json:"cache_type_v,omitempty"`
 		} `json:"default_generation_settings"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&props); err != nil {
 		return ServerProps{}, false
 	}
-	return ServerProps{NCtx: props.DefaultGenerationSettings.NCtx, Slots: props.TotalSlots},
-		props.DefaultGenerationSettings.NCtx > 0
+	p := ServerProps{
+		NCtx:  props.DefaultGenerationSettings.NCtx,
+		Slots: props.TotalSlots,
+	}
+	if props.DefaultGenerationSettings.CacheTypeK != nil {
+		p.CacheK = *props.DefaultGenerationSettings.CacheTypeK
+	}
+	if props.DefaultGenerationSettings.CacheTypeV != nil {
+		p.CacheV = *props.DefaultGenerationSettings.CacheTypeV
+	}
+	return p, props.DefaultGenerationSettings.NCtx > 0
 }
 
 // tryTokenize POSTs a tokenize request and returns (count, ok). ok=false means

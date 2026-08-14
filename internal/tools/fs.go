@@ -425,26 +425,54 @@ func matchLines(content, target string) string {
 	return " at lines " + strings.Join(strs, ", ")
 }
 
-// nearestLineHint finds the line in content most similar to the target string
-// and returns a " — nearest match at line N: ..." hint, or "" when nothing is
-// close enough. Deterministic remediation for small models that botch
-// old_string (Gemini review #1): a concrete hint recovers in one turn instead
-// of three loops.
+// nearestLineHint finds the region of content most similar to the target and
+// returns a " — nearest match at line N: ..." hint, or "" when nothing is
+// close enough. Works for both single-line and multi-line targets: for a
+// multi-line target it slides a window of the same height and reports the best
+// matching span, so a small multi-line edit slip recovers in one turn (agy #1).
 func nearestLineHint(content, target string) string {
+	lines := strings.Split(content, "\n")
+	targetLines := strings.Split(target, "\n")
+	win := len(targetLines)
+	if win < 1 {
+		win = 1
+	}
 	bestLine := 0
 	bestScore := 0.0
-	for i, line := range strings.Split(content, "\n") {
-		if s := lineSimilarity(line, target); s > bestScore {
+	for i := 0; i+win <= len(lines); i++ {
+		// Skip windows that start on an empty lead-in line — boundary blank
+		// lines get trimmed by lineSimilarity and would falsely tie with the
+		// true match one line down.
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		window := strings.Join(lines[i:i+win], "\n")
+		if s := lineSimilarity(window, target); s > bestScore {
 			bestScore = s
 			bestLine = i + 1
+		}
+	}
+	// Also consider a bare single-line match (the window may have missed).
+	if win == 1 && bestLine == 0 {
+		for i, ln := range lines {
+			if s := lineSimilarity(ln, target); s > bestScore {
+				bestScore = s
+				bestLine = i + 1
+			}
 		}
 	}
 	if bestLine == 0 || bestScore < 0.5 {
 		return ""
 	}
-	text := strings.TrimSpace(strings.SplitN(content, "\n", bestLine)[bestLine-1])
-	if len(text) > 60 {
+	text := strings.TrimSpace(strings.Join(lines[bestLine-1:bestLine-1+win], "\n"))
+	// Collapse to a readable snippet: single-line or short multi-line.
+	if strings.Count(text, "\n") == 0 && len(text) > 60 {
 		text = text[:60] + "…"
+	} else if len(text) > 140 {
+		text = text[:140] + "…"
+	}
+	if win > 1 {
+		return fmt.Sprintf(" — nearest match at lines %d-%d:\n%s", bestLine, bestLine+win-1, text)
 	}
 	return fmt.Sprintf(" — nearest match at line %d: %q", bestLine, text)
 }

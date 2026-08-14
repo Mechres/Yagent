@@ -342,6 +342,14 @@ type Agent struct {
 	// arg variations, interleaved re-reads defeating the consecutive dedup)
 	// gets nudged instead of grinding to max-iterations.
 	failedWriteSig map[string]int
+	// goalMode is set while RunGoal is driving the loop, so the TASK STATE
+	// ledger pins the ROOT GOAL only for autonomous goal runs (not interactive
+	// chat where the "last user message" is just the current prompt).
+	goalMode bool
+	// recentEdits is a rolling ring of the last edit targets (file paths),
+	// used to detect an oscillating (flip-flop) 2-file edit loop that slips
+	// past the per-file failure counter (agy #4).
+	recentEdits []string
 
 	// Tool-loop breaker: counts successful exploration-tool calls per turn and
 	// flags when one dominates, so a model stuck re-running glob/shell_exec
@@ -499,9 +507,16 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: input}); err != nil {
 		return "", err
 	}
-	recall := a.recall(ctx, input)
-	code := a.codeIndex(ctx, input)
-
+	// Code retrieval gating (agy #2): a pure conversational continuation
+	// ("ok", "yes", "continue", "thanks") needs no semantic code lookup or
+	// memory recall — skipping it avoids a wasted embedding call/SlotLock and
+	// keeps ~2,000 tokens of noisy code out of context.
+	recall := ""
+	code := ""
+	if codeIntended(input) {
+		recall = a.recall(ctx, input)
+		code = a.codeIndex(ctx, input)
+	}
 	valFails := make(map[string]int)
 	blocked := make(map[string]bool)
 	turnCalls := 0
@@ -516,6 +531,7 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	a.turnReadCalls = 0
 	a.turnWrote = false
 	a.failedWriteSig = map[string]int{}
+	a.recentEdits = nil
 	a.mu.Unlock()
 
 	for i := 0; i < a.cfg.MaxIterations; i++ {
@@ -654,8 +670,14 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 				}
 			}
 			a.mu.Unlock()
+			osc := a.oscillationTargets()
 			var nudge string
 			switch {
+			case osc != "":
+				// Oscillating 2-file edit loop (agy #4): A-B-A-B alternation
+				// between two files without resolving the build slips past the
+				// per-file counter. Nudge to understand the dependency instead.
+				nudge = fmt.Sprintf("You are oscillating between editing %s without resolving the build. Stop editing back and forth. Use code_references or code_impact to understand the dependency between them, then make the correct change to one file and verify.", osc)
 			case failTarget != "":
 				// Failed-write loop: the model keeps failing to edit the same
 				// file (typically old_string not found) — re-reads + retries
@@ -846,6 +868,14 @@ func (a *Agent) RunGoal(ctx context.Context, goal string, maxRounds int, onRound
 	if maxRounds <= 0 {
 		maxRounds = DefaultGoalRounds
 	}
+	a.mu.Lock()
+	a.goalMode = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.goalMode = false
+		a.mu.Unlock()
+	}()
 	var last string
 	for round := 1; round <= maxRounds; round++ {
 		var err error
@@ -997,12 +1027,19 @@ func (a *Agent) taskLedger() string {
 	a.mu.RLock()
 	touched := append([]string(nil), a.touchedPaths...)
 	lastErr := a.lastToolError
+	goal := a.lastGoalText()
+	goalMode := a.goalMode
 	a.mu.RUnlock()
-	if len(touched) == 0 && lastErr == "" {
-		return ""
-	}
 	var b strings.Builder
 	b.WriteString("TASK STATE:")
+	// Root-goal anchor (agy #3): in long autonomous runs the historical turns
+	// get pruned/summarized, so the original objective and constraints would
+	// otherwise dilute. Pin it at the top of every request — goal mode only,
+	// where the last user message IS the goal.
+	if goalMode && goal != "" && len(goal) < 200 {
+		goalOne := strings.Join(strings.Fields(goal), " ")
+		fmt.Fprintf(&b, "\n- ROOT GOAL: %s", goalOne)
+	}
 	if len(touched) > 0 {
 		fmt.Fprintf(&b, "\n- changed: %s", strings.Join(touched, ", "))
 	}
@@ -1013,11 +1050,41 @@ func (a *Agent) taskLedger() string {
 		}
 		fmt.Fprintf(&b, "\n- last failure: %s", e)
 	}
+	if b.Len() == len("TASK STATE:") {
+		return ""
+	}
 	return b.String()
 }
 
-// memoryOverlapsLedger reports whether a recalled memory text restates
-// something already in the TASK STATE block — a touched path (GoalMemorize
+// recordEditTarget pushes a file path onto the rolling edit ring (max 4) and
+// checks for an oscillating A-B-A-B pattern. Caller holds no lock.
+func (a *Agent) recordEditTarget(target string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.recentEdits) >= 4 {
+		a.recentEdits = a.recentEdits[len(a.recentEdits)-3:]
+	}
+	a.recentEdits = append(a.recentEdits, target)
+}
+
+// oscillationTargets returns the two files in a detected A-B-A-B cycle, or ""
+// when no oscillation is present.
+func (a *Agent) oscillationTargets() string {
+	a.mu.RLock()
+	ring := append([]string(nil), a.recentEdits...)
+	a.mu.RUnlock()
+	if len(ring) < 4 {
+		return ""
+	}
+	// pattern: A, B, A, B at the tail
+	a0, b0 := ring[len(ring)-4], ring[len(ring)-3]
+	if a0 == ring[len(ring)-2] && b0 == ring[len(ring)-1] && a0 != b0 {
+		return a0 + " and " + b0
+	}
+	return ""
+}
+
+// memoryOverlapsLedger reports whether a recalled memory text restates// something already in the TASK STATE block — a touched path (GoalMemorize
 // saves "goal work touched file X" facts) or the current failure — so the
 // same fact isn't injected twice in one context (agy #6).
 func (a *Agent) memoryOverlapsLedger(text string) bool {
@@ -1389,6 +1456,32 @@ func codeSignal(s string) bool {
 		}
 	}
 	return false
+}
+
+// codeIntended reports whether an input deserves semantic code/memory lookup.
+// Pure conversational continuations ("ok", "yes", "continue", "thanks", or a
+// very short phrase with no code signal) skip it — saving an embedding call
+// and context tokens on quick chat turns (agy #2).
+func codeIntended(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	l := strings.ToLower(trimmed)
+	// short conversational continuations
+	for _, phrase := range []string{
+		"ok", "okay", "yes", "yep", "sure", "thanks", "thank you", "thx", "cool",
+		"good", "great", "nice", "perfect", "understood", "got it", "continue",
+		"go on", "proceed", "go ahead", "keep going", "please", "do it", "done",
+		"all good", "looks good", "works", "that works", "right", "correct",
+	} {
+		if l == phrase {
+			return false
+		}
+	}
+	// very short and no code signal -> conversational
+	words := strings.Fields(trimmed)
+	if len(words) < 3 && !codeSignal(trimmed) {
+		return false
+	}
+	return true
 }
 
 func jobSignal(s string) bool {
@@ -2086,6 +2179,12 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		a.mu.Unlock()
 		if n >= maxFailedWriteLoops {
 			slog.Info("failed-write loop detected", "tool", name, "file", target, "attempts", n)
+		}
+		// Oscillation detection (agy #4): a 2-file flip-flop (edit A, edit B,
+		// edit A, edit B) slips past the per-file counter. Track a rolling ring
+		// of edit targets and flag the A-B-A-B pattern.
+		if name == "fs_edit" || name == "fs_write" || name == "fs_patch" {
+			a.recordEditTarget(target)
 		}
 	}
 	// Track write/verify state for the deterministic "done" barrier (any write

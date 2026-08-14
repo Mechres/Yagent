@@ -1652,6 +1652,49 @@ func TestMemoryOverlapsLedger(t *testing.T) {
 	}
 }
 
+func TestCodeIntendedGating(t *testing.T) {
+	// agy #2: pure conversational continuations must not trigger semantic
+	// lookup (they'd waste an embedding call + pollute context).
+	for _, c := range []string{"ok", "yes", "continue", "go ahead", "thanks", "looks good"} {
+		if codeIntended(c) {
+			t.Errorf("codeIntended(%q) = true, want false", c)
+		}
+	}
+	// code-related queries still trigger
+	for _, c := range []string{"where is the parser package", "fix the bug in main.go", "what does validateToolInput do"} {
+		if !codeIntended(c) {
+			t.Errorf("codeIntended(%q) = false, want true", c)
+		}
+	}
+}
+
+func TestOscillationDetection(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{}, reg, &stubApprover{allow: true},
+		Config{MaxIterations: 10}, ws)
+
+	// no oscillation yet
+	a.recordEditTarget("a.go")
+	a.recordEditTarget("b.go")
+	if osc := a.oscillationTargets(); osc != "" {
+		t.Errorf("oscillation too early: %q", osc)
+	}
+	// A-B-A-B pattern detected
+	a.recordEditTarget("a.go")
+	a.recordEditTarget("b.go")
+	osc := a.oscillationTargets()
+	if osc != "a.go and b.go" {
+		t.Errorf("oscillation = %q, want 'a.go and b.go'", osc)
+	}
+	// a non-alternating sequence is not flagged
+	a.recordEditTarget("a.go")
+	a.recordEditTarget("a.go")
+	if osc := a.oscillationTargets(); osc != "" {
+		t.Errorf("non-alternating flagged: %q", osc)
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	cases := map[string]string{
 		"PASS it works":                        "PASS",

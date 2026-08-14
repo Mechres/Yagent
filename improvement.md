@@ -1181,3 +1181,29 @@ A focused TUI improvement pass implemented six major interactivity, visual consi
   as Markdown (`session-<id>.md`) and reports a status confirmation without
   leaving the TUI. Covered by `TestQuickSaveSessionShortcut`.
 
+
+## agy review batch 2026-08-14 round 4 (5 proposals — all shipped)
+
+- ✅ **Multi-line nearestLineHint** (#1) — window matching: a multi-line
+  old_string slip now reports the nearest N-line span (e.g. "lines 3-5")
+  instead of failing entirely, so a small multi-line edit error recovers in
+  one turn. Covered by the extended `TestNearestLineHint`.
+- ✅ **Conversational gating for code/memory lookup** (#2) — `codeIntended`
+  skips semantic `codeIndex`/`recall` for pure continuations ("ok", "yes",
+  "continue", "thanks", short no-signal phrases), saving an embedding
+  call/SlotLock and ~2k tokens of noise on quick chat turns. Covered by
+  `TestCodeIntendedGating`.
+- ✅ **ROOT GOAL anchor in TASK STATE** (#3) — in goal mode, the ledger pins
+  the original objective at the top of every request (`- ROOT GOAL: ...`), so
+  constraints don't dilute as history is pruned/summarized across 8+ rounds.
+  `goalMode` flag ensures it only appears in autonomous runs, not interactive
+  chat.
+- ✅ **Oscillating edit-loop detector** (#4) — a rolling 4-slot ring detects
+  the A-B-A-B 2-file flip-flop that slips past the per-file counter and nudges
+  the model to use code_references/code_impact instead of editing back and
+  forth. Covered by `TestOscillationDetection`.
+- ✅ **Server perf diagnostics** (#5) — doctor probes `/props` for KV cache
+  quantization and flags large-context-with-f16-KV spill risk on ≤12 GB GPUs
+  with the optimal launch flags. Best-effort: builds that don't expose cache
+  type get a clean INFO, not a false warning. Covered by
+  `TestAddServerPerfLargeContextWarns`.

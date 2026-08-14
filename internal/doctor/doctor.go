@@ -150,6 +150,7 @@ func Run(cfg *config.Config) Report {
 			rep.add("context window", StatusPass, fmt.Sprintf("server n_ctx %d (agent budget %d)", n, cfg.ContextWindow))
 		}
 	}
+	rep.addServerPerf(cfg)
 	if cfg.APIKey != "" {
 		rep.add("config", StatusInfo, "api_key set — requests are sent to a cloud OpenAI-compatible endpoint (opt-in)")
 	}
@@ -370,6 +371,83 @@ func probeChat(client *http.Client, base, model string) error {
 		return fmt.Errorf("empty answer")
 	}
 	return nil
+}
+
+// addServerPerf reports inference-engine performance flags when the server
+// exposes them, and flags large-context risk on ≤12 GB GPUs (agy #5). KV cache
+// quantization is exposed by some llama.cpp builds; flash-attn is a launch
+// flag not in /props, so that part is best-effort guidance only.
+func (r *Report) addServerPerf(cfg *config.Config) {
+	props, ok := probeServerProps(cfg.ServerURL)
+	if !ok {
+		return // Ollama or non-llama.cpp; nothing to audit
+	}
+	var parts []string
+	parts = append(parts, fmt.Sprintf("n_ctx %d", props.NCtx))
+	if props.CacheK != "" || props.CacheV != "" {
+		parts = append(parts, fmt.Sprintf("kv cache %s/%s", props.CacheK, props.CacheV))
+	}
+	detail := "server: " + strings.Join(parts, ", ")
+	// Only flag when the server explicitly reports f16 KV; an absent field
+	// means the build doesn't expose it, so we can't claim it's unquantized
+	// (that would nag users on every run).
+	if cfg.ContextWindow > 16384 && props.CacheK == "f16" {
+		detail += " — large context with unquantized KV cache may spill to RAM on ≤12 GB GPUs; consider launching llama-server with --cache-type-k q8_0 --cache-type-v q8_0 (and --flash-attn when supported)"
+		r.add("server perf", StatusWarn, detail)
+		return
+	}
+	r.add("server perf", StatusInfo, detail)
+}
+
+// probeServerProps fetches llama.cpp /props including KV cache types.
+func probeServerProps(base string) (struct {
+	NCtx   int
+	CacheK string
+	CacheV string
+}, bool) {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(strings.TrimRight(base, "/") + "/props")
+	if err != nil {
+		return struct {
+			NCtx   int
+			CacheK string
+			CacheV string
+		}{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return struct {
+			NCtx   int
+			CacheK string
+			CacheV string
+		}{}, false
+	}
+	var props struct {
+		DefaultGenerationSettings struct {
+			NCtx       int     `json:"n_ctx"`
+			CacheTypeK *string `json:"cache_type_k,omitempty"`
+			CacheTypeV *string `json:"cache_type_v,omitempty"`
+		} `json:"default_generation_settings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&props); err != nil {
+		return struct {
+			NCtx   int
+			CacheK string
+			CacheV string
+		}{}, false
+	}
+	out := struct {
+		NCtx   int
+		CacheK string
+		CacheV string
+	}{NCtx: props.DefaultGenerationSettings.NCtx}
+	if props.DefaultGenerationSettings.CacheTypeK != nil {
+		out.CacheK = *props.DefaultGenerationSettings.CacheTypeK
+	}
+	if props.DefaultGenerationSettings.CacheTypeV != nil {
+		out.CacheV = *props.DefaultGenerationSettings.CacheTypeV
+	}
+	return out, out.NCtx > 0
 }
 
 // serverNCtx reads the server's real context window from llama.cpp /props
