@@ -1,0 +1,11 @@
+name: job-tool-schemas
+description: v0.1.51 — background-job/scratch tool schemas are offered when the input signals job/scratch work
+jobs: true
+input: start a background job that runs the dev server
+steps:
+  - answer: I'll set that up.
+assert:
+  requests_contain:
+    - '"name":"shell_bg"'
+    - '"name":"shell_logs"'
+    - '"name":"shell_kill"'

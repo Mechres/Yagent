@@ -1,0 +1,12 @@
+name: core-tool-schemas
+description: v0.1.51 — the dynamic tool-schema filter always offers fs_patch, test_runner and subagent (core), so the model can call them on any turn
+subagent: true
+input: hello there
+steps:
+  - answer: Hi! How can I help?
+assert:
+  requests_contain:
+    - '"name":"fs_patch"'
+    - '"name":"test_runner"'
+    - '"name":"subagent"'
+    - '"name":"fs_write"'
