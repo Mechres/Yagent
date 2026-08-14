@@ -2,6 +2,33 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.68 — 2026-08-15
+
+### Added
+- **Catalog refresh from live provider data** — re-checked every provider's
+  model list against models.dev (the same index opencode uses):
+  - **DeepSeek** → `deepseek-v4-pro` / `deepseek-v4-flash` (V4; the old
+    `deepseek-chat` / `deepseek-reasoner` are gone).
+  - **Mistral** → `devstral-2512` (the current coding model),
+    `mistral-large-2512`, `mistral-medium-2604`.
+  - **Groq** → `openai/gpt-oss-120b`, `openai/gpt-oss-20b`,
+    `qwen/qwen3.6-27b`, `groq/compound`.
+  - **Together** → `deepseek-ai/DeepSeek-V4-Pro`, `moonshotai/Kimi-K2.7-Code`,
+    `MiniMaxAI/MiniMax-M3`, `openai/gpt-oss-120b`.
+  - **OpenRouter** → DeepSeek V4 Pro/Flash, Claude Sonnet 4.5, GPT-5,
+    Gemini 2.5 Pro, Qwen3-Coder, GLM 5.2, Kimi K2.
+- **OpenCode Go provider** — `https://opencode.ai/zen/go` (same
+  `OPENCODE_ZEN_API_KEY`), the low-cost subscription plan: DeepSeek V4
+  Pro/Flash, GLM-5.3/5.2/5.1, Kimi K2.7/K3/K2.6, Qwen3.8/3.7 Max, MiMo V2.5,
+  MiniMax M3, Hy3.
+
+### Fixed
+- **CI test failure** — `TestMemoryListDelete` called a real embed server
+  (`127.0.0.1:8089`) that doesn't exist in CI, so the two `Save` calls failed
+  silently and `List` returned 0. It now uses the `newEmbedServer` httptest
+  helper (deterministic embeddings, no network), and the test asserts on
+  `Save` errors. `go test ./...` passes with no network.
+
 ## v0.1.67 — 2026-08-14
 
 ### Added

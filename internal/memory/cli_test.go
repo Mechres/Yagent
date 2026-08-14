@@ -7,13 +7,19 @@ import (
 )
 
 func TestMemoryListDelete(t *testing.T) {
-	vs, err := OpenVectorStore(t.TempDir(), "http://127.0.0.1:8089", "test-embed")
+	ts := newEmbedServer(t)
+	defer ts.Close()
+	vs, err := OpenVectorStore(t.TempDir(), ts.URL, "test-embed")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer vs.Close()
-	_ = vs.Save(context.Background(), "user prefers tabs", "tool", "s1", 0.9)
-	_ = vs.Save(context.Background(), "kv is q8_0", "tool", "s2", 0.7)
+	if err := vs.Save(context.Background(), "user prefers tabs", "tool", "s1", 0.9); err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Save(context.Background(), "kv is q8_0", "tool", "s2", 0.7); err != nil {
+		t.Fatal(err)
+	}
 
 	mems, err := vs.List(10)
 	if err != nil || len(mems) != 2 {

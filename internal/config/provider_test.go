@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -169,6 +170,49 @@ func TestOpenCodeZenProvider(t *testing.T) {
 	// cloud providers are not Dynamic (static catalog)
 	if Providers[2].Dynamic {
 		t.Error("OpenCode Zen must not be Dynamic")
+	}
+}
+
+func TestOpenCodeGoProvider(t *testing.T) {
+	prov, ok := ProviderByName("OpenCode Go")
+	if !ok {
+		t.Fatal("OpenCode Go not in catalog")
+	}
+	if prov.BaseURL != "https://opencode.ai/zen/go" {
+		t.Errorf("go base = %q", prov.BaseURL)
+	}
+	if prov.KeyEnv != "OPENCODE_ZEN_API_KEY" {
+		t.Errorf("go key env = %q", prov.KeyEnv)
+	}
+	// the Go plan's headline coding models must be present
+	all := strings.Join(prov.Models, " ")
+	for _, want := range []string{"deepseek-v4-pro", "deepseek-v4-flash", "kimi-k2.7-code", "qwen3.8-max"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("OpenCode Go missing %q: %q", want, all)
+		}
+	}
+}
+
+func TestCatalogCurrentModels(t *testing.T) {
+	// DeepSeek is on V4 now (old chat/reasoner dropped).
+	ds, ok := ProviderByName("DeepSeek")
+	if !ok {
+		t.Fatal("DeepSeek not in catalog")
+	}
+	all := strings.Join(ds.Models, " ")
+	if !strings.Contains(all, "deepseek-v4-pro") || !strings.Contains(all, "deepseek-v4-flash") {
+		t.Errorf("DeepSeek missing V4 models: %q", all)
+	}
+	if strings.Contains(all, "deepseek-chat") {
+		t.Errorf("DeepSeek still lists the removed deepseek-chat: %q", all)
+	}
+	// Mistral: devstral is the current coding model.
+	ms, ok := ProviderByName("Mistral")
+	if !ok {
+		t.Fatal("Mistral not in catalog")
+	}
+	if !strings.Contains(strings.Join(ms.Models, " "), "devstral-2512") {
+		t.Errorf("Mistral missing devstral-2512: %q", ms.Models)
 	}
 }
 
