@@ -2,6 +2,24 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.61 — 2026-08-14
+
+### Added
+- **Behavioral probe** — `runtime_smoke` gained optional
+  `steps: [{args, input, expect}, ...]` that assert the program **behaves**,
+  not just survives: each step launches a fresh process (state persists via
+  files) and the output must contain the expected text. The codegen system
+  prompt demands the model probe real functionality (e.g. `add buy milk` then a
+  fresh `list` that must show it), and the smoke gate re-runs the **same steps
+  the model used** at the final answer — so a crash-only run can't silently
+  replace a failed behavioral assertion. Live-verified against the actual
+  broken todo app from the v0.1.58 test drive: crash-only smoke PASSed it, the
+  behavioral probe caught the dead persistence (`step 2 output missing "buy
+  milk"` → "No todos.").
+- **Golden eval 46** — codegen-smoke-behavioral-steps: a dead-persistence todo
+  is refused until the reload is fixed. Agent + tools unit tests cover
+  behavioral steps and the gate re-running the model's own probe.
+
 ## v0.1.60 — 2026-08-14
 
 ### Added
@@ -16,22 +34,9 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
   converts the codegen guarantee from "compiles" into "compiles **and runs**" —
   the fix for the live-tested failures where Tetris compiled clean but crashed
   with a vector OOB and Snake died on its first food.
-- **Behavioral probe** — `runtime_smoke` gained optional
-  `steps: [{args, input, expect}, ...]` that assert the program **behaves**,
-  not just survives: each step launches a fresh process (state persists via
-  files) and the output must contain the expected text. The codegen system
-  prompt demands the model probe real functionality (e.g. `add buy milk` then a
-  fresh `list` that must show it), and the smoke gate re-runs the **same steps
-  the model used** at the final answer — so a crash-only run can't silently
-  replace a failed behavioral assertion. Live-verified against the actual
-  broken todo app from the v0.1.58 test drive: crash-only smoke PASSed it, the
-  behavioral probe caught the dead persistence (`step 2 output missing "buy
-  milk"` → "No todos.").
-- **Golden evals 45–46** — codegen-smoke-gate (compile-clean but panicking
-  program refused until fixed) and codegen-smoke-behavioral-steps (dead-
-  persistence todo refused until the reload is fixed). Agent + tools unit tests
-  cover crash detection, behavioral steps, and the gate re-running the model's
-  own probe.
+- **Golden eval 45** — codegen-smoke-gate: a compile-clean but panicking program
+  is refused until fixed. Agent + tools unit tests cover crash detection,
+  PASS/FAIL/no-runner/build-failure paths.
 
 ## v0.1.59 — 2026-08-14
 
