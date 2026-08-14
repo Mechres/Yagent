@@ -10,11 +10,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/jobs"
@@ -697,6 +699,37 @@ func capResult(s string, maxBytes int) string {
 		return compact
 	}
 	return compact[:maxBytes] + fmt.Sprintf("\n... truncated (%d bytes omitted)", len(compact)-maxBytes)
+}
+
+// offloadResult is capResult with a scratchpad escape hatch (deepseek review
+// #4): when the output exceeds maxBytes, the full result is written to
+// <ws>/.yagent/scratch/tool-output-<n>.txt and the return keeps the top 15
+// lines (still capped at maxBytes) plus a pointer, so the model can fs_read the
+// exact region without the data being lost. Small outputs pass through
+// untouched. Falls back to plain capResult when ws is empty or the write fails.
+func offloadResult(ws, s string, maxBytes int) string {
+	if ws == "" || len(s) <= maxBytes {
+		return capResult(s, maxBytes)
+	}
+	dir := filepath.Join(ws, scratchRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return capResult(s, maxBytes)
+	}
+	name := fmt.Sprintf("tool-output-%d.txt", time.Now().UnixNano())
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
+		return capResult(s, maxBytes)
+	}
+	lines := strings.Split(s, "\n")
+	keep := lines
+	if len(keep) > 15 {
+		keep = keep[:15]
+	}
+	head := strings.Join(keep, "\n")
+	if len(head) > maxBytes {
+		head = head[:maxBytes]
+	}
+	return head + fmt.Sprintf("\n\n[full output (%d bytes) saved to .yagent/scratch/%s — use fs_read on that file with offset/limit to inspect the rest]", len(s), name)
 }
 
 // maxDistinctErrors is how many distinct root causes the cascade summarizer

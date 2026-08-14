@@ -1,0 +1,14 @@
+name: fs-write-import-note
+description: "v0.1.64 — fs_write appends a missing-import remediation note when a Go file references a stdlib package it doesn't import (deepseek review #5)"
+files:
+  go.mod: |
+    module demo
+
+    go 1.22
+input: write a Go program that uses fmt
+steps:
+  # the model writes a file using fmt without importing it
+  - tool_call: {name: fs_write, args: '{"path":"main.go","content":"package main\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"}'}
+  - answer: done
+assert:
+  tool_results_contain: ['"fmt" is/are referenced but not imported']

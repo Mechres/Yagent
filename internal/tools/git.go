@@ -61,7 +61,7 @@ func (t *gitStatusTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	if out == "" {
 		return "working tree clean", nil
 	}
-	return capResult(out, maxResultBytes), nil
+	return offloadResult(t.ws, out, maxResultBytes), nil
 }
 
 // ---------- git_diff ----------
@@ -109,7 +109,7 @@ func (t *gitDiffTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if out == "" {
 		return "no changes", nil
 	}
-	return capResult(out, maxResultBytes), nil
+	return offloadResult(t.ws, out, maxResultBytes), nil
 }
 
 // ---------- git_log ----------
@@ -145,5 +145,5 @@ func (t *gitLogTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	if out == "" {
 		return "no commits yet", nil
 	}
-	return capResult(out, maxResultBytes), nil
+	return offloadResult(t.ws, out, maxResultBytes), nil
 }

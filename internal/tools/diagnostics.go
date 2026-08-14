@@ -50,7 +50,7 @@ func (t *diagnosticsTool) Execute(ctx context.Context, raw json.RawMessage) (str
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
-	return capResult(string(out), diagnosticsMaxOutput), nil
+	return offloadResult(t.ws, string(out), diagnosticsMaxOutput), nil
 }
 
 // run executes the diagnostic command with a timeout, killing the whole process

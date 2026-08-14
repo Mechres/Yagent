@@ -78,9 +78,9 @@ func (t *testRunnerTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 		if strings.TrimSpace(pruned) == "" {
 			pruned = fmt.Sprintf("tests failed: %v", err)
 		}
-		return capResult(pruned, diagnosticsMaxOutput), nil
+		return offloadResult(t.ws, pruned, diagnosticsMaxOutput), nil
 	}
-	return capResult(pruneTestOutput(string(out)), diagnosticsMaxOutput), nil
+	return offloadResult(t.ws, pruneTestOutput(string(out)), diagnosticsMaxOutput), nil
 }
 
 // detectTestCommand picks the test invocation for the scope and project type.

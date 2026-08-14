@@ -1541,7 +1541,49 @@ func resolveSession(ctx context.Context, st *memory.Store, ws, continueID, forkI
 			return "", nil, "", "", fmt.Errorf("unknown session %q; run 'yagent sessions' to list them", continueID)
 		}
 	}
+	// RESUME anchor (deepseek review #6): prepend a compact structured
+	// bootstrap to the running summary so a resumed session starts oriented —
+	// "where did we leave off" — instead of relying on the raw tail alone.
+	if anchor := resumeAnchor(ctx, st, continueID, summary, history); anchor != "" {
+		if summary != "" {
+			summary = anchor + "\n\n" + summary
+		} else {
+			summary = anchor
+		}
+	}
 	return continueID, history, summary, "", nil
+}
+
+// resumeAnchor builds a compact [RESUMED SESSION] bootstrap for --continue:
+// the session title, how many messages survived summarization, and the last
+// assistant answer (trimmed). Structured and cheap — the running summary holds
+// the condensed arc; this pinpoints where the work stopped.
+func resumeAnchor(ctx context.Context, st *memory.Store, sessionID, summary string, history []llm.Message) string {
+	var b strings.Builder
+	if title, err := st.SessionTitle(ctx, sessionID); err == nil && title != "" {
+		fmt.Fprintf(&b, "RESUMED SESSION: %q", title)
+	}
+	last := ""
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "assistant" && strings.TrimSpace(history[i].Content) != "" {
+			last = history[i].Content
+			break
+		}
+	}
+	if summary != "" && b.Len() > 0 {
+		b.WriteString(" (older history is summarized below)")
+	}
+	if last != "" {
+		last = strings.Join(strings.Fields(last), " ")
+		if len(last) > 220 {
+			last = last[:220] + "…"
+		}
+		fmt.Fprintf(&b, "\nLast answer: %s", last)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return b.String()
 }
 
 // forkSession copies the source session's full history into a brand-new

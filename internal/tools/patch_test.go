@@ -32,6 +32,50 @@ func TestFSPatchRejectsOutOfRangeHunk(t *testing.T) {
 	}
 }
 
+func TestFSPatchAtomicPreflightAllBeforeWrite(t *testing.T) {
+	// Deterministic version of the atomicity guarantee: run fs_patch over two
+	// Go files where the second has a preflight-blocked change (introduces a
+	// syntax error via a bad edit). File A must NOT be modified.
+	ws := t.TempDir()
+	writeFile(t, ws, "a.go", "package pkg\n\nfunc A() int {\n    return 1\n}\n")
+	writeFile(t, ws, "b.go", "package pkg\n\nfunc B() int {\n    return 2\n}\n")
+
+	// a.go: valid change (adds a comment). b.go: invalid (drops a brace, which
+	// tree-sitter flags as a syntax error).
+	diff := `--- a/a.go
++++ b/a.go
+@@ -1,2 +1,3 @@
+ package pkg
++
++// updated
+--- a/b.go
++++ b/b.go
+@@ -3,3 +3,2 @@
+ func B() int {
+-    return 2
+ }
+`
+	reg := NewRegistry(ws, Options{})
+	got := execTool(t, reg, "fs_patch", map[string]any{"patch": diff})
+	if strings.Contains(got, "patched") {
+		t.Fatalf("patch with a bad file was reported as applied: %q", got)
+	}
+	// atomicity: a.go must be UNCHANGED (the whole patch failed)
+	dataA, _ := os.ReadFile(filepath.Join(ws, "a.go"))
+	if strings.Contains(string(dataA), "// updated") {
+		t.Errorf("a.go was modified even though b.go failed preflight — non-atomic patch:\n%s", dataA)
+	}
+	// b.go unchanged too
+	dataB, _ := os.ReadFile(filepath.Join(ws, "b.go"))
+	if !strings.Contains(string(dataB), "return 2") {
+		t.Errorf("b.go was modified: %s", dataB)
+	}
+	// the error names the failing file
+	if !strings.Contains(got, "b.go") {
+		t.Errorf("error should name the failing file: %q", got)
+	}
+}
+
 func TestFSPatchAppliesUnifiedDiff(t *testing.T) {
 	ws, reg := fakeWorkspace(t)
 	writeFile(t, ws, "a.go", "package pkg\n\nfunc old() int {\n    return 1\n}\n")

@@ -2,6 +2,36 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.64 — 2026-08-14
+
+### Added
+- **Downstream-impact hint** — when a post-edit compile/diagnostic failure names
+  no caller context, the report now appends "these call sites call the symbols
+  you changed" from the code index (`index.CallersByFile`, `agent.impactHint`),
+  breaking the A-B-A-B multi-file edit loop for small models.
+- **Adaptive system-prompt compression** — above 70% context the assembled
+  system message swaps to a lean variant (`buildCompactSystemPrompt`, ~546
+  tokens saved) so a small model's attention stays on recent history instead of
+  the full ruleset.
+- **fs_edit exact-snippet** — a >= 85% nearest match returns the FULL
+  untruncated block marked "(exact text)" so the model can copy-paste the exact
+  `old_string` without an intermediate fs_read.
+- **Scratchpad offload** — high-output read tools (grep, git_status/diff/log,
+  shell, workspace_diagnostics, test_runner) write the full result to
+  `.yagent/scratch/tool-output-*.txt` and return the top lines + a pointer
+  (`offloadResult`) instead of dropping the data at the truncation boundary.
+- **Missing-import preflight** — fs_write/fs_edit/fs_patch append a
+  non-blocking `NOTE: "fmt" is/are referenced but not imported` note for
+  Go/Python (string/comment-safe scanner; `from os import getenv` correctly
+  does NOT count as importing `os`).
+- **RESUME anchor** — `--continue` prepends a compact
+  `RESUMED SESSION: <title> / Last answer: ...` bootstrap to the running
+  summary so a resumed session starts oriented where the work stopped.
+- **Atomic fs_patch** — a multi-file patch now preflights ALL files before
+  writing ANY (two-pass), so a syntax failure in file B no longer leaves file A
+  half-migrated.
+- **Golden evals 49–50** — fs-write-import-note and fs-patch-atomic.
+
 ## v0.1.63 — 2026-08-14
 
 ### Added

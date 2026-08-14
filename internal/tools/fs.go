@@ -239,9 +239,9 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	}
 	if oldErr == nil {
 		return fmt.Sprintf("wrote %s (%d bytes; overwrote %d bytes)\n%s", a.Path, len(a.Content), len(old),
-			simpleDiff(string(old), a.Content, 100)), nil
+			simpleDiff(string(old), a.Content, 100)) + importNote(a.Path, a.Content), nil
 	}
-	return fmt.Sprintf("wrote %s (%d bytes)", a.Path, len(a.Content)), nil
+	return fmt.Sprintf("wrote %s (%d bytes)", a.Path, len(a.Content)) + importNote(a.Path, a.Content), nil
 }
 
 // ---------- fs_edit ----------
@@ -349,9 +349,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	if resolved != "" {
-		return fmt.Sprintf("note: path %q was resolved to %s\nedited %s:\n%s", resolved, filepath.Base(path), a.Path, simpleDiff(old, newContent, 100)), nil
+		return fmt.Sprintf("note: path %q was resolved to %s\nedited %s:\n%s", resolved, filepath.Base(path), a.Path, simpleDiff(old, newContent, 100)) + importNote(a.Path, newContent), nil
 	}
-	return fmt.Sprintf("edited %s:\n%s", a.Path, simpleDiff(old, newContent, 100)), nil
+	return fmt.Sprintf("edited %s:\n%s", a.Path, simpleDiff(old, newContent, 100)) + importNote(a.Path, newContent), nil
 }
 
 // pathInSkillsDir reports whether the write/edit args target a path inside the
@@ -465,6 +465,16 @@ func nearestLineHint(content, target string) string {
 		return ""
 	}
 	text := strings.TrimSpace(strings.Join(lines[bestLine-1:bestLine-1+win], "\n"))
+	// A strong match (>= 85% similarity) is almost certainly the intended edit
+	// target — give the FULL untruncated block so the model can copy-paste it
+	// verbatim on the next attempt without an intermediate fs_read (deepseek
+	// review #3). Weaker matches stay truncated to avoid flooding the error.
+	if bestScore >= 0.85 {
+		if win > 1 {
+			return fmt.Sprintf(" — nearest match at lines %d-%d (exact text):\n%s", bestLine, bestLine+win-1, text)
+		}
+		return fmt.Sprintf(" — nearest match at line %d: %q", bestLine, text)
+	}
 	// Collapse to a readable snippet: single-line or short multi-line.
 	if strings.Count(text, "\n") == 0 && len(text) > 60 {
 		text = text[:60] + "…"
@@ -824,5 +834,5 @@ func (t *grepTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 	if count == 0 {
 		return "no matches", nil
 	}
-	return capResult(b.String(), maxResultBytes), nil
+	return offloadResult(t.ws, b.String(), maxResultBytes), nil
 }

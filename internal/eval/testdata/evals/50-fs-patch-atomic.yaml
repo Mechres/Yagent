@@ -1,0 +1,27 @@
+name: fs-patch-atomic
+description: "v0.1.64 — a multi-file fs_patch is atomic: if one file fails preflight, no file is written (deepseek review #7)"
+files:
+  go.mod: |
+    module demo
+
+    go 1.22
+  a.go: |
+    package demo
+
+    func A() int {
+        return 1
+    }
+  b.go: |
+    package demo
+
+    func B() int {
+        return 2
+    }
+input: apply a patch that changes a.go validly and breaks b.go's syntax
+steps:
+  # a.go gets a valid comment add; b.go drops a brace (syntax error)
+  - tool_call: {name: fs_patch, args: '{"patch":"--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package demo\n+\n+// updated\n--- a/b.go\n+++ b/b.go\n@@ -3,3 +3,2 @@\n func B() int {\n-    return 2\n }\n"}'}
+  - answer: the patch failed
+assert:
+  tool_results_contain: ["b.go"]
+  file_not_contains: [{path: a.go, text: "// updated"}]

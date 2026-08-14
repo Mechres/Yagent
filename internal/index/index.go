@@ -379,6 +379,33 @@ func (s *Store) References(ctx context.Context, callee string) []CallRef {
 	return out
 }
 
+// CallersByFile returns, for every exported symbol defined in the touched file
+// rel, its direct callers across the workspace: (caller path, line, symbol).
+// Used to annotate a compile failure after an edit with "these call sites
+// depend on the code you changed" — the deterministic hint that breaks the
+// A-B-A-B multi-file edit loop (deepseek review #1).
+func (s *Store) CallersByFile(ctx context.Context, rel string) []CallRef {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.path, c.line, c.callee
+		FROM index_calls c
+		JOIN index_symbols sym ON sym.name = c.callee AND sym.path = ?
+		ORDER BY c.path, c.line
+		LIMIT 40`, rel)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []CallRef
+	for rows.Next() {
+		var r CallRef
+		if err := rows.Scan(&r.Path, &r.Line, &r.Callee); err != nil {
+			return out
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // SymbolResult is one exact-name symbol match.
 type SymbolResult struct {
 	Path string

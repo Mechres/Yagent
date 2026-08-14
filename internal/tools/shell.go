@@ -116,7 +116,7 @@ func (t *shellExecTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		if b.Len() == 0 {
 			return "(no output)", nil
 		}
-		return capResult(b.String(), shellMaxOutput), nil
+		return offloadResult(t.ws, b.String(), shellMaxOutput), nil
 	}
 }
 

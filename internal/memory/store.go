@@ -291,6 +291,19 @@ func (s *Store) Summary(ctx context.Context, sessionID string) (string, int64, e
 	return summary, until, nil
 }
 
+// SessionTitle returns a session's auto-generated title ("" when unset).
+func (s *Store) SessionTitle(ctx context.Context, sessionID string) (string, error) {
+	var title string
+	err := s.db.QueryRowContext(ctx, `SELECT title FROM sessions WHERE id = ?`, sessionID).Scan(&title)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return title, nil
+}
+
 // SetSummary stores the running summary covering messages up to and
 // including msgID. The summary is redacted before being written.
 func (s *Store) SetSummary(ctx context.Context, sessionID, summary string, msgID int64) error {

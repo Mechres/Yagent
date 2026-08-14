@@ -49,7 +49,8 @@ func (t *fsPatchTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if len(files) == 0 {
 		return "", validationErrorf("the patch contains no file hunks")
 	}
-	var changed []string
+	var pending []pendingWrite
+	var notes []string
 	for _, f := range files {
 		var data []byte
 		full, err := resolvePath(t.ws, f.path)
@@ -72,6 +73,10 @@ func (t *fsPatchTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		if out == string(data) {
 			continue // no effective change
 		}
+		// Pass 1: preflight EVERY file before writing ANY — a multi-file patch
+		// must be atomic. If file B fails validation, file A is left untouched
+		// (deepseek review #7: local models cannot handle a half-migrated state
+		// where one file changed and the next didn't).
 		if msg := preflightSyntax(f.path, out); msg != "" {
 			return fmt.Sprintf("error: %s: %s", f.path, msg), nil
 		}
@@ -81,21 +86,45 @@ func (t *fsPatchTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 		if msg := preflightSymbols(f.path, string(data), out); msg != "" {
 			return fmt.Sprintf("error: %s: %s", f.path, msg), nil
 		}
-		if t.undo != nil {
-			t.undo.Record(full, data)
-		}
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
-		}
-		if err := os.WriteFile(full, []byte(out), 0o644); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
-		}
-		changed = append(changed, f.path)
+		pending = append(pending, pendingWrite{path: f.path, full: full, data: data, out: out})
 	}
-	if len(changed) == 0 {
+	if len(pending) == 0 {
 		return "no changes applied (the patch matched nothing)", nil
 	}
-	return fmt.Sprintf("patched %d file(s): %s", len(changed), strings.Join(changed, ", ")), nil
+	// Pass 2: every file passed preflight — now record undo + write them all.
+	var changed []string
+	for _, p := range pending {
+		if t.undo != nil {
+			if p.data == nil {
+				t.undo.Record(p.full, nil) // file did not exist; undo deletes it
+			} else {
+				t.undo.Record(p.full, p.data)
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(p.full), 0o755); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if err := os.WriteFile(p.full, []byte(p.out), 0o644); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		changed = append(changed, p.path)
+		if note := importNote(p.path, p.out); note != "" {
+			notes = append(notes, p.path+": "+strings.TrimPrefix(note, "\n"))
+		}
+	}
+	msg := fmt.Sprintf("patched %d file(s): %s", len(changed), strings.Join(changed, ", "))
+	if len(notes) > 0 {
+		msg += "\n" + strings.Join(notes, "\n")
+	}
+	return msg, nil
+}
+
+// pendingWrite is one validated file edit awaiting the atomic write pass.
+type pendingWrite struct {
+	path string // workspace-relative (for messages)
+	full string // absolute resolved path
+	data []byte // original content (nil = file did not exist)
+	out  string // validated new content
 }
 
 // diffFile is one file's hunks from a patch.

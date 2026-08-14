@@ -151,6 +151,25 @@ func TestNearestLineHint(t *testing.T) {
 	}
 }
 
+func TestNearestLineHintStrongMatchUntruncated(t *testing.T) {
+	// A strong (>= 85%) multi-line match returns the FULL exact block, not a
+	// 140-char-truncated snippet, so the model can copy-paste the intended
+	// old_string verbatim on the next attempt (deepseek review #3).
+	long := "package demo\n\nfunc LongFunctionName(ctx context.Context, req VeryLongRequestName) (*VeryLongResponseName, error) {\n    if req.Status == \"pending\" {\n        return nil, ErrStillProcessing\n    }\n    if req.Status == \"failed\" {\n        return nil, ErrFailed\n    }\n    return processLongRequest(req)\n}\n"
+	// a near-exact target: one char changed in the header line
+	target := "func LongFunctionName(ctx context.Context, req VeryLongRequestName) (*VeryLongResponseName, error) {\n    if req.Status == \"pending\" {\n        return nil, ErrStillProcessing\n    }\n    if req.Status == \"failed\" {\n        return nil, ErrFailed"
+	hint := nearestLineHint(long, target)
+	if !strings.Contains(hint, "exact text") {
+		t.Errorf("strong match should be flagged as exact text: %q", hint)
+	}
+	if !strings.Contains(hint, "ErrFailed") {
+		t.Errorf("strong match must not truncate the block: %q", hint)
+	}
+	if strings.Contains(hint, "…") {
+		t.Errorf("strong match must not be truncated: %q", hint)
+	}
+}
+
 func TestFuzzyResolve(t *testing.T) {
 	ws := t.TempDir()
 	writeFile(t, ws, "README.md", "# readme\n")

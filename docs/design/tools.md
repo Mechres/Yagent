@@ -76,6 +76,9 @@ results, errors-as-data), with two newer conventions:
   blocks a write that would break source; the verify-don't-trust barrier runs
   `workspace_diagnostics` before "done" when a write went unverified; the
   fs_read dedup cache returns `[cached]` markers for unchanged re-reads.
+  `fs_patch` is atomic (preflights all files before writing any); `fs_write`/
+  `fs_edit`/`fs_patch` append a missing-import note for Go/Python; high-output
+  read tools offload the full result to `.yagent/scratch/` and return a pointer.
 
 | Name | Risk | Notes |
 |---|---|---|
