@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1356,5 +1357,61 @@ func TestModelSelectorRefusesWhileBusy(t *testing.T) {
 	m.openModelSelector()
 	if m.modelOpen {
 		t.Error("selector opened while a turn was running")
+	}
+}
+
+func TestModelSelectorKeyEntryForCloudProvider(t *testing.T) {
+	m := testModel(t)
+	dir := t.TempDir()
+	m.cfg = &config.Config{
+		ServerURL: "http://localhost:8089", Model: "m", ContextWindow: 16384,
+		Path: filepath.Join(dir, "config.yaml"),
+	}
+	m.busy = false
+	m.modelProvider = 2 // OpenCode Zen (has a KeyEnv, no key set)
+	m.modelModelIdx = 0
+	m.modelConfirm = true
+
+	// confirming with no key must open key-entry instead of applying
+	m.handleModelKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.modelKeyEntry {
+		t.Fatal("confirm with no key did not open key entry")
+	}
+	// typing updates the input value (the enter+apply path needs a full env,
+	// so we assert the input and the persist primitive instead of pressing enter)
+	for _, r := range []rune("sk-test-123") {
+		m.handleModelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if got := m.modelKeyInput.Value(); got != "sk-test-123" {
+		t.Errorf("key input = %q", got)
+	}
+	// esc abandons entry without touching config
+	m.handleModelKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.modelKeyEntry {
+		t.Error("esc did not close key entry")
+	}
+	// and the persist primitive writes api_key to the config file
+	if err := config.Set(m.cfg.Path, "api_key", "sk-test-123"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "sk-test-123") {
+		t.Errorf("api_key not persisted:\n%s", data)
+	}
+}
+
+func TestModelKeyEntryViewRenders(t *testing.T) {
+	m := testModel(t)
+	m.modelOpen = true
+	m.modelProvider = 2 // OpenCode Zen
+	m.modelKeyEntry = true
+	m.modelKeyInput = textinput.New()
+	m.modelKeyInput.Focus()
+	v := m.modelView()
+	if !strings.Contains(v, "API key for") || !strings.Contains(v, "OPENCODE_ZEN_API_KEY") {
+		t.Errorf("key-entry view missing prompt: %q", v)
 	}
 }

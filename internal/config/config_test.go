@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -716,5 +717,24 @@ func TestLoadConfigProjectOverlay(t *testing.T) {
 	}
 	if cfg.Model != "env-model" {
 		t.Errorf("model = %q, want env override", cfg.Model)
+	}
+}
+
+func TestSetAPIKeyClearRemovesKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := Set(path, "api_key", "sk-secret"); err != nil {
+		t.Fatal(err)
+	}
+	// clear with an empty value removes the api_key line entirely
+	if err := Set(path, "api_key", ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "sk-secret") || strings.Contains(string(data), "api_key") {
+		t.Errorf("api_key not cleared from config:\n%s", data)
 	}
 }

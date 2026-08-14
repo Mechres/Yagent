@@ -216,6 +216,30 @@ func TestCatalogCurrentModels(t *testing.T) {
 	}
 }
 
+func TestNVIDIAProvider(t *testing.T) {
+	prov, ok := ProviderByName("NVIDIA NIM")
+	if !ok {
+		t.Fatal("NVIDIA NIM not in catalog")
+	}
+	if prov.BaseURL != "https://integrate.api.nvidia.com/v1" {
+		t.Errorf("nvidia base = %q", prov.BaseURL)
+	}
+	if prov.KeyEnv != "NVIDIA_API_KEY" {
+		t.Errorf("nvidia key env = %q", prov.KeyEnv)
+	}
+	// the headline free coding models must be present
+	all := strings.Join(prov.Models, " ")
+	for _, want := range []string{"nemotron-3-super-120b-a12b", "qwen3-coder-480b-a35b-instruct"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("NVIDIA missing %q: %q", want, all)
+		}
+	}
+	// free tier => no api key persisted automatically
+	if prov.KeyEnv == "" {
+		t.Error("NVIDIA should have a key env")
+	}
+}
+
 func stringContains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

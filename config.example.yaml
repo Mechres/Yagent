@@ -112,8 +112,11 @@ consult:                      # the `consult` tool (advisor). Disabled until set
 # OpenCode Zen:   OPENCODE_ZEN_API_KEY    https://opencode.ai/zen
 # OpenCode Go:    OPENCODE_ZEN_API_KEY    https://opencode.ai/zen/go
 # OpenRouter:     OPENROUTER_API_KEY      https://openrouter.ai/api
+# NVIDIA NIM:     NVIDIA_API_KEY          https://integrate.api.nvidia.com/v1
 # Groq:           GROQ_API_KEY            https://api.groq.com/openai
 # Together:       TOGETHER_API_KEY        https://api.together.xyz/v1
 # Mistral:        MISTRAL_API_KEY         https://api.mistral.ai/v1
 #
 # Equivalent CLI: yagent chat --plain  then  /model 2 deepseek-chat
+# Keys can also be set in the TUI (/model confirm, or /key) and are stored in
+# this file's api_key field; /key clear removes them again.

@@ -175,6 +175,19 @@ var Providers = []Provider{
 		KeyEnv:  "MISTRAL_API_KEY",
 		Models:  []string{"devstral-2512", "mistral-large-2512", "mistral-medium-2604"},
 	},
+	{
+		Name:    "NVIDIA NIM",
+		BaseURL: "https://integrate.api.nvidia.com/v1",
+		KeyEnv:  "NVIDIA_API_KEY",
+		Models: []string{
+			"nvidia/nemotron-3-super-120b-a12b",
+			"nvidia/nemotron-3-ultra-550b-a55b",
+			"nvidia/nemotron-3-nano-30b-a3b",
+			"deepseek-ai/deepseek-v4-flash",
+			"qwen/qwen3-coder-480b-a35b-instruct",
+			"openai/gpt-oss-120b",
+		},
+	},
 }
 
 // ProviderNames returns the display labels in catalog order.
@@ -889,6 +902,8 @@ func validateKey(parts []string, value string) error {
 		if value != "" && value != "bwrap" {
 			return &ValidationError{msg: "shell.sandbox must be empty or bwrap"}
 		}
+	case "api_key":
+		// empty value means "clear the stored key" (revert to env-var-only).
 	default:
 		if value == "" {
 			return &ValidationError{msg: key + " cannot be empty"}
@@ -940,9 +955,19 @@ func mappingValue(m *yaml.Node, key string) *yaml.Node {
 func setMappingKey(m *yaml.Node, key string, value *yaml.Node) {
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value == key {
+			// empty scalar value removes the key entirely (e.g. clearing api_key);
+			// sequence/mapping values (consult.cmd, nested blocks) are never
+			// empty scalars so they are untouched.
+			if value.Kind == yaml.ScalarNode && value.Value == "" {
+				m.Content = append(m.Content[:i], m.Content[i+2:]...)
+				return
+			}
 			m.Content[i+1] = value
 			return
 		}
+	}
+	if value.Kind == yaml.ScalarNode && value.Value == "" {
+		return // nothing to add
 	}
 	m.Content = append(m.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},

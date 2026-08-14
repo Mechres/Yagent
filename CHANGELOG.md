@@ -2,6 +2,20 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.69 — 2026-08-15
+
+### Added
+- **NVIDIA NIM provider** — `https://integrate.api.nvidia.com/v1`, key
+  `NVIDIA_API_KEY` (free tier): Nemotron 3 Super/Ultra/Nano, DeepSeek V4
+  Flash, Qwen3-Coder 480B, gpt-oss-120b.
+- **In-TUI API key entry** — confirming a cloud provider in `/model` with no
+  configured key now prompts for one inline; the entered key is saved as config
+  `api_key` and applied (never displayed). The REPL gained `/key <value>` and
+  `/key clear`.
+- `config.Set("api_key", "")` now removes the key line entirely (an empty
+  scalar deletes the mapping node), so "clear" really clears — found + fixed a
+  bug where `/key clear` previously wrote a literal-space `api_key`.
+
 ## v0.1.68 — 2026-08-15
 
 ### Added

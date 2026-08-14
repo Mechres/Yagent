@@ -309,7 +309,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			}
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		case "/retry":
 			if lastLine == "" {
@@ -900,6 +900,8 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.setSetting(rest)
 	case rest == "model" || strings.HasPrefix(rest, "model "):
 		return h.showModels(rest, ag)
+	case rest == "key" || strings.HasPrefix(rest, "key "):
+		return h.setAPIKey(rest)
 	case rest == "undo":
 		return h.undoLastTurn()
 	case rest == "undo list":
@@ -1213,6 +1215,35 @@ func (h *skillsHandler) showSettings() (bool, error) {
 		fmt.Fprintf(h.w, "project config: %s (overrides global)\n", h.cfg.ProjectPath)
 	}
 	fmt.Fprintf(h.w, "edit with: /set <key> <value>  (most keys take effect on the next chat session)\n")
+	return true, nil
+}
+
+// setAPIKey stores an API key in the config's api_key field (`/key <value>`),
+// the TUI-free counterpart to the /model selector's inline key entry. `clear`
+// empties it (revert to env-var-only keys).
+func (h *skillsHandler) setAPIKey(rest string) (bool, error) {
+	target := h.cfg.Path
+	if h.cfg.ProjectPath != "" {
+		target = h.cfg.ProjectPath
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(rest, "key"))
+	if value == "" {
+		fmt.Fprintln(h.w, "usage: /key <api-key>  (stored in config api_key; 'clear' to remove)")
+		return true, nil
+	}
+	if value == "clear" {
+		if err := config.Set(target, "api_key", ""); err != nil {
+			return true, err
+		}
+		h.cfg.APIKey = ""
+		fmt.Fprintln(h.w, "api_key cleared — cloud keys now come from env vars only")
+		return true, nil
+	}
+	if err := config.Set(target, "api_key", value); err != nil {
+		return true, err
+	}
+	h.cfg.APIKey = value
+	fmt.Fprintln(h.w, "api_key saved (used on the next chat session; never shown in listings)")
 	return true, nil
 }
 

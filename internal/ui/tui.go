@@ -337,6 +337,10 @@ type tuiModel struct {
 	modelConfirm  bool
 	modelLive     []string // live models from a Dynamic provider (local)
 	modelLoading  bool     // a live fetch is in flight
+	// modelKeyEntry is true when the confirm step is asking for an API key
+	// (the selected cloud provider has none configured).
+	modelKeyEntry bool
+	modelKeyInput textinput.Model
 
 	sessionsOpen    bool
 	sessionsIdx     int
@@ -648,6 +652,46 @@ func (m *tuiModel) applyThemeLive(key, value string) {
 	}
 }
 
+// openKeyEntry opens the /model selector's inline API-key entry for the current
+// provider (matching the configured server_url), or the first cloud provider
+// with a key env when no local config matches. The entered key is saved as
+// config api_key.
+func (m *tuiModel) openKeyEntry() {
+	if m.busy {
+		m.append("cannot change the API key while a turn is running")
+		return
+	}
+	// find the provider matching the current server_url (or the first cloud one)
+	idx := -1
+	for i, p := range config.Providers {
+		if p.BaseURL == m.cfg.ServerURL {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		for i, p := range config.Providers {
+			if p.KeyEnv != "" {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		m.append("no cloud provider to attach a key to — use /model first")
+		return
+	}
+	prov := config.Providers[idx]
+	m.modelOpen = true
+	m.modelProvider = idx
+	m.modelOnModels = false
+	m.modelConfirm = false
+	m.modelKeyInput = textinput.New()
+	m.modelKeyInput.Placeholder = "paste API key for " + prov.Name + " (" + prov.KeyEnv + ")"
+	m.modelKeyInput.Focus()
+	m.modelKeyEntry = true
+}
+
 // openModelSelector initializes the /model two-pane picker. It refuses while a
 // turn is running (the swap must not race the runner). For a Dynamic provider
 // (local llama.cpp/Ollama) it fires an async /v1/models fetch so the model
@@ -662,6 +706,7 @@ func (m *tuiModel) openModelSelector() (tea.Model, tea.Cmd) {
 	m.modelModelIdx = 0
 	m.modelOnModels = false
 	m.modelConfirm = false
+	m.modelKeyEntry = false
 	m.modelLive = nil
 	m.modelLoading = false
 	// pre-select the current provider if its base URL matches
@@ -698,10 +743,43 @@ func (m *tuiModel) fetchLocalModels() tea.Cmd {
 // left/right move within a pane, enter confirms (applies + rebuilds the
 // runtime), esc closes. modelOnModels selects the model pane.
 func (m *tuiModel) handleModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.modelKeyEntry {
+		switch msg.String() {
+		case "enter":
+			// persist the entered key as api_key, then apply the selection
+			key := strings.TrimSpace(m.modelKeyInput.Value())
+			m.modelKeyEntry = false
+			m.modelConfirm = false
+			m.modelOpen = false
+			if key != "" {
+				if err := config.Set(m.cfg.Path, "api_key", key); err != nil {
+					m.append("  error: " + err.Error())
+					return m, nil
+				}
+				m.cfg.APIKey = key
+			}
+			m.applyModelSelection()
+		case "esc":
+			m.modelKeyEntry = false
+			m.modelConfirm = false
+		}
+		var cmd tea.Cmd
+		m.modelKeyInput, cmd = m.modelKeyInput.Update(msg)
+		return m, cmd
+	}
 	if m.modelConfirm {
 		switch msg.String() {
 		case "y", "enter":
 			m.modelConfirm = false
+			// a cloud provider with no configured key goes to key-entry first
+			prov := config.Providers[m.modelProvider]
+			if prov.KeyEnv != "" && m.cfg.KeyFor(prov) == "" {
+				m.modelKeyInput = textinput.New()
+				m.modelKeyInput.Placeholder = "paste API key for " + prov.Name
+				m.modelKeyInput.Focus()
+				m.modelKeyEntry = true
+				return m, nil
+			}
 			m.modelOpen = false
 			m.applyModelSelection()
 		case "n", "esc":
@@ -1289,6 +1367,10 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	case "/model":
 		m.msgInput.Reset()
 		return m.openModelSelector()
+	case "/key":
+		m.msgInput.Reset()
+		m.openKeyEntry()
+		return m, nil
 	case "/sessions":
 		m.msgInput.Reset()
 		m.sessions, _ = m.env.st.ListSessions(context.Background())
@@ -2113,9 +2195,20 @@ func (m *tuiModel) modelView() string {
 		Render("tab switch pane   ·   ←/→ choose   ·   enter select   ·   esc close")
 	page := title + "\n\n" + lipgloss.JoinHorizontal(lipgloss.Top, provPane, modelPane) + "\n\n" + hint
 
+	if m.modelKeyEntry {
+		prov := config.Providers[m.modelProvider]
+		page += "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(m.th.Primary).
+			Render("API key for "+prov.Name+" ("+prov.KeyEnv+"):") + "\n" +
+			m.modelKeyInput.View() + "\n" +
+			lipgloss.NewStyle().Foreground(m.th.Muted).
+				Render("enter save (stored in config as api_key)   ·   esc cancel")
+		return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.th.Primary).Padding(0, 1).Render(page)
+	}
+
 	if m.modelConfirm {
 		key := m.cfg.KeyFor(prov)
-		auth := "no key"
+		auth := "no key — enter one below"
 		if key != "" {
 			auth = "key from config/env"
 		}
@@ -2460,7 +2553,7 @@ func (m *tuiModel) thinkingBlock() string {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/model",
+		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/model", "/key",
 		"/undo", "/undo list", "/undo <N>", "/sessions", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
 		"/playbook", "/mouse",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
