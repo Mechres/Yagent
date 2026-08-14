@@ -1098,3 +1098,36 @@ Two bugs found in real use (first messages in a fresh session):
   slices; the audit itself flags the tradeoff. Marginal value.
 - ⚪ **Headless browser / cloud swarms** (#8) — correctly out of scope
   (single-binary local-first; pure HTML extraction already covers web reading).
+
+## Review & Hardening Pass 2026-08-14 (6 findings — all shipped & tested)
+
+A holistic codebase review uncovered six concrete consistency, tool-visibility, and runtime gaps:
+
+- ✅ **Dynamic Tool Schema Group Completeness** — `coreToolNames` was missing
+  `fs_patch`, `test_runner`, and `subagent`, meaning chat turns with dynamic
+  schema filtering never sent these tool definitions to the LLM. Added them to
+  `coreToolNames`, and added `jobToolNames` (`shell_bg`, `shell_logs`, `shell_kill`,
+  `scratch_write`, `scratch_read`) triggered on background/job signals. Covered by
+  `TestActiveToolSchemasFilters`.
+- ✅ **Multi-line ambiguous_match line guidance** — `matchLines` in `fs_edit`
+  previously split content by line and called `strings.Index(ln, target)`, which
+  always returned -1 when `target` was multi-line. Rewritten to compute match
+  positions on full content with newline offsets. Covered by extended `TestFSEdit`.
+- ✅ **`applySetting` Configuration Parity** — `applySetting` in `repl.go` was
+  missing handlers for `api_key`, `vram_threshold_tps`, `summarizer.server_url`,
+  and `summarizer.model`, causing changes from `/settings` or `/set` to only
+  persist to disk without updating active runtime state. Handlers added.
+- ✅ **REPL & TUI Command Parity** — Added `/sessions` command to REPL to list
+  sessions directly; updated `/help` in both REPL and TUI to list all available
+  commands (`/checkpoint`, `/playbook`, `/undo list`, `/undo <N>`, `/retry`,
+  `/compact`, etc.); added all slash commands to TUI `slashCommands()` for tab
+  completion.
+- ✅ **Polyglot & C/C++ Doctor Toolchain Diagnostics** — `addProjectToolchain`
+  in `internal/doctor/doctor.go` previously stopped on the first marker with a
+  switch statement and lacked C/C++ checkers. Now verifies all present markers
+  in polyglot repos and audits `make`/`cmake`.
+- ✅ **Shell Completion & CLI Usage Synchronization** — `bashCompletion`,
+  `zshCompletion`, and `usage()` in `cmd/yagent/main.go` updated to include
+  `init`, `backup`, `export-dataset`, `--format dpo`, `--min-messages`, and
+  `--repeat`.
+

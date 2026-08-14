@@ -105,19 +105,27 @@ func (r *Report) addProjectToolchain() {
 		}
 		r.add("toolchain", StatusFail, "project uses "+marker+" but none of "+strings.Join(toolNames, ", ")+" is on PATH — workspace_diagnostics/test_runner will error")
 	}
-	switch {
-	case has("go.mod"):
+	if has("go.mod") {
 		check("go.mod", []string{"go"})
-	case has("Cargo.toml"):
+	}
+	if has("Cargo.toml") {
 		check("Cargo.toml", []string{"cargo", "rustc"})
-	case has("package.json"):
+	}
+	if has("package.json") {
 		check("package.json", []string{"npx", "node"})
-	case has("pyproject.toml"):
+	}
+	if has("pyproject.toml") {
 		check("pyproject.toml", []string{"python3", "python"})
-	case has("requirements.txt"):
+	} else if has("requirements.txt") {
 		check("requirements.txt", []string{"python3", "python"})
-	case has("setup.py"):
+	} else if has("setup.py") {
 		check("setup.py", []string{"python3", "python"})
+	}
+	if has("Makefile") || has("makefile") {
+		check("Makefile", []string{"make"})
+	}
+	if has("CMakeLists.txt") {
+		check("CMakeLists.txt", []string{"cmake"})
 	}
 }
 

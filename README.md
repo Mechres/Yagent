@@ -9,14 +9,14 @@ A local-first AI agent for **code, audit, review, web search and research** — 
 ## Features
 
 - **Agent loop with tools** — streaming chat, risk-gated approvals with TUI diff previews, per-hunk `fs_patch` approval, validation + retry with fuzzy argument aliasing, `/yolo`, **Esc cancels the running turn** (the session stays alive), and a **loop guard** that auto-stops repeating-generation loops.
-- **Memory** — SQLite sessions (`yagent sessions`, `chat --continue`, `/undo`, Markdown/HTML exports), **accurate token counting** (server tokenizer), a budget that first prunes old tool output then summarizes, and hybrid semantic recall (vector + FTS5 + importance + recency).
+- **Memory** — SQLite sessions (`yagent sessions`, `chat --continue`, `/undo` multi-turn revert, Markdown/HTML exports), **accurate token counting** (server tokenizer), a budget that first prunes old tool output then summarizes, and hybrid semantic recall (vector + FTS5 + importance + recency).
 - **Skills** — procedural memory as `SKILL.md` files with progressive disclosure, autonomous creation + a verification harness (`/skills verify`), a TUI skills manager modal (bare `/skills`), and `yagent skills import`.
-- **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, call-graph `code_references`, **`code_impact`** (change radius before an edit), **`code_topology`** (package DAG), **`code_unused`** (dead-symbol candidates), and **`code_slice`** for surgical single-declaration reads.
-- **Code guardrails** — `workspace_diagnostics` (auto-runs `go vet`/`tsc --noEmit`/`cargo check`/`ruff`), **`test_runner`** (targeted unit tests for a package/file/symbol), **pre-flight syntax + YAML/JSON validation** (a broken edit or malformed config never reaches disk), `fs_refactor` (undo-aware symbol rename), and fuzzy path pre-resolution (`README` → `README.md`).
+- **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, call-graph `code_references`, **`code_impact`** (change radius before an edit), **`code_topology`** (package DAG), **`code_unused`** (dead-symbol candidates), **`code_slice`** for surgical single-declaration reads, and **`code_environment`** (toolchain & native-binding audit).
+- **Code guardrails** — `workspace_diagnostics` (auto-runs `go vet`/`tsc --noEmit`/`cargo check`/`ruff`/`make`/`cmake`), **`test_runner`** (targeted unit tests for Go/Rust/Python/JS-TS), **pre-flight syntax + YAML/JSON validation** (a broken edit or malformed config never reaches disk), `diff_semantic` (symbol-delta write guardrail), `GoalGate` (refuses completion on broken builds), `fs_refactor` (undo-aware symbol rename), and fuzzy path pre-resolution (`README` → `README.md`).
 - **Web tools** — `web_search` (DuckDuckGo default, Mojeek/SearXNG alternatives, provider fallback) and `web_fetch` with HTML→text extraction.
 - **Orchestration** — goal mode with workspace checkpoints and `--resume-goal`, declarative **playbooks** (`.yagent/playbooks/*.yaml`), parallel subagents with preset **roles** (architect/auditor/test-engineer/docs-writer), tool subsets and a shared scratchpad, an advisor (`consult`) model, a **`summarizer`** model (offload history condensation to a second machine), and **`clarify`/`plan`** tools for structured user handoffs.
 - **Two UIs** — a bubbletea TUI and a plain REPL sharing one runtime: 24-bit themes (Tokyo Night default; Catppuccin/Nord in `/settings`), pill header/status bar with a live context gauge, markdown rendering, collapsible "thinking" blocks, **Ctrl+F transcript search**, **`/compact`** (distill the session into a ledger), and interactive settings/sessions/skills modals.
-- **Tuning & diagnostics** — per-model sampling profiles, `sampling.min_p`/`repetition_penalty` knobs, context-window auto-detect (budget capped at the server's real `n_ctx`), `yagent doctor`, **`yagent calibrate`** (live benchmark across sampling recipes), `--trace` prompt dumps, a golden YAML eval harness, a live small-model benchmark, a **VRAM pressure detector** (auto-prunes context when streaming slows — KV spill), a **symbol-delta write guardrail** (an edit can't silently delete an exported symbol), a **diagnostic error sanitizer** (error cascades collapse to top root causes), `fs_edit` **whitespace auto-alignment**, a **`code_topology`** package-DAG tool, and **`yagent export-dataset`** (verified sessions → OpenAI/ShareGPT/DPO fine-tuning JSONL).
+- **Tuning & diagnostics** — per-model sampling profiles, `sampling.min_p`/`repetition_penalty` knobs, context-window auto-detect (budget capped at the server's real `n_ctx`), `yagent doctor`, **`yagent calibrate`** (live benchmark across sampling recipes), `yagent bench --repeat 3` with regression baseline tracking, `--trace` prompt dumps, a golden YAML eval harness, a live small-model benchmark, a **VRAM pressure detector** (auto-prunes context when streaming slows — KV spill), a **diagnostic error sanitizer** (error cascades collapse to top root causes), `fs_edit` **whitespace auto-alignment**, and **`yagent export-dataset`** (verified sessions → OpenAI/ShareGPT/DPO fine-tuning JSONL).
 
 ## Install
 
@@ -37,10 +37,12 @@ ollama pull nomic-embed-text
 ## Quickstart
 
 ```bash
-yagent doctor                 # diagnose config / server / model / embeddings
+yagent init                   # create starter config if none exists
+yagent doctor                 # diagnose config / server / model / embeddings / toolchain
 yagent chat                   # streaming TUI (or REPL with --plain)
 yagent chat --goal "refactor the parser package"
 yagent chat --playbook release-checklist   # run a declarative workflow
+yagent bench --repeat 3       # run canonical benchmarks and record baseline
 yagent calibrate              # tune sampling for your local model
 yagent export-dataset --output fine-tune.jsonl --format sharegpt   # turn verified sessions into a training set
 yagent export-dataset --format dpo --output preferences.jsonl      # DPO/ORPO preference pairs (failed -> success)

@@ -229,7 +229,7 @@ const bashCompletion = `# yagent bash completion — source with: source <(yagen
 _yagent() {
     local cur
     cur="${COMP_WORDS[COMP_CWORD]}"
-    local commands="chat sessions skills doctor completion playbook calibrate bench export-dataset"
+    local commands="chat sessions skills doctor completion playbook calibrate bench export-dataset init backup"
     local chat_flags="--continue --fork --goal --rounds --resume-goal --playbook --trace --plain --yolo"
     local skills_cmds="list import"
     local scopes="global project"
@@ -259,17 +259,21 @@ complete -F _yagent yagent
 
 const zshCompletion = `#compdef yagent
 # yagent zsh completion — add this directory to your fpath and symlink to _yagent
-_arguments '1:command:(chat sessions skills doctor completion playbook calibrate bench)' '*: :->args'
+_arguments '1:command:(chat sessions skills doctor completion playbook calibrate bench export-dataset init backup)' '*: :->args'
 case $words[1] in
-  chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' ;;
+  chat) _arguments '--continue=[resume session id]:id:' '--fork=[fork from session id]:id:' '--goal=[autonomous goal mode]:goal:' '--rounds=[max goal rounds]:n:' '--resume-goal=[resume an interrupted goal run]:id:' '--playbook=[run playbook]:name:' '--trace=[prompt dump file]:file:_files' '--plain[force the plain REPL]' '--yolo[auto-approve writes]' ;;
   skills) _arguments '1:skill command:(list import)' '*: :->file' ;;
+  export-dataset) _arguments '--output=[output file]:file:_files' '--format=[format]:format:(openai sharegpt dpo)' '--session=[session id]:id:' '--min-messages=[min messages]:n:' ;;
+  calibrate) _arguments '--write[write sampling to config]' ;;
+  bench) _arguments '--json[machine-readable JSON report]' '--repeat=[repeat task count]:n:' ;;
+  backup) _arguments '--output=[output directory]:dir:_files -/' ;;
   completion) _arguments '1:shell:(bash zsh)' ;;
   playbook) _arguments '1:command:(list)' ;;
 esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent export-dataset [--output file] [--format openai|sharegpt] [--session <id>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] | yagent sessions [search <q>|export <id>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 

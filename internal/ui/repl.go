@@ -290,7 +290,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			}
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /goal <what> /undo /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		case "/retry":
 			if lastLine == "" {
@@ -828,6 +828,8 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.undoN(strings.TrimSpace(strings.TrimPrefix(rest, "undo")))
 	case rest == "checkpoint" || strings.HasPrefix(rest, "checkpoint "):
 		return h.handleCheckpoint(rest)
+	case rest == "sessions":
+		return h.listSessions()
 	case rest == "playbook" || strings.HasPrefix(rest, "playbook "):
 		parts := strings.Fields(rest)
 		if len(parts) < 2 {
@@ -1151,6 +1153,31 @@ func (h *skillsHandler) setSetting(rest string) (bool, error) {
 	return true, nil
 }
 
+// listSessions lists existing sessions in the REPL.
+func (h *skillsHandler) listSessions() (bool, error) {
+	if h.env == nil || h.env.st == nil {
+		fmt.Fprintln(h.w, "session store is not available")
+		return true, nil
+	}
+	sessions, err := h.env.st.ListSessions(h.ctx)
+	if err != nil {
+		return true, fmt.Errorf("list sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		fmt.Fprintln(h.w, "no sessions yet")
+		return true, nil
+	}
+	fmt.Fprintf(h.w, "%-40s  %-8s  %s\n", "id", "msgs", "title")
+	for _, s := range sessions {
+		title := s.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+		fmt.Fprintf(h.w, "%-40s  %-8d  %s\n", s.ID, s.Messages, title)
+	}
+	return true, nil
+}
+
 // applySetting mirrors a persisted value into the running Config and, where
 // possible, the live registry.
 func applySetting(c *config.Config, reg *tools.Registry, key, value string) error {
@@ -1159,6 +1186,8 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 		c.ServerURL = value
 	case "model":
 		c.Model = value
+	case "api_key":
+		c.APIKey = value
 	case "embedding_model":
 		c.EmbeddingModel = value
 	case "embedding_server_url":
@@ -1243,6 +1272,12 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 		c.Skills.ProjectDir = value
 	case "shell.sandbox":
 		c.Shell.Sandbox = value
+	case "vram_threshold_tps":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		c.VramThresholdTPS = f
 	case "consult.server_url":
 		c.Consult.ServerURL = value
 	case "consult.model":
@@ -1251,6 +1286,10 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 		c.Consult.APIKey = value
 	case "consult.cmd":
 		c.Consult.Cmd = strings.Fields(value)
+	case "summarizer.server_url":
+		c.Summarizer.ServerURL = value
+	case "summarizer.model":
+		c.Summarizer.Model = value
 	}
 	return nil
 }

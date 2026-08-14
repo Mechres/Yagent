@@ -950,7 +950,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, m.toggleMouse()
 	case "/help":
 		m.msgInput.Reset()
-		m.append("commands: /exit /clear /help /yolo /export [file] /settings /set /goal <what> /undo /mouse /skills list|pending|diff|approve|reject|approval /skill-name")
+		m.append("commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /mouse /skills /skill-name")
 		m.append("scroll: PgUp/PgDn or Ctrl-U/D, or up/down arrows when the input is empty; search: Ctrl+F; mouse capture: Ctrl+M")
 		m.append("esc cancels the running turn; a repeating-thinking loop is auto-stopped (ui.loop_guard)")
 		return m, m.nextCmd()
@@ -1903,7 +1903,9 @@ func (m *tuiModel) thinkingBlock() string {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/compact", "/help", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/undo", "/undo list", "/undo <N>", "/sessions",
+		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>",
+		"/undo", "/undo list", "/undo <N>", "/sessions", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
+		"/playbook", "/mouse",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",
 	}

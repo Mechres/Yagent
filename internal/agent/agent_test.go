@@ -1844,7 +1844,10 @@ func TestActiveToolSchemasFilters(t *testing.T) {
 	}
 	reg := tools.NewRegistry(ws, tools.Options{
 		Skills: sk, Web: wc, Index: idx,
-		Consult:             llm.NewClient("http://127.0.0.1:1", "advisor"),
+		Consult: llm.NewClient("http://127.0.0.1:1", "advisor"),
+		Subagent: func(ctx context.Context, task, workspace string, tools []string, role tools.SubagentRole) (string, error) {
+			return "ok", nil
+		},
 		SkillsWriteApproval: true,
 		AskUser:             func(ctx context.Context, q string, choices []string) (string, error) { return "ok", nil },
 	})

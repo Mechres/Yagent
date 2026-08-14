@@ -1283,21 +1283,22 @@ func (a *Agent) recall(ctx context.Context, input string) string {
 // holds every tool, so a tool the model calls anyway still works.
 var (
 	coreToolNames = []string{
-		"fs_read", "fs_write", "fs_edit", "fs_refactor", "glob", "grep", "shell_exec",
-		"workspace_diagnostics", "clarify", "plan",
+		"fs_read", "fs_write", "fs_edit", "fs_patch", "fs_refactor", "glob", "grep", "shell_exec",
+		"workspace_diagnostics", "test_runner", "clarify", "plan",
 		"git_status", "git_diff", "git_log", "memory_save", "memory_search",
-		"skills_list", "skill_view", "consult",
+		"skills_list", "skill_view", "consult", "subagent",
 	}
 	webToolNames    = []string{"web_search", "web_fetch"}
 	indexToolNames  = []string{"index_search", "index_repo", "code_slice", "code_outline", "code_topology", "code_impact", "code_unused", "code_environment"}
 	skillManageName = []string{"skill_manage"}
+	jobToolNames    = []string{"shell_bg", "shell_logs", "shell_kill", "scratch_write", "scratch_read"}
 )
 
 // activeToolSchemas returns the tool schemas to offer for the next request:
 // the core set plus domain tools the input signals or the model already used
 // this turn.
 func (a *Agent) activeToolSchemas(input string, used map[string]bool) []llm.ToolSchema {
-	names := coreToolNames
+	names := append([]string(nil), coreToolNames...)
 	if used["web_search"] || used["web_fetch"] || researchSignal(input) {
 		names = append(names, webToolNames...)
 	}
@@ -1306,6 +1307,9 @@ func (a *Agent) activeToolSchemas(input string, used map[string]bool) []llm.Tool
 	}
 	if used["skill_manage"] || strings.Contains(strings.ToLower(input), "skill") {
 		names = append(names, skillManageName...)
+	}
+	if used["shell_bg"] || used["shell_logs"] || used["shell_kill"] || used["scratch_write"] || used["scratch_read"] || jobSignal(input) {
+		names = append(names, jobToolNames...)
 	}
 	return a.registry.SchemasFor(names)
 }
@@ -1329,6 +1333,19 @@ func codeSignal(s string) bool {
 	for _, kw := range []string{
 		"code", "function", "repo", "source", "implement", "bug", "fix",
 		"where is", "where does", "find", "index", "file", "method",
+	} {
+		if strings.Contains(l, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func jobSignal(s string) bool {
+	l := strings.ToLower(s)
+	for _, kw := range []string{
+		"background", "bg", "daemon", "service", "job", "process", "scratch", "scratchpad",
+		"start in background", "run in background", "kill", "logs",
 	} {
 		if strings.Contains(l, kw) {
 			return true
