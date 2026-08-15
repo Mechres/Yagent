@@ -84,6 +84,9 @@ type Task struct {
 	// hunk subset ("first_hunk" | "last_hunk"), so the eval can assert that
 	// only the kept hunks were applied.
 	PatchFilter string `yaml:"patch_filter"`
+	// PlanMode starts the loop in read-only plan mode; a write/destructive call
+	// must be rejected at dispatch even if the model hallucinates its schema.
+	PlanMode bool `yaml:"plan_mode"`
 
 	Assert Assertions `yaml:"assert"`
 }
@@ -256,6 +259,9 @@ func Run(t *testing.T, task Task) {
 		Codegen:         task.Codegen,
 		SuccessChecks:   parseEvalChecks(task.SuccessChecks),
 	}, ws)
+	if task.PlanMode {
+		a.SetPlanMode(true)
+	}
 
 	inputs := task.Inputs
 	if len(inputs) == 0 {

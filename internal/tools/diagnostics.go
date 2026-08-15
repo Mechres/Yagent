@@ -48,9 +48,12 @@ func (t *diagnosticsTool) Execute(ctx context.Context, raw json.RawMessage) (str
 	}
 	out, err := t.run(ctx, name, args...)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		// A non-zero exit (or timeout) is a FAIL, not a crash — the gate must
+		// trust the exit status. Prefix the output so DiagnosticsFailed can
+		// parse it without guessing from prose alone (GPT sol #1).
+		return "[FAIL] " + offloadResult(t.ws, string(out), diagnosticsMaxOutput) + fmt.Sprintf("\n(exited %v)", err), nil
 	}
-	return offloadResult(t.ws, string(out), diagnosticsMaxOutput), nil
+	return "[PASS] " + offloadResult(t.ws, string(out), diagnosticsMaxOutput), nil
 }
 
 // run executes the diagnostic command with a timeout, killing the whole process
@@ -81,12 +84,28 @@ func (t *diagnosticsTool) run(ctx context.Context, name string, args ...string) 
 			return nil, fmt.Errorf("diagnostics timed out after %s", diagnosticsTimeout)
 		}
 		return nil, ctx.Err()
-	case <-done:
+	case waitErr := <-done:
 		if errBuf.Len() > 0 {
 			out.WriteString("\nstderr:\n" + errBuf.String())
 		}
+		if waitErr != nil {
+			// A non-zero exit means the check FAILED — surface it so the gate
+			// trusts the exit status, not just the output prose (GPT sol #1).
+			return out.Bytes(), fmt.Errorf("exit status %d", waitExitCode(waitErr))
+		}
 		return out.Bytes(), nil
 	}
+}
+
+// exitCode extracts a numeric exit code from a Wait error (0 when nil).
+func waitExitCode(waitErr error) int {
+	if waitErr == nil {
+		return 0
+	}
+	if ee, ok := waitErr.(*exec.ExitError); ok {
+		return ee.ExitCode()
+	}
+	return -1
 }
 
 // detectDiagnostics picks a checker from the workspace's marker files. lookPath

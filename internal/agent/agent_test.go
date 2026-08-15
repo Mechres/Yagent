@@ -2745,3 +2745,83 @@ func TestPlanModeRestrictsSchemasAndApprovalExits(t *testing.T) {
 		t.Error("write tools not restored after plan mode off")
 	}
 }
+
+func TestPlanModeEnforcedInDispatch(t *testing.T) {
+	// GPT sol #3: plan mode hides write schemas, but a model can still
+	// hallucinate an fs_write call — dispatch must reject it, not run it.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient("http://127.0.0.1:1", "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	a.SetPlanMode(true)
+
+	result := a.dispatch(context.Background(), llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_write", Arguments: []byte(`{"path":"x.txt","content":"hi"}`)}}, map[string]int{}, map[string]bool{})
+	if !strings.Contains(result, "plan mode") {
+		t.Errorf("plan mode did not reject the write: %q", result)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); !os.IsNotExist(err) {
+		t.Error("plan mode rejected write still created the file")
+	}
+	// Read-only tools still work in plan mode.
+	writeWorkspaceFile(t, ws, "r.txt", "data")
+	r := a.dispatch(context.Background(), llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_read", Arguments: []byte(`{"path":"r.txt"}`)}}, map[string]int{}, map[string]bool{})
+	if strings.Contains(r, "error") {
+		t.Errorf("plan mode blocked a read: %q", r)
+	}
+}
+
+func TestFailedWriteDoesNotArmWriteState(t *testing.T) {
+	// GPT sol #2: only a SUCCESSFUL write marks the turn unverified, records a
+	// touched path, or flips turnWrote. A failed fs_edit must arm nothing.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "calc.go", "package calc\n\nfunc Add(a, b int) int { return a + b }\n")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient("http://127.0.0.1:1", "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	// 1. A FAILED fs_edit (old_string not found) arms nothing.
+	res := a.dispatch(context.Background(), llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_edit", Arguments: []byte(`{"path":"calc.go","old_string":"func Add(a, b int) int { return a + b } // does not exist","new_string":"func Add(a, b int) int { return a * b }"}`)}}, map[string]int{}, map[string]bool{})
+	if !strings.HasPrefix(res, "error") {
+		t.Fatalf("expected failed edit, got %q", res)
+	}
+	a.mu.RLock()
+	unv, touched, wrote := a.unverifiedWrite, len(a.touchedPaths), a.turnWrote
+	a.mu.RUnlock()
+	if unv || touched != 0 || wrote {
+		t.Errorf("failed write armed state: unverified=%v touched=%d turnWrote=%v", unv, touched, wrote)
+	}
+
+	// 2. A SUCCESSFUL fs_write arms unverified + touched + turnWrote.
+	res = a.dispatch(context.Background(), llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_write", Arguments: []byte(`{"path":"out.txt","content":"done"}`)}}, map[string]int{}, map[string]bool{})
+	if strings.HasPrefix(res, "error") {
+		t.Fatalf("expected successful write, got %q", res)
+	}
+	a.mu.RLock()
+	unv, touched, wrote = a.unverifiedWrite, len(a.touchedPaths), a.turnWrote
+	a.mu.RUnlock()
+	if !unv || touched != 1 || !wrote {
+		t.Errorf("successful write did not arm state: unverified=%v touched=%d turnWrote=%v", unv, touched, wrote)
+	}
+}
+
+func TestGateMarkersTrustExitStatus(t *testing.T) {
+	// GPT sol #1: the [FAIL]/[PASS] markers are authoritative even when output
+	// prose is empty or unusual — a non-zero exit can't be hidden by sparse text.
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"[PASS] go vet passed", false},
+		{"[FAIL]\n", true},
+		{"[FAIL] (exited exit status 1)", true},
+		{"go vet passed\nFAIL", true},
+		{"all tests passed", false},
+		{"--- FAIL: TestAdd\nAdd(1,1) != 2", true},
+	}
+	for _, tc := range cases {
+		if got := TestsFailed(tc.in); got != tc.want {
+			t.Errorf("TestsFailed(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+		if got := DiagnosticsFailed(tc.in); got != tc.want {
+			t.Errorf("DiagnosticsFailed(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}

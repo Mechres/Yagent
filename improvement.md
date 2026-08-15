@@ -1207,3 +1207,39 @@ A focused TUI improvement pass implemented six major interactivity, visual consi
   with the optimal launch flags. Best-effort: builds that don't expose cache
   type get a clean INFO, not a false warning. Covered by
   `TestAddServerPerfLargeContextWarns`.
+
+## Audit-fix batch 2026-08-15 (GPT sol review — P0 findings verified against the code)
+
+Two external reviews (GPT sol / AGY) landed 2026-08-15 (`ideas/` untracked).
+Every P0 claim was verified against the code before shipping (all confirmed
+accurate):
+
+- ✅ **Exit-status trust** (GPT sol #1) — `workspace_diagnostics`/`test_runner`
+  discarded `cmd.Wait()` errors, so a non-zero exit was returned as success and
+  the goal/test gates inferred failure from prose. Both tools now surface the
+  exit code and prefix `[PASS]`/`[FAIL]`; `DiagnosticsFailed`/`TestsFailed`
+  trust the marker first. The realistic failure (a checker failing with empty
+  or unusual output) is now caught deterministically.
+- ✅ **Successful writes only arm write state** (GPT sol #2) — `dispatch`
+  marked `unverifiedWrite`/`touchedPaths`/`turnWrote` for any non-read-only
+  call, even one that returned `error:`. A failed `fs_edit` no longer arms the
+  verify barrier, pollutes the ledger, or invalidates the read cache.
+- ✅ **Plan-mode enforced in dispatch** (GPT sol #3) — hiding write schemas was
+  advisory (a hallucinated `fs_write` still ran, subject only to the
+  approver). While plan mode is on, `dispatch` rejects any non-read-only call
+  with a pointer back to `plan`.
+- ✅ **Truncation-placeholder guard** (AGY P0) — `fs_write` blocks content with
+  "// ... existing code ..."-style ellipses before it hits disk (safe for Go
+  variadics, Python Ellipsis stubs, and `// Example: a, b, c...` comments).
+- ✅ **Test-gate scope** (GPT sol #4) — `testGateCheck` tests every uniquely
+  touched file, not just `touched[0]` (whole-project fallback when nothing was
+  touched).
+- 🟡 **Deferred as queued (P1, from AGY)**: proactive tool-output sliding
+  window (prune read results older than ~2 turns), fenced/markdown tool-call
+  extraction (rescue a ````json```-wrapped call), and path/quote sanitization —
+  all value-carrying but lower-risk than the P0 correctness fixes; tracked for
+  the next pass.
+- ⚪ **Not a fit (agreed)**: C3 structured returns (gated on eval evidence),
+  `/steer`, fine-tune script, capability probing, permission policies.
+
+Golden evals 52–54 + unit tests; `go test -race` clean.

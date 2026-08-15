@@ -73,14 +73,14 @@ func (t *testRunnerTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 	out, err := t.run(ctx, name, args...)
 	if err != nil {
 		// go test / pytest exit non-zero on failures — that is the result,
-		// not a crash. Return the (pruned) output so the model sees it.
+		// not a crash. Mark it FAIL so TestsFailed trusts the exit status.
 		pruned := pruneTestOutput(string(out))
 		if strings.TrimSpace(pruned) == "" {
 			pruned = fmt.Sprintf("tests failed: %v", err)
 		}
-		return offloadResult(t.ws, pruned, diagnosticsMaxOutput), nil
+		return "[FAIL] " + offloadResult(t.ws, pruned, diagnosticsMaxOutput), nil
 	}
-	return offloadResult(t.ws, pruneTestOutput(string(out)), diagnosticsMaxOutput), nil
+	return "[PASS] " + offloadResult(t.ws, pruneTestOutput(string(out)), diagnosticsMaxOutput), nil
 }
 
 // detectTestCommand picks the test invocation for the scope and project type.
@@ -236,9 +236,14 @@ func (t *testRunnerTool) run(ctx context.Context, name string, args ...string) (
 			return out.Bytes(), fmt.Errorf("tests timed out after %s", testRunnerTimeout)
 		}
 		return out.Bytes(), ctx.Err()
-	case <-done:
+	case waitErr := <-done:
 		if errBuf.Len() > 0 {
 			out.WriteString("\nstderr:\n" + errBuf.String())
+		}
+		if waitErr != nil {
+			// go test / pytest exit non-zero on failure — surface the exit
+			// status so TestsFailed trusts it, not just prose (GPT sol #1).
+			return out.Bytes(), fmt.Errorf("exit status %d", waitExitCode(waitErr))
 		}
 		return out.Bytes(), nil
 	}

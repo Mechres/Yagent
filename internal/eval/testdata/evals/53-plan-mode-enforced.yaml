@@ -1,0 +1,14 @@
+name: plan-mode-enforced
+description: "GPT sol #3 — read-only plan mode rejects a write at dispatch even when the model hallucinates the fs_write schema (hiding schemas was advisory, not enforced)"
+plan_mode: true
+files:
+  a.txt: |
+    original content
+input: modify a.txt
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"a.txt","content":"hacked"}'}
+  - answer: I could not write because plan mode is on
+assert:
+  tool_results_contain: ["plan mode"]
+  file_contains:
+    - {path: a.txt, text: "original content"}

@@ -33,6 +33,10 @@ func TestWorkspaceDiagnosticsDetectGo(t *testing.T) {
 	if !strings.Contains(res, "no issues") {
 		t.Errorf("result = %q", res)
 	}
+	// GPT sol #1: a clean exit carries a [PASS] marker so the gate trusts it.
+	if !strings.HasPrefix(res, "[PASS]") {
+		t.Errorf("clean run not marked [PASS]: %q", res)
+	}
 }
 
 func TestWorkspaceDiagnosticsNoProject(t *testing.T) {
@@ -64,6 +68,11 @@ func TestWorkspaceDiagnosticsCommandError(t *testing.T) {
 	}
 	if !strings.Contains(res, "go vet failed") {
 		t.Errorf("result = %q", res)
+	}
+	// GPT sol #1: a non-zero exit must surface as a [FAIL] marker the gate can
+	// trust even when the output prose is sparse.
+	if !strings.HasPrefix(res, "[FAIL]") {
+		t.Errorf("exit-status failure not marked [FAIL]: %q", res)
 	}
 }
 

@@ -2,6 +2,47 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.77 — 2026-08-15
+
+### Fixed
+- **Exit-status trust for the deterministic gates** (GPT sol #1) —
+  `workspace_diagnostics` and `test_runner` used to discard the command's
+  exit status: a non-zero exit was returned as a bare `(out, nil)`, so the
+  goal/test gates had to infer failure from output prose alone. Both now
+  surface the exit code and prefix results with a `[PASS]`/`[FAIL]` marker;
+  `DiagnosticsFailed`/`TestsFailed` trust the marker first, so a checker that
+  fails with empty or unusual output can no longer sneak past the gate.
+- **Only successful writes arm write state** (GPT sol #2) — `dispatch` used to
+  mark the turn unverified (`unverifiedWrite`), record a touched path, and flip
+  `turnWrote` for *any* non-read-only call, even one that returned `error:`.
+  A failed `fs_edit` no longer arms the verify-don't-trust barrier, pollutes
+  the progress ledger, or invalidates the read cache. Side effect: the
+  near-cap convergence nudge and codegen write-gates no longer misfire on
+  rejected writes.
+- **Plan mode is now enforced in dispatch** (GPT sol #3) — hiding write
+  schemas was advisory: a model that hallucinated an `fs_write` call would
+  still run it (subject only to the approver). While plan mode is on,
+  `dispatch` rejects any non-read-only call with a pointer back to the `plan`
+  tool. The `plan` tool itself stays callable (approving it exits plan mode).
+- **Truncation-placeholder guard** (AGY P0) — `fs_write` now blocks content
+  containing a truncation placeholder ("// ... existing code ...",
+  "# ... rest of file unchanged", bare comment ellipses) before it touches
+  disk, closing the silent-file-truncation hole that defeated every downstream
+  gate. Safe against Go variadics, Python Ellipsis (`...` bodies in stubs),
+  and `// Example: a, b, c...` comments.
+
+### Changed
+- **Test-gate scope covers all mutated files** (GPT sol #4) — `testGateCheck`
+  ran `test_runner` on only `touched[0]`, so a DONE that broke a test in the
+  *second* touched file slipped through. It now tests every uniquely touched
+  file (falling back to a whole-project run when nothing was touched).
+
+### Added
+- Golden evals 52–54: placeholder guard (blocked + file untouched), plan-mode
+  dispatch enforcement, and the `[PASS]` exit-status marker on a real
+  `workspace_diagnostics` run. Unit tests for the write-state fix, the
+  marker-trusting gates, and the placeholder guard's false-positive safety.
+
 ## v0.1.76 — 2026-08-15
 
 ### Fixed

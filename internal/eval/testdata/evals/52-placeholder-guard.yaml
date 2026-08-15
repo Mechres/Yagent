@@ -1,0 +1,17 @@
+name: placeholder-guard
+description: "AGY P0 — a full-file fs_write that abbreviates with a truncation placeholder ('// ... existing code ...') is blocked before it touches disk; the existing file survives untouched"
+files:
+  calc.go: |
+    package calc
+
+    func Add(a, b int) int { return a + b }
+
+    func Mul(a, b int) int { return a * b }
+input: replace calc.go
+steps:
+  - tool_call: {name: fs_write, args: '{"path":"calc.go","content":"package calc\n\n// ... existing code ...\n"}'}
+  - answer: the write was rejected because it contained a truncation placeholder
+assert:
+  tool_results_contain: ["truncation placeholder"]
+  file_contains:
+    - {path: calc.go, text: "func Mul"}

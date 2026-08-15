@@ -1,0 +1,18 @@
+name: exit-status-marker
+description: "GPT sol #1 — workspace_diagnostics surfaces its exit status as a [PASS]/[FAIL] prefix so the deterministic gates trust the exit code, not just output prose"
+files:
+  go.mod: |
+    module marker
+
+    go 1.22
+  main.go: |
+    package main
+
+    func main() { println("hi") }
+input: check the project
+steps:
+  # clean run -> [PASS] marker (real go vet runs in the eval workspace)
+  - tool_call: {name: workspace_diagnostics, args: '{}'}
+  - answer: the project is healthy
+assert:
+  tool_results_contain: ["[PASS]"]

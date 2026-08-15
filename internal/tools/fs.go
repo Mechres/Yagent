@@ -219,6 +219,9 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if msg := preflightStructured(a.Path, a.Content); msg != "" {
 		return "error: " + msg, nil
 	}
+	if msg := preflightPlaceholders(a.Path, a.Content); msg != "" {
+		return "error: " + msg, nil
+	}
 	// Record the undo entry only after preflight passes: a rejected write
 	// never touched disk, so it must not leave a phantom undo entry (finding
 	// #5, 2026-08-13 — /undo would "revert" a write that never happened and

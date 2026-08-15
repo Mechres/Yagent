@@ -1250,6 +1250,14 @@ func TestsFailed(result string) bool {
 		return false
 	}
 	trimmed := strings.TrimSpace(result)
+	// Trust the deterministic exit-status marker first (GPT sol #1): a FAIL
+	// prefix is authoritative even when the output text is empty or unusual.
+	if strings.HasPrefix(trimmed, "[FAIL]") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "[PASS]") {
+		return false
+	}
 	if strings.HasPrefix(trimmed, "error:") || strings.HasPrefix(trimmed, "tests failed:") {
 		return true
 	}
@@ -1276,25 +1284,52 @@ func (a *Agent) testGateCheck(ctx context.Context) string {
 	a.mu.RLock()
 	touched := append([]string(nil), a.touchedPaths...)
 	a.mu.RUnlock()
-	scope := "package"
-	path := ""
-	if len(touched) > 0 {
-		scope = "file"
-		path = touched[0]
+	// Scope the gate to every successfully-mutated file (GPT sol #4): with the
+	// write-tracking fix touchedPaths only holds successful writes, but the old
+	// code tested just touched[0], so a DONE that broke a test in the *second*
+	// touched file slipped through. Test each touched file (bounded, deduped);
+	// fall back to the whole project when nothing was touched this turn.
+	var paths []string
+	if len(touched) == 0 {
+		paths = []string{""} // whole-project run
+	} else {
+		paths = touched
 	}
-	args, _ := json.Marshal(map[string]string{"scope": scope, "path": path})
-	result, err := tool.Execute(ctx, args)
-	if err != nil {
-		return ""
+	var results []string
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if path != "" && seen[path] {
+			continue
+		}
+		seen[path] = true
+		var args []byte
+		if path == "" {
+			args, _ = json.Marshal(map[string]string{"scope": "package"})
+		} else {
+			args, _ = json.Marshal(map[string]string{"scope": "file", "path": path})
+		}
+		result, err := tool.Execute(ctx, args)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(result, "no test framework configured") {
+			return ""
+		}
+		if !TestsFailed(result) {
+			continue
+		}
+		if path == "" {
+			results = append(results, result)
+		} else {
+			results = append(results, fmt.Sprintf("--- tests for %s ---\n%s", path, result))
+		}
 	}
-	if strings.Contains(result, "no test framework configured") {
-		return ""
-	}
-	if !TestsFailed(result) {
+	if len(results) == 0 {
 		return ""
 	}
 	return "Deterministic completion check: unit tests FAIL. " +
-		"You reported DONE, but the tests below are failing — fix them, then re-run test_runner and report DONE again.\n\n" + result
+		"You reported DONE, but the tests below are failing — fix them, then re-run test_runner and report DONE again.\n\n" +
+		strings.Join(results, "\n\n")
 }
 
 // successCheckFails evaluates the configured goal-success predicates against
@@ -1344,6 +1379,15 @@ func (a *Agent) smokeGateCheck(ctx context.Context) string {
 // actual failures (compile/lint errors) rather than a clean or empty run.
 // Exported so the playbook runner can reuse the same determination (agy #3).
 func DiagnosticsFailed(result string) bool {
+	trimmed := strings.TrimSpace(result)
+	// Trust the deterministic exit-status marker first (GPT sol #1): a FAIL
+	// prefix is authoritative even when output prose is unusual or empty.
+	if strings.HasPrefix(trimmed, "[FAIL]") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "[PASS]") {
+		return false
+	}
 	for _, ln := range strings.Split(result, "\n") {
 		t := strings.TrimSpace(ln)
 		if t == "" {
@@ -2572,6 +2616,17 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		return fmt.Sprintf("error: tool %q is blocked for this turn (repeated validation failures)", name)
 	}
 
+	// Plan-mode enforcement: when read-only plan mode is active, a non-read-only
+	// call must be rejected at dispatch even if the model hallucinates a schema
+	// that plan mode hides (GPT sol #3). The plan tool is the explicit escape
+	// hatch — approving it flips plan mode off, so it must still reach the gate.
+	a.mu.RLock()
+	plan := a.planMode
+	a.mu.RUnlock()
+	if plan && tool.Risk() != tools.RiskReadOnly && name != "plan" {
+		return fmt.Sprintf("error: read-only plan mode is on; tool %q requires approval. Call the plan tool with your proposed changes (approving it flips plan mode off and lets you edit).", name)
+	}
+
 	// Dedup: small models occasionally repeat an identical *write/destructive*
 	// tool call back to back; skip the repeat instead of applying the side
 	// effect twice. Read-only calls are NOT deduped: a re-read is legitimate
@@ -2719,7 +2774,11 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		if strings.HasPrefix(result, "runtime_smoke PASS") {
 			a.smokePassed = true
 		}
-	} else if tool.Risk() != tools.RiskReadOnly {
+	} else if tool.Risk() != tools.RiskReadOnly && !strings.HasPrefix(result, "error:") {
+		// Only a SUCCESSFUL write marks the turn unverified and touches paths
+		// (GPT sol #2): a failed fs_edit must not arm the verify barrier, pollute
+		// the progress ledger, or gate the next turn's test scope on a file that
+		// was never changed.
 		a.unverifiedWrite = true
 		a.smokePassed = false
 		var pa struct {
@@ -2758,7 +2817,10 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	}
 	if tool.Risk() == tools.RiskReadOnly {
 		a.turnReadCalls++
-	} else {
+	} else if !strings.HasPrefix(result, "error:") {
+		// Only a successful write counts as "wrote this turn" (GPT sol #2): a
+		// denied/failed write is not a mutation, so it must not flip the
+		// write-then-DONE barriers or invalidate the read cache pointlessly.
 		a.turnWrote = true
 		// A write may have changed the workspace the read tools query
 		// (files, index, imports) — drop every memoized read result so no

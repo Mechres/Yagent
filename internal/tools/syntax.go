@@ -267,3 +267,36 @@ func preflightSymbols(path, oldContent, newContent string) string {
 	return fmt.Sprintf("the change would delete exported symbol(s): %s — restore them; a targeted edit must not remove public API. If the deletion is intentional, split it into its own edit and state so. The file was NOT modified",
 		strings.Join(lost, ", "))
 }
+
+// placeholderCommentEllipsis matches a comment that STARTS with an ellipsis
+// ("// ...", "# ...", "/* ...") — a truncation placeholder, never real code.
+// A comment like "// Example: a, b, c..." is safe because the ellipsis is not
+// at the start of the comment text.
+var placeholderCommentEllipsis = regexp.MustCompile(`(?i)^\s*(?://|#|--|/\*|\*|<!--)[^\S\r\n]*[.…]{3,}`)
+
+// placeholderCommentProse matches a comment that mixes an ellipsis with a
+// truncation keyword anywhere ("// unchanged code above ...",
+// "# ... keep the lines below"). Same keyword set as the bare-line pattern;
+// requires the comment token.
+var placeholderCommentProse = regexp.MustCompile(`(?i)^\s*(?://|#|--|/\*|\*|<!--)\s*(?:[.…]{3,}.*\b(?:existing|unchanged|rest|remains?|same as|above|below|keep|preserv)\b|\b(?:existing|unchanged|rest|remains?|same as|above|below|keep|preserv)\b.*[.…]{3,})`)
+
+// placeholderProseEllipsis matches a bare line that mixes an ellipsis with
+// truncation prose ("... rest of the code unchanged", "keep the rest ...") in
+// either order. A bare "..." line (Python Ellipsis in stubs) has no keyword
+// and is NOT flagged. Go's RE2 has no lookahead, so the pattern alternates the
+// two orders; comment-prefixed lines (which start with "/") are excluded —
+// placeholderCommentEllipsis already owns them.
+var placeholderProseEllipsis = regexp.MustCompile(`(?i)^[^/\r\n]*(?:[.…]{3,}[^/\r\n]*\b(?:existing|unchanged|rest|remains?|same as|above|below|keep|preserv)\b|\b(?:existing|unchanged|rest|remains?|same as|above|below|keep|preserv)\b[^/\r\n]*[.…]{3,})[^/\r\n]*$`)
+
+// preflightPlaceholders blocks a full-file write that contains a truncation
+// placeholder ("// ... existing code ...", "# ... rest of file unchanged").
+// Returns "" when the content is clean.
+func preflightPlaceholders(path, content string) string {
+	for i, ln := range strings.Split(content, "\n") {
+		if placeholderCommentEllipsis.MatchString(ln) || placeholderCommentProse.MatchString(ln) || placeholderProseEllipsis.MatchString(ln) {
+			return fmt.Sprintf("the content contains a truncation placeholder at line %d: %q — fs_write/fs_edit requires the COMPLETE file content (or the exact lines being changed); an ellipsis placeholder would truncate the file. Write out the full content explicitly. The file was NOT modified",
+				i+1, strings.TrimSpace(ln))
+		}
+	}
+	return ""
+}

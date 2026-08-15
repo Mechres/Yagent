@@ -62,3 +62,37 @@ func TestPreflightImportsNonGoPy(t *testing.T) {
 		t.Errorf("js wrongly checked: %q", msg)
 	}
 }
+
+func TestPreflightPlaceholders(t *testing.T) {
+	// AGY P0: a model abbreviating a large file with "// ... existing code ..."
+	// must be blocked — it would silently truncate the file, defeating every
+	// downstream gate. Covered variants: comment-started ellipsis (all comment
+	// tokens), and bare prose mixing an ellipsis with truncation keywords.
+	blocked := []string{
+		"package main\n\n// ... existing code ...\n",
+		"package main\n\n# ... rest of the file unchanged\n",
+		"func main() {\n\t// ...\n}\n",
+		"...rest of the code remains the same...\n",
+		"keep the rest of the file...\n",
+		"/* ... unchanged code below */\n",
+		"// unchanged code above ...\n",
+	}
+	for _, content := range blocked {
+		if msg := preflightPlaceholders("a.go", content); msg == "" {
+			t.Errorf("placeholder NOT blocked: %q", content)
+		}
+	}
+	// False-positive safety: real code with literal ellipses must pass.
+	clean := []string{
+		"package main\n\nfunc main() {\n\tf(a...)\n\t_ = 3.14\n}\n",
+		"def stub(self, *args, **kwargs):\n    ...\n", // Python Ellipsis, no keyword
+		"// Example: a, b, c... the sequence\n",
+		"x := \"...just text inside a string literal\"\n",
+		"x := []int{1, 2, 3}\n",
+	}
+	for _, content := range clean {
+		if msg := preflightPlaceholders("a.py", content); msg != "" {
+			t.Errorf("clean content wrongly blocked: %q -> %q", content, msg)
+		}
+	}
+}
