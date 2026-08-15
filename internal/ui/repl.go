@@ -372,7 +372,16 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			}
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /plan /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /plan /goal <what> /steer <text> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			continue
+		case "/steer":
+			text := strings.TrimSpace(strings.TrimPrefix(line, "/steer"))
+			ag.Steer(text)
+			if text == "" {
+				fmt.Fprintln(w, "steer cleared")
+			} else {
+				fmt.Fprintf(w, "steer set: %s (pinned to the top of TASK STATE for the next requests)\n", text)
+			}
 			continue
 		case "/retry":
 			if lastLine == "" {

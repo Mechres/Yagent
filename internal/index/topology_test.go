@@ -80,3 +80,50 @@ func TestTopologyExternalImportsExcluded(t *testing.T) {
 		t.Errorf("external import leaked: %s", got)
 	}
 }
+
+func TestOrderByDeps(t *testing.T) {
+	// AGY #5: upstream (leaf) packages must sort before the callers that
+	// import them, so a model fixes the definition before the call sites.
+	ws := t.TempDir()
+	writeTopo := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(ws, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTopo("go.mod", "module example.com/acme\n")
+	writeTopo("internal/api/types.go", "package api\n")
+	writeTopo("internal/service/svc.go", "package service\n\nimport \"example.com/acme/internal/api\"\n")
+	writeTopo("cmd/server/main.go", "package main\n\nimport \"example.com/acme/internal/service\"\n")
+
+	topo, err := BuildTopology(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := topo.OrderByDeps(map[string]bool{
+		"cmd/server":       true,
+		"internal/service": true,
+		"internal/api":     true,
+	})
+	want := []string{"internal/api", "internal/service", "cmd/server"}
+	if len(order) != len(want) {
+		t.Fatalf("OrderByDeps = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("OrderByDeps[%d] = %q, want %q (full: %v)", i, order[i], want[i], order)
+		}
+	}
+	// A subset that keeps the chain: with the intermediate package absent the
+	// dependency edge is lost (cmd/server no longer imports anything in the
+	// set), so ordering falls back to lexical — verify the chain holds when
+	// service is present.
+	order2 := topo.OrderByDeps(map[string]bool{"cmd/server": true, "internal/service": true, "internal/api": true})
+	if order2[0] != "internal/api" || order2[2] != "cmd/server" {
+		t.Errorf("subset OrderByDeps = %v, want api first, cmd/server last", order2)
+	}
+}

@@ -318,3 +318,53 @@ func walkSourceFiles(ws string) ([]string, error) {
 	}
 	return files, nil
 }
+
+// OrderByDeps returns the given package dirs sorted so that upstream packages
+// (those importing nothing local) come first and downstream callers last. It
+// follows the import DAG: a package appears only after every package it (directly
+// or transitively) imports that is also in the set. Unrelated packages keep a
+// stable lexical order. Used by the dependency-ranked fix hint so a model edits
+// the upstream definition before the callers that break against it.
+func (t *Topology) OrderByDeps(dirs map[string]bool) []string {
+	if t == nil {
+		return nil
+	}
+	depth := map[string]int{}
+	var visit func(d string, visiting map[string]bool) int
+	visit = func(d string, visiting map[string]bool) int {
+		if n, ok := depth[d]; ok {
+			return n
+		}
+		if visiting[d] {
+			return 0 // cycle guard — treat as depth 0 rather than recursing forever
+		}
+		visiting[d] = true
+		max := 0
+		for _, dep := range t.Packages[d] {
+			if !dirs[dep] {
+				continue
+			}
+			if n := visit(dep, visiting); n > max {
+				max = n
+			}
+		}
+		delete(visiting, d)
+		depth[d] = max + 1
+		return depth[d]
+	}
+	for d := range dirs {
+		visit(d, map[string]bool{})
+	}
+	ordered := make([]string, 0, len(dirs))
+	for d := range dirs {
+		ordered = append(ordered, d)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		di, dj := depth[ordered[i]], depth[ordered[j]]
+		if di != dj {
+			return di < dj // shallower (more upstream) first
+		}
+		return ordered[i] < ordered[j]
+	})
+	return ordered
+}

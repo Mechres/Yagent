@@ -2,6 +2,47 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.79 — 2026-08-15
+
+### Added
+- **Selective MCP schema exposure** (GPT sol #7) — a big MCP server used to
+  re-flood every request with all of its schemas, undoing dynamic filtering and
+  confusing a 7B-9B model. `MCPToolNamesForSignal` now offers only the MCP
+  tools whose server the input names or the model already used this turn; the
+  registry still holds everything, so any tool the model calls resolves at
+  dispatch.
+- **Proactive tool-output sliding window** (AGY #2) —
+  `proactivePruneToolOutputs` collapses read-tool results older than the
+  current and immediately preceding turn into a one-line marker on every
+  request (errors kept), so attention isn't diluted by multi-page outputs many
+  turns back — well before the hard budget trips.
+- **Dependency-ranked fix sequencing** (AGY #5) — on a multi-file compile
+  failure, `dependencyFixHint` + `index.Topology.OrderByDeps` name the
+  upstream-definition-first fix order (via the package import DAG) in both the
+  goal gate and the verify barrier, breaking the guess-the-callee A-B-A-B loop.
+- **`/steer` + plan-step tracker** (AGY #6 / luna #1) — `/steer <text>` (REPL +
+  TUI) pins a `USER STEER` line at the top of TASK STATE on every request until
+  replaced or cleared, so a long autonomous run can be course-corrected without
+  discarding the session. An approved `plan` call records its ordered steps
+  into an `ACTIVE PLAN` block so a small model can't skip intermediate steps.
+- **Benchmark expansion** (GPT sol, measurement section) — `bench.Tasks` grew
+  edit-recover (real edit→fail→verify), denied-write recovery, plan-mode
+  enforcement, truncated-recover (client-wrapper-injected `ErrStreamTruncated`),
+  and multi-file-refactor cases. `Task` gained `Configure` (approver + config
+  knobs) and `WrapLLM` hooks; `agent.Config.PlanMode` starts a task in plan
+  mode.
+
+### Changed
+- `bench.RunTask` accepts a `ChatLLM` interface (not only `*llm.Client`) so the
+  measurement tasks can wrap the client.
+
+### Notes
+- The audit backlog (`docs/audit-backlog.md`) is now fully shipped. Two
+  measurement sub-items (long-resumed-session near the real context limit and
+  big-MCP-server context cost) are recorded as deferred live-soak tasks: their
+  deterministic parts (schema accounting, resumed retokenization) are already
+  unit-tested.
+
 ## v0.1.78 — 2026-08-15
 
 ### Fixed

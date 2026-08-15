@@ -93,3 +93,35 @@ func TestMCPToolAdapterSchemaAndExecute(t *testing.T) {
 		t.Errorf("execute output = %q", out)
 	}
 }
+
+func TestMCPToolNamesForSignal(t *testing.T) {
+	// GPT sol #7: MCP schemas are offered selectively — only when the input
+	// signals the server or the model already used the tool this turn. A big
+	// MCP server must not re-flood every request.
+	ts := newFakeMCPHTTPServer(t)
+	defer ts.Close()
+	client, err := mcp.Connect(context.Background(), mcp.Config{Name: "docs", URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	reg := NewRegistry(t.TempDir(), Options{MCP: []*mcp.Client{client}})
+
+	// no signal -> no MCP tools offered
+	if got := reg.MCPToolNamesForSignal("fix the bug", nil); len(got) != 0 {
+		t.Errorf("no-signal offered MCP tools: %v", got)
+	}
+	// input mentions the server name -> its tools offered
+	if got := reg.MCPToolNamesForSignal("use docs to search", nil); len(got) != 1 || got[0] != "docs_search" {
+		t.Errorf("server-signal offered = %v, want [docs_search]", got)
+	}
+	// used this turn -> offered regardless of input
+	if got := reg.MCPToolNamesForSignal("unrelated", map[string]bool{"docs_search": true}); len(got) != 1 || got[0] != "docs_search" {
+		t.Errorf("used-this-turn offered = %v, want [docs_search]", got)
+	}
+	// all tools still resolvable at dispatch even when not offered
+	if _, ok := reg.Get("docs_search"); !ok {
+		t.Error("docs_search not in the registry (dispatch would fail)")
+	}
+}

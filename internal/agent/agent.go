@@ -289,6 +289,12 @@ type Config struct {
 	// stall that gets fed back until the work is done. UI-enabled.
 	Codegen bool
 
+	// PlanMode starts the loop in read-only plan mode (the /plan flow): only
+	// read-only tools plus plan/consult are offered and write dispatch is
+	// rejected until an approved plan flips it off. Set directly so the bench
+	// and eval harnesses can start a task in plan mode.
+	PlanMode bool
+
 	// Trace, when set, receives a per-section dump of every assembled context
 	// with token estimates (B2, `yagent chat --trace <file>`). The segments sum
 	// to ContextUsage.
@@ -429,6 +435,17 @@ type Agent struct {
 	// substantial. Updated by setSchemaTokens before each request.
 	schemaTokens int
 
+	// steerText is a user-supplied mid-run redirection (/steer, AGY #6 / luna
+	// #1) pinned at the top of TASK STATE on every subsequent request, so a
+	// long autonomous run can be course-corrected without discarding the
+	// session. Set via Steer(); cleared by a new user turn or Reset().
+	steerText string
+
+	// activePlan is the ordered step list of the most recently APPROVED plan
+	// tool call (plan-step tracker, AGY #6). Rendered into TASK STATE as an
+	// ACTIVE PLAN block so a small model can't skip intermediate steps.
+	activePlan []string
+
 	// lastSmokeArgs is the raw arguments of the most recent runtime_smoke call
 	// (the model's behavioral steps probe). The smoke gate re-runs the SAME
 	// probe at the final answer, so a crash-only {} run can't silently replace
@@ -534,6 +551,7 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 		systemPrompt:   sys,
 		compactPrompt:  compact,
 		runningSummary: cfg.InitialSummary,
+		planMode:       cfg.PlanMode,
 	}
 	a.sysTokens = a.tokensFor(shortCtx(), a.systemPrompt)
 	a.summaryTokens = a.tokensFor(shortCtx(), cfg.InitialSummary)
@@ -604,6 +622,22 @@ func (a *Agent) PlanMode() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.planMode
+}
+
+// Steer injects a user course-correction (/steer) that is pinned at the top of
+// TASK STATE on every subsequent request until the next user turn. Safe to call
+// while a turn runs. Empty text clears the steer.
+func (a *Agent) Steer(text string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.steerText = text
+}
+
+// ActivePlan returns a copy of the currently tracked approved plan steps.
+func (a *Agent) ActivePlan() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return append([]string(nil), a.activePlan...)
 }
 
 // SetPlanMode toggles read-only plan mode. When on, only read-only tools (plus
@@ -740,8 +774,14 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	a.smokeStepsUsed = false
 	a.failedWriteSig = map[string]int{}
 	a.recentEdits = nil
+	// A fresh user turn supersedes the previous task's approved plan.
+	a.activePlan = nil
 	a.mu.Unlock()
 	for i := 0; i < a.cfg.MaxIterations; i++ {
+		// Proactive tool-output sliding window (AGY #2): collapse read results
+		// older than 2 turns so a 7B model's attention isn't diluted well before
+		// the hard token limit. Runs before budget (which handles over-budget).
+		a.proactivePruneToolOutputs()
 		// Budget before every request: plain chat turns (no tool calls)
 		// would otherwise never trigger summarization.
 		if err := a.budget(ctx); err != nil {
@@ -1314,7 +1354,7 @@ func (a *Agent) goalGateCheck(ctx context.Context) string {
 	}
 	return "Deterministic completion check: the workspace still fails its static check. " +
 		"You reported DONE, but the errors below are unresolved — fix them, then re-verify and report DONE again.\n\n" + result +
-		errorFixHints(result) + a.impactHint(ctx, result)
+		errorFixHints(result) + a.impactHint(ctx, result) + a.dependencyFixHint(result)
 }
 
 // TestsFailed reports whether a test_runner result indicates actual test
@@ -1579,6 +1619,82 @@ func (a *Agent) impactHint(ctx context.Context, result string) string {
 	return "\n\nNOTE: the files you changed are called by these sites — a signature change here likely breaks them:\n" + strings.Join(lines, "\n")
 }
 
+// dependencyFixHint ranks the files failing a diagnostics check by dependency
+// order and tells the model to fix upstream definitions first (AGY #5). A small
+// model editing a multi-file refactor tends to fix the caller (main.go) first,
+// guessing what the callee (types.go) exports, then flip-flopping in an A-B-A-B
+// loop. Naming the upstream-first order breaks that. Returns "" when the output
+// has no parseable file paths or the topology is unavailable.
+func (a *Agent) dependencyFixHint(result string) string {
+	if !DiagnosticsFailed(result) {
+		return ""
+	}
+	files := failingFiles(result)
+	if len(files) < 2 {
+		return "" // a single failing file has no ordering to learn
+	}
+	topo, err := index.BuildTopology(a.workspace)
+	if err != nil {
+		return ""
+	}
+	// Map each failing file to its package dir, then order the package dirs by
+	// dependency depth (a package that imports nothing is deepest/upstream).
+	dirs := map[string]bool{}
+	for _, f := range files {
+		dir := packageDirOf(f)
+		if dir != "" {
+			dirs[dir] = true
+		}
+	}
+	order := topo.OrderByDeps(dirs)
+	if len(order) < 2 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\nHINT (dependency order): multiple files fail to compile. Fix the UPSTREAM definitions first, then the callers — the order below is import-ranked:")
+	for i, d := range order {
+		fmt.Fprintf(&b, "\n  %d. %s", i+1, d)
+	}
+	b.WriteString("\nFix the earliest package that owns the missing/renamed symbol, then re-verify before touching the callers.")
+	return b.String()
+}
+
+// failingFiles extracts the file paths named in a diagnostics/compile report.
+// Compiler output lines look like "path/to/file.go:12:3: undefined: X".
+func failingFiles(result string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, ln := range strings.Split(result, "\n") {
+		t := strings.TrimSpace(ln)
+		idx := strings.Index(t, ":")
+		if idx <= 0 {
+			continue
+		}
+		cand := t[:idx]
+		// Require a source-looking extension so a "HINT: ..." line isn't misread.
+		ext := strings.ToLower(filepath.Ext(cand))
+		if ext != ".go" && ext != ".py" && ext != ".ts" && ext != ".tsx" && ext != ".js" &&
+			ext != ".rs" && ext != ".c" && ext != ".cpp" && ext != ".java" {
+			continue
+		}
+		if seen[cand] {
+			continue
+		}
+		seen[cand] = true
+		out = append(out, cand)
+	}
+	return out
+}
+
+// packageDirOf returns the directory portion of a (possibly relative) file path.
+func packageDirOf(p string) string {
+	idx := strings.LastIndexByte(p, '/')
+	if idx < 0 {
+		return "."
+	}
+	return p[:idx]
+}
+
 // taskLedger renders the compact machine-generated progress anchor (goal =
 // last user message, changed files, last tool failure). Empty when there is
 // nothing worth stating, so it adds ~30-50 tokens only when work happened.
@@ -1588,9 +1704,16 @@ func (a *Agent) taskLedger() string {
 	lastErr := a.lastToolError
 	goal := a.lastGoalText()
 	goalMode := a.goalMode
+	steer := a.steerText
+	plan := append([]string(nil), a.activePlan...)
 	a.mu.RUnlock()
 	var b strings.Builder
 	b.WriteString("TASK STATE:")
+	// Mid-run user redirect (/steer, AGY #6): pinned at the TOP, above the root
+	// goal, so a course-correction is never diluted by pruned history.
+	if steer != "" {
+		fmt.Fprintf(&b, "\n- USER STEER: %s", oneLine(steer, 160))
+	}
 	// Root-goal anchor (agy #3): in long autonomous runs the historical turns
 	// get pruned/summarized, so the original objective and constraints would
 	// otherwise dilute. Pin it at the top of every request — goal mode only,
@@ -1598,6 +1721,14 @@ func (a *Agent) taskLedger() string {
 	if goalMode && goal != "" && len(goal) < 200 {
 		goalOne := strings.Join(strings.Fields(goal), " ")
 		fmt.Fprintf(&b, "\n- ROOT GOAL: %s", goalOne)
+	}
+	// Approved-plan tracker (AGY #6): the ordered steps, so the model can't
+	// skip intermediate work after the plan was approved.
+	if len(plan) > 0 {
+		b.WriteString("\n- ACTIVE PLAN (approved):")
+		for i, s := range plan {
+			fmt.Fprintf(&b, "\n    %d. %s", i+1, oneLine(s, 120))
+		}
 	}
 	if len(touched) > 0 {
 		fmt.Fprintf(&b, "\n- changed: %s", strings.Join(touched, ", "))
@@ -1613,6 +1744,15 @@ func (a *Agent) taskLedger() string {
 		return ""
 	}
 	return b.String()
+}
+
+// oneLine collapses whitespace and caps the length of a single-line string.
+func oneLine(s string, max int) string {
+	one := strings.Join(strings.Fields(s), " ")
+	if len(one) > max {
+		return one[:max] + "…"
+	}
+	return one
 }
 
 // recordEditTarget pushes a file path onto the rolling edit ring (max 4) and
@@ -1769,7 +1909,7 @@ func (a *Agent) verifyBarrier(ctx context.Context) string {
 	}
 	return "The agent wrote files this turn but did not run workspace_diagnostics. " +
 		"Deterministic verification ran it now; the result is:\n" + result +
-		errorFixHints(result) + a.impactHint(ctx, result) +
+		errorFixHints(result) + a.impactHint(ctx, result) + a.dependencyFixHint(result) +
 		"\n\nIf the check found problems, fix them now. Otherwise give your final answer."
 }
 
@@ -2098,7 +2238,11 @@ func (a *Agent) activeToolSchemas(input string, used map[string]bool) []llm.Tool
 		return a.registry.SchemasForReadOnly("plan", "consult")
 	}
 	names := append([]string(nil), coreToolNames...)
-	names = append(names, a.registry.MCPToolNames()...)
+	// MCP tools are offered selectively (GPT sol #7): only the servers the
+	// input signals or the model already used this turn. A big MCP server must
+	// not re-flood every request with all its schemas. The registry still holds
+	// them all, so any tool the model calls still resolves at dispatch.
+	names = append(names, a.registry.MCPToolNamesForSignal(input, used)...)
 	if used["web_search"] || used["web_fetch"] || researchSignal(input) {
 		names = append(names, webToolNames...)
 	}
@@ -2724,6 +2868,46 @@ func (a *Agent) pruneToolOutputs(limit int) bool {
 // marker used by pruneToolOutputs.
 const markerTokens = 8
 
+// proactivePruneToolOutputs collapses read-tool results older than the current
+// and immediately preceding turn into a one-line marker (AGY #2). Unlike
+// pruneToolOutputs (which only fires when the budget is over or under VRAM
+// pressure), this runs on every request so the active context stays lean and a
+// 7B model's attention isn't diluted by multi-page outputs from many turns
+// back — attention degrades well before the hard token limit. Errors are kept:
+// a failure from an old turn is exactly the signal the model still needs.
+// In-memory only; a resumed session reloads full messages and re-prunes.
+func (a *Agent) proactivePruneToolOutputs() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Find the start of the current turn and the previous turn. Everything
+	// before the previous turn's user message is old enough to collapse.
+	turnStarts := []int{}
+	for i := len(a.history) - 1; i >= 0; i-- {
+		if a.history[i].msg.Role == "user" {
+			turnStarts = append(turnStarts, i)
+			if len(turnStarts) == 2 {
+				break
+			}
+		}
+	}
+	if len(turnStarts) < 2 {
+		return // fewer than 2 turns — nothing old enough to collapse
+	}
+	oldBoundary := turnStarts[1]
+	for i := 0; i < oldBoundary; i++ {
+		h := &a.history[i]
+		if h.msg.Role != "tool" || h.tokens <= markerTokens {
+			continue
+		}
+		if strings.HasPrefix(h.msg.Content, "error") {
+			continue // keep failures visible
+		}
+		lines := strings.Count(h.msg.Content, "\n") + 1
+		h.msg.Content = fmt.Sprintf("[tool output concealed; %d lines hidden]", lines)
+		h.tokens = markerTokens
+	}
+}
+
 // detectVramPressure measures the average t/s of a completed stream (content +
 // reasoning) and flags context pressure when it drops below the configured
 // threshold — the signature of the KV cache spilling out of VRAM into system
@@ -2899,8 +3083,18 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		return "error: " + err.Error()
 	}
 	// Plan-mode exit: approving the plan flips read-only mode off so the model
-	// can start editing (Hermes P0 explore-then-edit).
+	// can start editing (Hermes P0 explore-then-edit). Also record the approved
+	// steps so TASK STATE can track them (plan-step tracker, AGY #6) — a small
+	// model otherwise tends to skip intermediate steps once it starts.
 	if name == "plan" && strings.HasPrefix(result, "plan approved") {
+		var pa struct {
+			Steps []string `json:"steps"`
+		}
+		if json.Unmarshal(call.Function.Arguments, &pa) == nil && len(pa.Steps) > 0 {
+			a.mu.Lock()
+			a.activePlan = append([]string(nil), pa.Steps...)
+			a.mu.Unlock()
+		}
 		a.mu.Lock()
 		a.planMode = false
 		a.mu.Unlock()

@@ -2984,3 +2984,148 @@ func TestLengthFinishReasonRecoversWithNudge(t *testing.T) {
 		t.Errorf("llm called %d times, want 2 (length + continuation)", calls)
 	}
 }
+
+func TestDependencyFixHint(t *testing.T) {
+	// AGY #5: a multi-file compile failure names the upstream package first so
+	// the model fixes the definition before the callers that break against it.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "go.mod", "module example.com/acme\n")
+	writeWorkspaceFile(t, ws, "internal/api/types.go", "package api\n\nfunc Config() {}\n")
+	writeWorkspaceFile(t, ws, "cmd/server/main.go", "package main\n\nimport \"example.com/acme/internal/api\"\n\nfunc main() { api.Config() }\n")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient("http://127.0.0.1:1", "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	hint := a.dependencyFixHint("cmd/server/main.go:3:16: undefined: Config\ninternal/api/types.go:5:1: undefined: Config\n")
+	if !strings.Contains(hint, "dependency order") {
+		t.Errorf("no dependency hint: %q", hint)
+	}
+	// internal/api must be named before cmd/server (upstream-first).
+	if !strings.Contains(hint, "internal/api") || !strings.Contains(hint, "cmd/server") {
+		t.Errorf("hint missing packages: %q", hint)
+	}
+	apiIdx := strings.Index(hint, "internal/api")
+	cmdIdx := strings.Index(hint, "cmd/server")
+	if apiIdx < 0 || cmdIdx < 0 || apiIdx > cmdIdx {
+		t.Errorf("upstream package not ranked first: %q", hint)
+	}
+	// a clean result gets no hint
+	if hint := a.dependencyFixHint("[PASS] go vet passed"); hint != "" {
+		t.Errorf("clean diagnostics got a hint: %q", hint)
+	}
+	// a single failing file has no ordering to teach
+	if hint := a.dependencyFixHint("main.go:3:1: undefined: X"); hint != "" {
+		t.Errorf("single-file failure got a hint: %q", hint)
+	}
+}
+
+func TestSteerPinnedInTaskState(t *testing.T) {
+	// AGY #6 / luna #1: /steer pins a course-correction at the top of TASK
+	// STATE on every subsequent request, surviving across goal rounds until
+	// cleared or replaced.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient("http://127.0.0.1:1", "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	a.Steer("focus on the tests, not the UI")
+	joined := ""
+	for _, m := range a.assembleContext("", "") {
+		joined += m.Content
+	}
+	if !strings.Contains(joined, "USER STEER") || !strings.Contains(joined, "focus on the tests") {
+		t.Errorf("steer not pinned in TASK STATE:\n%s", joined)
+	}
+	// persists (still there on a second assembly — no per-turn clear)
+	for _, m := range a.assembleContext("", "") {
+		joined += m.Content
+	}
+	_ = joined
+	if got := a.ActivePlan(); len(got) != 0 {
+		t.Errorf("active plan should be empty: %v", got)
+	}
+	// empty steer clears it
+	a.Steer("")
+	joined = ""
+	for _, m := range a.assembleContext("", "") {
+		joined += m.Content
+	}
+	if strings.Contains(joined, "USER STEER") {
+		t.Errorf("cleared steer still pinned:\n%s", joined)
+	}
+}
+
+func TestApprovedPlanTrackedInTaskState(t *testing.T) {
+	// AGY #6: an approved plan tool call records its steps into TASK STATE so
+	// a small model can't skip intermediate steps once it starts executing.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	reg.SetAskUser(func(ctx context.Context, q string, choices []string) (string, error) {
+		return "Approve plan", nil
+	})
+	a := New(llm.NewClient("http://127.0.0.1:1", "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	steps := `{"steps": ["create pkg/config/config.go", "rewire main.go imports", "run diagnostics"]}`
+	res := a.dispatch(context.Background(), llm.ToolCall{Function: llm.ToolCallFunction{Name: "plan", Arguments: []byte(steps)}}, map[string]int{}, map[string]bool{})
+	if !strings.Contains(res, "plan approved") {
+		t.Fatalf("plan not approved: %q", res)
+	}
+	plan := a.ActivePlan()
+	if len(plan) != 3 || plan[1] != "rewire main.go imports" {
+		t.Errorf("active plan = %v, want the 3 approved steps", plan)
+	}
+	joined := ""
+	for _, m := range a.assembleContext("", "") {
+		joined += m.Content
+	}
+	if !strings.Contains(joined, "ACTIVE PLAN") || !strings.Contains(joined, "create pkg/config/config.go") {
+		t.Errorf("plan not in TASK STATE:\n%s", joined)
+	}
+}
+
+func TestProactivePruneToolOutputs(t *testing.T) {
+	// AGY #2: read-tool results older than the current and immediately
+	// preceding turn collapse to a marker even when under the budget; errors
+	// and recent outputs are kept intact.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&truncatingLLM{body: "x"}, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	big := strings.Repeat("output line\n", 100)
+	mk := func(role, content string) llm.Message {
+		return llm.Message{Role: role, Content: content}
+	}
+	a.mu.Lock()
+	// turn 1 (old): user + big read result + error + assistant
+	a.history = append(a.history,
+		historyEntry{msg: mk("user", "first task"), tokens: 4},
+		historyEntry{msg: mk("tool", big), tokens: 400},
+		historyEntry{msg: mk("tool", "error: failed"), tokens: 40},
+		historyEntry{msg: mk("assistant", "did it"), tokens: 4},
+		// turn 2 (previous): user + big read result + assistant
+		historyEntry{msg: mk("user", "second task"), tokens: 4},
+		historyEntry{msg: mk("tool", big), tokens: 400},
+		historyEntry{msg: mk("assistant", "done"), tokens: 4},
+		// turn 3 (current): user + big read result (must stay full)
+		historyEntry{msg: mk("user", "current task"), tokens: 4},
+		historyEntry{msg: mk("tool", big), tokens: 400},
+	)
+	a.mu.Unlock()
+
+	a.proactivePruneToolOutputs()
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if got := a.history[1].msg.Content; !strings.Contains(got, "concealed") {
+		t.Errorf("old read not collapsed: %q", got)
+	}
+	if got := a.history[2].msg.Content; got != "error: failed" {
+		t.Errorf("old error collapsed: %q", got)
+	}
+	// the immediately preceding turn stays full (AGY #2 keeps current +
+	// previous turn; only older results collapse)
+	if got := a.history[5].msg.Content; !strings.Contains(got, "output line") {
+		t.Errorf("previous-turn read collapsed: %q", got)
+	}
+	if got := a.history[8].msg.Content; !strings.Contains(got, "output line") {
+		t.Errorf("current-turn read collapsed: %q", got)
+	}
+}

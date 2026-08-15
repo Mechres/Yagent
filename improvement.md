@@ -1250,10 +1250,24 @@ accurate):
 - ✅ **Path sanitizer** (AGY #4) — `sanitizePathArg` trims wrapping quotes,
   normalizes `\` → `/`, strips a workspace-basename prefix;
   `caseInsensitiveResolve` fixes Readme.md → README.md (exactly-one match).
-- 🟡 **Deferred as queued (P1, remaining)**: MCP selective schema exposure
-  (GPT sol #7), proactive tool-output sliding window (AGY #2), dependency-
-  ranked fix sequencing (AGY #5), `/steer` + plan-step tracker (AGY #6/luna #1),
-  and the bench expansion — all tracked in `docs/audit-backlog.md`.
+- ✅ **Selective MCP schemas** (GPT sol #7) — `MCPToolNamesForSignal` offers
+  only the MCP tools whose server the input signals or that the model already
+  used this turn.
+- ✅ **Proactive tool-output sliding window** (AGY #2) —
+  `proactivePruneToolOutputs` collapses read results older than 2 turns on
+  every request (errors kept).
+- ✅ **Dependency-ranked fix sequencing** (AGY #5) — `dependencyFixHint` +
+  `index.Topology.OrderByDeps` name the upstream-first order on multi-file
+  compile failures.
+- ✅ **/steer + plan-step tracker** (AGY #6 / luna #1) — `/steer <text>` pins a
+  `USER STEER` into TASK STATE; approved `plan` steps render as `ACTIVE PLAN`.
+- ✅ **Bench expansion** (GPT sol, measurement section) — edit-recover,
+  denied-write, plan-mode, truncated-recover, and multi-file-refactor tasks
+  (`Task.Configure`/`WrapLLM`; `agent.Config.PlanMode`).
+- 🟡 **Deferred (recorded)**: long-resumed-session and big-MCP-server-context
+  live-soak bench cases (need a live server + configured MCP; deterministic
+  parts already unit-tested). The whole audit is now shipped —
+  `docs/audit-backlog.md`.
 - ⚪ **Not a fit (agreed)**: C3 structured returns (gated on eval evidence),
   fine-tune script (plumbing), capability probing, permission policies.
 

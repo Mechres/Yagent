@@ -360,6 +360,32 @@ func (r *Registry) MCPToolNames() []string {
 	return out
 }
 
+// MCPToolNamesForSignal returns the MCP tool names to OFFER for a request: only
+// the tools whose server is signaled in the input (its name appears in the text
+// — e.g. asking about "gitinfo" or "context7") or that the model already used
+// this turn. A large MCP server otherwise re-floods every request with all of
+// its schemas, undoing dynamic filtering and confusing a 7B-9B model (GPT
+// sol #7). Tools the model calls anyway still resolve at dispatch — this only
+// trims what the model *sees*.
+func (r *Registry) MCPToolNamesForSignal(input string, used map[string]bool) []string {
+	lower := strings.ToLower(input)
+	var out []string
+	for n, t := range r.tools {
+		mt, ok := t.(*mcpTool)
+		if !ok {
+			continue
+		}
+		if used[n] {
+			out = append(out, n)
+			continue
+		}
+		if server := strings.ToLower(mt.client.Name()); server != "" && strings.Contains(lower, server) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // SchemasForReadOnly returns the schemas of every read-only tool in the
 // registry, plus the named extras (plan/consult) — used by read-only plan mode
 // (Hermes P0): the model may explore but not mutate until the plan is approved.

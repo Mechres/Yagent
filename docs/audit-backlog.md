@@ -8,6 +8,10 @@ test evidence) as they ship. Source reviews live in `ideas/audit_15_08_2026.md`.
 Rule: every TODO must also exist in `improvement.md` (or reference this file);
 this file is the canonical status, `improvement.md` is the narrative roadmap.
 
+Status: **all audit items shipped through v0.1.79** (2026-08-15). The only
+remaining entries are deferred-with-rationale below (do not re-open without new
+evidence) plus the two noted live-soak bench sub-tasks.
+
 ---
 
 ## Pass 1 — v0.1.77 (shipped 2026-08-15) — P0 correctness
@@ -60,6 +64,38 @@ this file is the canonical status, `improvement.md` is the narrative roadmap.
   add bench cases: edit-fail-recover, multi-package refactor, rejected-write
   recovery, plan-mode attempted write, truncated-response recovery, long
   resumed session near the real context limit, big-MCP-server context cost.
+
+## Pass 3 — v0.1.79 (shipped 2026-08-15) — the remaining TODO backlog
+
+- DONE — **MCP schema exposure selective** (GPT sol #7) — `MCPToolNamesForSignal`
+  offers only the MCP tools whose server the input names or the model already
+  used this turn, instead of re-flooding every request with a big server's full
+  schema set; the registry still resolves any called tool at dispatch.
+- DONE — **Proactive tool-output sliding window** (AGY #2) —
+  `proactivePruneToolOutputs` collapses read-tool results older than the current
+  + immediately preceding turn into a one-line marker on EVERY request (errors
+  kept), so a 7B model's attention isn't diluted before the hard budget trips.
+- DONE — **Dependency-ranked fix sequencing** (AGY #5) — `dependencyFixHint`
+  parses the failing files from a diagnostics report and, via
+  `index.Topology.OrderByDeps`, names the upstream-definition-first fix order
+  in the goal gate and verify barrier.
+- DONE — **/steer + plan-step tracker** (AGY #6 / luna #1) — `/steer <text>`
+  (REPL + TUI) pins a `USER STEER` line at the top of TASK STATE until replaced
+  or cleared; an approved `plan` call records its steps into an `ACTIVE PLAN`
+  block so a small model can't skip intermediate steps.
+- DONE — **Benchmark/measurement expansion** (GPT sol, measurement section) —
+  `bench.Tasks` gained edit-recover (real edit→fail→verify), denied-write
+  recovery, plan-mode enforcement, truncated-recover (client-wrapper-injected),
+  and multi-file-refactor tasks; `Task` gained `Configure`/`WrapLLM` hooks and
+  `agent.Config.PlanMode`. Deferred (recorded, not done): long resumed session
+  near the real context limit and big-MCP-server context cost — both need a
+  live server with a specific setup and are covered indirectly by the schema-
+  accounting fix; tracked below.
+
+- NOTE — **long-resumed-session** and **big-MCP-server context-cost** bench
+  cases: not shipped — they require a live model + configured MCP server to be
+  meaningful. The deterministic parts (schema accounting, resumed retokenize)
+  are already covered by unit tests; a live soak is a future measurement task.
 
 ## Rejected / deferred with rationale (do not re-open without new evidence)
 
