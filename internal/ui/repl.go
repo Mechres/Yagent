@@ -338,6 +338,9 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
 		},
+		func(call llm.ToolCall, result string, elapsed time.Duration) {
+			fmt.Fprintln(w, toolActivityLine(call.Function.Name, result, elapsed))
+		},
 		opts.Trace)
 
 	skillsCmd := &skillsHandler{
@@ -492,6 +495,9 @@ func runPlaybookMode(ctx context.Context, client *llm.Client, cfg *config.Config
 		},
 		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
+		},
+		func(call llm.ToolCall, result string, elapsed time.Duration) {
+			fmt.Fprintln(w, toolActivityLine(call.Function.Name, result, elapsed))
 		},
 		trace)
 	ag.SetSuccessChecks(checks)
@@ -810,6 +816,9 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
 		},
+		func(call llm.ToolCall, result string, elapsed time.Duration) {
+			fmt.Fprintln(w, toolActivityLine(call.Function.Name, result, elapsed))
+		},
 		trace)
 	ag.SetSuccessChecks(checks)
 
@@ -869,6 +878,9 @@ func runResearchMode(ctx context.Context, client *llm.Client, cfg *config.Config
 		},
 		func(call llm.ToolCall) {
 			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
+		},
+		func(call llm.ToolCall, result string, elapsed time.Duration) {
+			fmt.Fprintln(w, toolActivityLine(call.Function.Name, result, elapsed))
 		},
 		trace)
 	fmt.Printf("research mode — investigating: %s\n", topic)
@@ -1114,7 +1126,7 @@ func newLLMClient(cfg *config.Config) *llm.Client {
 // newAgent builds the agent loop over a chatEnv. trace, when non-nil, receives
 // the per-context prompt dump (B2); the client is also wired as the token
 // counter so the context gauge uses the server tokenizer when available (C1).
-func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken, onReasoning func(string), onTool func(llm.ToolCall), trace io.Writer) *agent.Agent {
+func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver agent.Approver, onToken, onReasoning func(string), onTool func(llm.ToolCall), onToolResult func(llm.ToolCall, string, time.Duration), trace io.Writer) *agent.Agent {
 	ws, _ := os.Getwd()
 	// M7 v1: subagents are read-only child agents that return a summary.
 	// M7 beyond v2: an optional tools slice scopes each child's registry.
@@ -1149,6 +1161,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		OnToken:          onToken,
 		OnReasoning:      onReasoning,
 		OnTool:           onTool,
+		OnToolResult:     onToolResult,
 		Store:            env.st,
 		SessionID:        env.sessionID,
 		Vectors:          env.vs,
@@ -2261,6 +2274,34 @@ func previewArgs(args []byte) string {
 		s = s[:600] + "…"
 	}
 	return s
+}
+
+// toolActivityLine is a compact, non-sensitive execution outcome. It avoids
+// echoing tool output (which may be large or contain source text) while still
+// making failures and slow calls visible in the transcript.
+func toolActivityLine(name, result string, elapsed time.Duration) string {
+	result = strings.TrimSpace(result)
+	duration := elapsed.Round(time.Millisecond).String()
+	if elapsed < time.Millisecond {
+		duration = "<1ms"
+	}
+	if strings.HasPrefix(result, "error:") {
+		return "  " + iconBad + " " + name + " failed · " + duration + " · " + shorten(result, 120)
+	}
+	if strings.HasPrefix(result, "skipped:") {
+		return "  " + iconWarn + " " + name + " skipped · " + duration
+	}
+	if strings.HasPrefix(result, "[cached result]") {
+		return "  " + iconOK + " " + name + " complete · " + duration + " · cached"
+	}
+	lines := 0
+	if result != "" {
+		lines = strings.Count(result, "\n") + 1
+	}
+	if lines == 0 {
+		return "  " + iconOK + " " + name + " complete · " + duration
+	}
+	return fmt.Sprintf("  %s %s complete · %s · %d lines", iconOK, name, duration, lines)
 }
 
 // replApprover prompts for y/n on stdin; implements agent.Approver.

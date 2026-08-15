@@ -10,7 +10,7 @@ Tools are the agent's hands. With small local models, **fewer, sharper tools bea
 | `Write` | modifies workspace files (`fs_write`, `fs_edit`) | prompt unless `--yes` flag / config `approval: auto` |
 | `Destructive` | shell exec, git mutations, anything outside workspace | **always prompt**, no override |
 
-The ui implements `Approver`; prompts show the tool name, args (command/diff), and wait for y/n. A denied call returns `error: user denied this action` as the tool result so the model can adapt.
+The UI implements `Approver`; prompts show a mutation-specific summary plus the command or filesystem diff and wait for y/n. Multi-hunk `fs_patch` review supports individual decisions, `a` to accept all remaining hunks, and `x` to reject them. A denied call returns `error: user denied this action` as the tool result so the model can adapt. The TUI also records an inspectable `/tools` timeline with arguments, result, and elapsed time; its compact transcript rows never echo successful tool output.
 
 ## Tool registry (M2 set)
 

@@ -2,6 +2,41 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## Unreleased
+
+### Added
+- **Inspectable TUI tool activity** — `/tools` opens a bounded activity view
+  for the current session. Select a call and press Enter to inspect its
+  arguments and captured result; compact transcript rows show running,
+  completion/failure, elapsed time, cache status, and output line count without
+  echoing successful tool output.
+- **TUI workspace overview** — `/workspace` shows the workspace and branch,
+  context use, current/total tool activity, available undo turns, and whether a
+  follow-up message is queued.
+- **Session filtering in the TUI** — `/sessions <query>` filters session IDs
+  and generated titles before opening the session browser.
+- **Queued follow-up input** — Enter while a turn is running queues one normal
+  follow-up message; a later queued message explicitly replaces it. The queued
+  prompt is only added to the transcript when it actually starts.
+
+### Changed
+- **Clearer, safer approvals** — write approvals now lead with a
+  mutation-specific summary (target, size, or hunk/file count) before the
+  existing diff preview. Multi-hunk patch review adds `a` to accept all
+  remaining hunks and `x` to reject them.
+- **Short-terminal modal behavior** — settings, models, sessions, skills,
+  checkpoints, and diffs now keep the selected content visible in bounded
+  views, with omitted-row markers instead of overflowing the terminal.
+- **Credential-safe settings display** — saved `*_api_key` settings render as
+  `(set; hidden)` in the TUI list; editing remains an explicit action.
+- README and tool-design documentation now cover the added TUI controls and
+  approval behavior.
+
+### Tests
+- Added UI coverage for queued input semantics, bounded modal selection, safe
+  activity summaries, masked API keys, approval summaries, and queued status.
+- `go test ./...` passes.
+
 ## v0.1.90 — 2026-08-16
 
 ### Fixed

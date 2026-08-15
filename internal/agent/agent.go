@@ -224,6 +224,9 @@ type Config struct {
 	// OnTool is called before a tool executes (used by the UI to show
 	// activity). Optional.
 	OnTool func(llm.ToolCall)
+	// OnToolResult is called after a tool that was actually started finishes.
+	// It receives the model-visible result and elapsed execution time. Optional.
+	OnToolResult func(llm.ToolCall, string, time.Duration)
 
 	// Window and Reserve bound the context budget (tokens, heuristic len/4).
 	Window  int
@@ -3529,8 +3532,15 @@ func (a *Agent) allReadOnly(calls []llm.ToolCall) bool {
 
 // dispatch validates, approves and executes one tool call, returning the text
 // the model sees.
-func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[string]int, blocked map[string]bool) string {
+func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[string]int, blocked map[string]bool) (result string) {
 	name := call.Function.Name
+	var started time.Time
+	startedTool := false
+	defer func() {
+		if startedTool && a.cfg.OnToolResult != nil {
+			a.cfg.OnToolResult(call, result, time.Since(started))
+		}
+	}()
 
 	tool, ok := a.registry.Get(name)
 	if !ok {
@@ -3603,6 +3613,8 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	if a.cfg.OnTool != nil {
 		a.cfg.OnTool(call)
 	}
+	startedTool = true
+	started = time.Now()
 
 	// Read-tool result memoization: a repeated identical pure read (common in
 	// goal mode and verify-don't-trust loops) returns the cached result instead

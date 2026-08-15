@@ -13,7 +13,7 @@ A local-first AI agent for **code, audit, review, web search and research** — 
 
 ## Features
 
-- **Agent loop with tools** — streaming chat, risk-gated approvals with TUI diff previews, per-hunk `fs_patch` approval, validation + retry with fuzzy argument aliasing, `/yolo`, **Esc cancels the running turn** (the session stays alive), and a **loop guard** that auto-stops repeating-generation loops.
+- **Agent loop with tools** — streaming chat, risk-gated approvals with TUI change summaries and diff previews, per-hunk `fs_patch` approval (`a` accepts remaining hunks; `x` rejects them), validation + retry with fuzzy argument aliasing, `/yolo`, **Esc cancels the running turn** (the session stays alive), and a **loop guard** that auto-stops repeating-generation loops.
 - **Deterministic "compiles, runs, behaves, and actually finished" gates** — `workspace_diagnostics` (auto `go vet`/`tsc`/`cargo check`/`ruff`/`make`/`cmake`), **`test_runner`** (targeted tests for Go/Rust/Python/JS-TS), **`runtime_smoke`** (builds and runs the program — even browser JS under a headless node DOM shim — asserting it doesn't crash and behaves, via scripted `steps`), **pre-flight syntax + YAML/JSON validation**, `diff_semantic` (symbol-delta guardrail), **`GoalGate`/`TestGate`** (refuse completion on broken builds/tests), **goal success predicates** (`--check "file contains text"` refuses DONE until the declared conditions hold), and **codegen mode** (whole-file writes + compile-gated answers for greenfield builds).
 - **Git-backed session safety** (aider-style) — each turn auto-commits as `yagent: turn N` (dirty user files are snapshotted up front, never lost or mixed in), `/undo`/`/undo list`/`/undo <N>` revert via git (crash-safe), and **`/diff`** shows the cumulative session diff with `/diff discard` — a plandex-style "review before you keep" sandbox.
 - **Memory** — SQLite sessions (`yagent sessions`, `chat --continue`, `/undo` multi-turn revert, Markdown/HTML exports), **accurate token counting** (server tokenizer), a budget that first prunes old tool output then summarizes, and hybrid semantic recall (vector + FTS5 + importance + recency).
@@ -23,7 +23,7 @@ A local-first AI agent for **code, audit, review, web search and research** — 
 - **Orchestration** — goal mode with workspace checkpoints and `--resume-goal`, declarative **playbooks** (`.yagent/playbooks/*.yaml`), parallel subagents with preset **roles** (architect/auditor/test-engineer/docs-writer), tool subsets and a shared scratchpad, an advisor (`consult`) model, a **`summarizer`** model (offload history condensation to a second machine), and **`clarify`/`plan`** tools for structured user handoffs — plus **read-only plan mode** (`/plan`: explore before editing).
 - **Extensible** — **MCP support** (`mcp:` config attaches any Model Context Protocol server; each tool registers as `<server>_<tool>`), a **hook bus** (`hooks:` config runs deterministic pre/post-tool policy — a pre-hook can veto a call), and **approval allow-remember** (approved tool+args auto-approve for the session).
 - **Provider/model selector** (`/model` in the TUI) — pick from a built-in catalog (Local llama.cpp/Ollama, OpenCode Zen/Go, DeepSeek, OpenRouter, Groq, Together, Mistral, NVIDIA NIM) with a **live model list** for local servers (`/v1/models`) and **cloud models synced from models.dev** — no stale catalogs. API keys are entered inline in the TUI (or `/key` in the REPL) and stored in the config file's `api_key` field (`/key clear` removes them; env vars like `DEEPSEEK_API_KEY` take precedence and are never written to disk). Model selection warns when a model is weak at tool calling.
-- **Two UIs** — a bubbletea TUI and a plain REPL sharing one runtime: 24-bit themes (Tokyo Night default; Catppuccin/Nord in `/settings`), pill header/status bar with a live context gauge and turns-to-window forecast, markdown rendering, collapsible "thinking" blocks, **Ctrl+F transcript search**, **`/compact`** (distill the session into a ledger), interactive settings/sessions/skills modals, **`/model`** provider picker, and **OS notifications** when an approval is needed or a goal run finishes.
+- **Two UIs** — a bubbletea TUI and a plain REPL sharing one runtime: 24-bit themes (Tokyo Night default; Catppuccin/Nord in `/settings`), pill header/status bar with a live context gauge and turns-to-window forecast, markdown rendering, collapsible "thinking" blocks, **Ctrl+F transcript search**, **`/compact`** (distill the session into a ledger), interactive settings/sessions/skills modals, **`/tools`** activity inspector, **`/workspace`** overview, `/sessions <query>` filtering, **`/model`** provider picker, and **OS notifications** when an approval is needed or a goal run finishes. Saved API keys are masked in the TUI settings list.
 - **Tuning & diagnostics** — per-model sampling profiles, `sampling.min_p`/`repetition_penalty`/`reasoning_max_tokens` knobs, context-window auto-detect (budget capped at the server's real `n_ctx`), **adaptive system-prompt compression** (lean prompt above 70% context), `yagent doctor`, **`yagent calibrate`** (live benchmark across sampling recipes), `yagent bench --repeat 3` with regression baseline tracking, `--trace` prompt dumps, a golden YAML eval harness, a live small-model benchmark, a **VRAM pressure detector** (auto-prunes context when streaming slows — KV spill), a **diagnostic error sanitizer** (error cascades collapse to top root causes), `fs_edit` **whitespace auto-alignment**, **missing-import preflight** on writes, **atomic multi-file `fs_patch`** (all-or-nothing), and **`yagent export-dataset`** (verified sessions → OpenAI/ShareGPT/DPO fine-tuning JSONL).
 
 ## Install
@@ -59,6 +59,16 @@ yagent sessions export <id> --format html  # share a session as HTML
 ```
 
 By default Yagent talks to `http://localhost:11434` (Ollama). Point it elsewhere with `YAGENT_SERVER_URL` / `YAGENT_MODEL` / `config.yaml` — see [`config.example.yaml`](config.example.yaml). In the TUI, **`/model`** picks a provider and model (local models auto-detected; cloud lists live from models.dev).
+
+### TUI controls
+
+| Command / key | Effect |
+|---|---|
+| `/tools` | Browse tool calls; press Enter to expand arguments and the captured result. |
+| `/workspace` | Show workspace, branch, context use, tool count, undo availability, and queued-work state. |
+| `/sessions <query>` | Filter sessions by ID or generated title. |
+| Enter while working | Queue one follow-up message; a later queued message replaces the earlier one. |
+| `a` / `x` during patch review | Accept all remaining hunks / reject all remaining hunks. |
 
 ## Security & privacy
 

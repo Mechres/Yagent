@@ -189,6 +189,59 @@ func TestSlashMatchesIncludeSkills(t *testing.T) {
 	}
 }
 
+func TestBusyMessageIsQueuedWithoutTranscriptPrompt(t *testing.T) {
+	m := testModel(t)
+	m.inputCh = make(chan turnRequest, 1)
+	m.runnerCtx = context.Background()
+	m.busy = true
+	m.msgInput.SetValue("run this after the current turn")
+	m.submitLine()
+	if got := m.queuedInput; got != "run this after the current turn" {
+		t.Fatalf("queued input = %q", got)
+	}
+	for _, line := range m.transcript {
+		if line == "> run this after the current turn" {
+			t.Fatalf("queued message was rendered as already sent: %q", line)
+		}
+	}
+
+	// Completing the active turn starts the queued message and renders its
+	// prompt only when it is actually dispatched.
+	m.turnSeq = 1
+	m.Update(turnDoneMsg{seq: 1})
+	select {
+	case req := <-m.inputCh:
+		if req.text != "run this after the current turn" {
+			t.Errorf("queued request = %q", req.text)
+		}
+	default:
+		t.Fatal("queued message was not dispatched after turn completion")
+	}
+}
+
+func TestModalRowsKeepsSelectionVisible(t *testing.T) {
+	m := &tuiModel{height: 10, th: tokyoNight}
+	rows := []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+	got := m.modalRows(rows, 8, 5)
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "8") {
+		t.Fatalf("selected row missing from bounded modal: %q", joined)
+	}
+	if len(got) > 5 {
+		t.Fatalf("modal has %d rows, want <= 5", len(got))
+	}
+}
+
+func TestToolActivityLineSummarizesWithoutOutput(t *testing.T) {
+	line := toolActivityLine("fs_read", "first source line\nsecond source line", 12*time.Millisecond)
+	if !strings.Contains(line, "fs_read complete") || !strings.Contains(line, "2 lines") {
+		t.Errorf("success activity = %q", line)
+	}
+	if strings.Contains(line, "first source line") {
+		t.Errorf("tool output leaked into activity summary: %q", line)
+	}
+}
+
 func TestRenderApprovalDiff(t *testing.T) {
 	d := renderApprovalDiff(tokyoNight, "line one\nold line\nline three", "line one\nnew line\nline three")
 	if !strings.Contains(d, "- old line") || !strings.Contains(d, "+ new line") {
@@ -291,6 +344,26 @@ func TestSettingsPageOpensAndEdits(t *testing.T) {
 	m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.settingsOpen {
 		t.Error("esc did not close the settings page")
+	}
+}
+
+func TestSettingsMasksAPIKeys(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{APIKey: "sk-secret-value", Skills: config.SkillsConfig{}}
+	v := ansiStrip(m.settingsView())
+	if strings.Contains(v, "sk-secret-value") {
+		t.Fatalf("settings exposed API key: %q", v)
+	}
+	if !strings.Contains(v, "(set; hidden)") {
+		t.Fatalf("settings did not mark key as hidden: %q", v)
+	}
+}
+
+func TestApprovalDescriptionSummarizesFilesystemWrites(t *testing.T) {
+	call := llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_write", Arguments: []byte(`{"path":"main.go","content":"one\ntwo\n"}`)}}
+	got := approvalDescription(call)
+	if !strings.Contains(got, "main.go") || !strings.Contains(got, "3 lines") {
+		t.Errorf("approval summary = %q", got)
 	}
 }
 
@@ -770,6 +843,11 @@ func TestStatusPills(t *testing.T) {
 	state, _ = m.statusText()
 	if !strings.Contains(state, "working") {
 		t.Errorf("busy state = %q", state)
+	}
+	m.queuedInput = "next"
+	state, _ = m.statusText()
+	if !strings.Contains(state, "queued") {
+		t.Errorf("queued state = %q", state)
 	}
 }
 
