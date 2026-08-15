@@ -61,6 +61,10 @@ type Config struct {
 	// MCP lists Model Context Protocol servers (external tools) to attach:
 	// name -> {command: [...] (stdio) or url + headers (HTTP), enabled}.
 	MCP map[string]MCPServer `yaml:"mcp"`
+	// Hooks are deterministic lifecycle hooks (Hermes P0): a command run before
+	// ("pre") or after ("post") a matching tool executes. Policy as code — e.g.
+	// run diagnostics after fs_write, escalate before a destructive shell.
+	Hooks []Hook `yaml:"hooks"`
 	// VramThresholdTPS flags context pressure when a stream's average
 	// generation speed drops below this many tokens/second (0 = off). A slow
 	// stream on a 12 GB card usually means the KV cache spilled out of VRAM;
@@ -430,6 +434,19 @@ type MCPServer struct {
 	Headers map[string]string `yaml:"headers"`
 	// Enabled gates the server; false servers are skipped at startup.
 	Enabled bool `yaml:"enabled"`
+}
+
+// Hook is one deterministic lifecycle hook: a command run before ("pre") or
+// after ("post") a matching tool executes. Tool "*" matches every tool. The
+// hook receives the tool name via YAGENT_TOOL and the raw JSON args via
+// YAGENT_ARGS. A pre-hook with a non-zero exit can veto the call.
+type Hook struct {
+	// When is "pre" or "post".
+	When string `yaml:"when"`
+	// Tool is the tool name to match, or "*" for all.
+	Tool string `yaml:"tool"`
+	// Command is the argv to run (e.g. ["notify-send", "yagent"]).
+	Command []string `yaml:"command"`
 }
 
 // SamplingConfig is the subset of generation parameters forwarded on chat

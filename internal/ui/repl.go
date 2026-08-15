@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -105,6 +107,24 @@ func (autoApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.R
 	return agent.Approval{OK: true}, nil
 }
 
+// notifyOS fires an OS notification (notify-send on Linux, osascript on macOS)
+// best-effort — local model runs are slow and the user may have walked away
+// (Hermes P1). Silent when the tools aren't available.
+func notifyOS(title, body string) {
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		args = []string{"osascript", "-e", fmt.Sprintf("display notification %q with title %q", body, title)}
+	case "linux":
+		args = []string{"notify-send", title, body}
+	default:
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, args[0], args[1:]...).Run()
+}
+
 // toggleableApprover wraps a prompting approver and can be switched to yolo
 // mode at runtime via /yolo.
 type toggleableApprover struct {
@@ -125,6 +145,38 @@ func (t *toggleableApprover) Approve(ctx context.Context, call llm.ToolCall, ris
 		return agent.Approval{OK: true}, nil
 	}
 	return t.inner.Approve(ctx, call, risk)
+}
+
+// rememberingApprover wraps a prompting approver and, after a write is
+// approved once, remembers its (tool + normalized args) signature so identical
+// calls are auto-approved for the rest of the session (Hermes P0: cuts approval
+// fatigue on slow single-GPU runs without a blanket /yolo). The remembered set
+// is in-memory and session-scoped.
+type rememberingApprover struct {
+	inner agent.Approver
+	mu    sync.Mutex
+	seen  map[string]bool
+}
+
+func newRememberingApprover(inner agent.Approver) *rememberingApprover {
+	return &rememberingApprover{inner: inner, seen: map[string]bool{}}
+}
+
+func (r *rememberingApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
+	key := call.Function.Name + "\x00" + string(call.Function.Arguments)
+	r.mu.Lock()
+	remembered := r.seen[key]
+	r.mu.Unlock()
+	if remembered {
+		return agent.Approval{OK: true}, nil
+	}
+	appr, err := r.inner.Approve(ctx, call, risk)
+	if err == nil && appr.OK {
+		r.mu.Lock()
+		r.seen[key] = true
+		r.mu.Unlock()
+	}
+	return appr, err
 }
 
 func (t *toggleableApprover) SetYOLO(on bool) {
@@ -238,7 +290,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		fmt.Fprintf(w, "  [index] %s\n", line)
 	})
 	reader := bufio.NewReader(os.Stdin)
-	ap := newToggleableApprover(&replApprover{reader: reader, writer: w})
+	ap := newToggleableApprover(newRememberingApprover(&replApprover{reader: reader, writer: w}))
 	ap.SetYOLO(opts.YOLO)
 	if opts.YOLO {
 		env.registry.SetSkillsWriteApproval(false)
@@ -320,7 +372,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			}
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /plan /goal <what> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		case "/retry":
 			if lastLine == "" {
@@ -731,6 +783,9 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 	})
 	if err != nil {
 		fmt.Fprintf(w, "\ngoal loop: %v\n", err)
+		notifyOS("yagent — goal finished", "goal loop ended with an error")
+	} else {
+		notifyOS("yagent — goal done", "the autonomous goal run completed")
 	}
 	_ = answer
 	if err == nil {
@@ -792,6 +847,16 @@ func (env *chatEnv) closeMCP() {
 		_ = c.Close()
 	}
 	env.mcpClients = nil
+}
+
+// toToolHooks converts config-declared hooks into the tools package's Hook
+// shape (config is a leaf package; tools can't import it).
+func toToolHooks(hooks []config.Hook) []tools.Hook {
+	out := make([]tools.Hook, 0, len(hooks))
+	for _, h := range hooks {
+		out = append(out, tools.Hook{When: h.When, Tool: h.Tool, Command: h.Command})
+	}
+	return out
 }
 
 // connectMCP connects every enabled MCP server from the config (best-effort:
@@ -910,6 +975,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		ShellSandbox:        cfg.Shell.Sandbox,
 		SkillsWriteApproval: cfg.Skills.WriteApproval,
 		MCP:                 env.mcpClients,
+		Hooks:               toToolHooks(cfg.Hooks),
 	})
 	return env, nil
 }
@@ -1046,6 +1112,15 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		return h.exportSession(rest, ag)
 	case rest == "yolo" || strings.HasPrefix(rest, "yolo "):
 		return h.handleYOLO(rest)
+	case rest == "plan":
+		on := !ag.PlanMode()
+		ag.SetPlanMode(on)
+		if on {
+			fmt.Fprintln(h.w, "plan mode ON — read-only tools only; approve a plan (/plan again or plan tool) to edit")
+		} else {
+			fmt.Fprintln(h.w, "plan mode OFF — editing enabled")
+		}
+		return true, nil
 	case rest == "goal" || strings.HasPrefix(rest, "goal "):
 		parts := strings.Fields(rest)
 		if len(parts) < 2 {
@@ -2024,6 +2099,7 @@ func (a *replApprover) Approve(ctx context.Context, call llm.ToolCall, risk tool
 	if err := ctx.Err(); err != nil {
 		return agent.Approval{}, err
 	}
+	notifyOS("yagent — approval needed", fmt.Sprintf("%s (%s)", call.Function.Name, risk))
 	fmt.Fprintf(a.writer, "\n[%s] %s\n  %s\nAllow? [y/N] ",
 		risk, call.Function.Name, previewArgs(call.Function.Arguments))
 	line, err := a.reader.ReadString('\n')

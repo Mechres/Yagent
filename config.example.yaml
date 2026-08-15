@@ -143,3 +143,14 @@ consult:                      # the `consult` tool (advisor). Disabled until set
 # same index opencode uses) — DeepSeek, OpenRouter, Groq, Together, Mistral and
 # NVIDIA NIM never show a stale catalog. Local providers auto-detect their
 # loaded models from /v1/models.
+
+# Hooks (policy as code): deterministic commands run before/after a matching
+# tool executes. when: pre|post · tool: <name> or "*" · command: argv.
+# A pre-hook with a non-zero exit vetoes the call. Env: YAGENT_TOOL, YAGENT_ARGS.
+# hooks:
+#   - when: post
+#     tool: fs_write
+#     command: ["sh", "-c", "workspace_diagnostics"]
+#   - when: pre
+#     tool: shell_exec
+#     command: ["notify-send", "yagent", "shell command requested"]

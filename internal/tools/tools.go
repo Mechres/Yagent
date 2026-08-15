@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -104,6 +106,9 @@ type Options struct {
 	// MCP attaches Model Context Protocol servers; each advertised tool is
 	// registered under the server-prefixed name (<server>_<tool>).
 	MCP []*mcp.Client
+	// Hooks are lifecycle hooks (Hermes P0): a command run before ("pre") or
+	// after ("post") a matching tool executes.
+	Hooks []Hook
 	// ReadOnly restricts the registry to read-only tools (used by subagents).
 	ReadOnly bool
 	// Subagent delegates a task to an isolated child agent (M7 v1). The
@@ -130,6 +135,7 @@ type Registry struct {
 	workspace string
 	tools     map[string]Tool
 	skills    *skills.Store
+	hooks     *Hooks
 }
 
 // skillsDirs joins the skills store's SKILL.md roots ("|"-separated) so the fs
@@ -149,6 +155,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		workspace: filepath.Clean(workspace),
 		tools:     make(map[string]Tool),
 		skills:    opts.Skills,
+		hooks:     NewHooks(opts.Hooks),
 	}
 	reg := map[string]Tool{
 		"fs_read":               &fsReadTool{ws: r.workspace},
@@ -324,6 +331,22 @@ func (r *Registry) SchemasFor(names []string) []llm.ToolSchema {
 	return out
 }
 
+// ExecuteWithHooks runs a tool with the configured lifecycle hooks: pre-hooks
+// (a non-zero exit vetoes the call), then the tool, then post-hooks. Returns
+// the tool's result text and a validation-style error.
+func (r *Registry) ExecuteWithHooks(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	if err := r.hooks.RunPre(name, args); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+	tool, ok := r.tools[name]
+	if !ok {
+		return fmt.Sprintf("error: unknown tool %q, available: %s", name, strings.Join(r.Names(), ", ")), nil
+	}
+	result, err := tool.Execute(ctx, args)
+	r.hooks.RunPost(name, args)
+	return result, err
+}
+
 // MCPToolNames returns the names of tools registered from MCP servers (the
 // server-prefixed set). The agent always offers them so an attached server's
 // capabilities are usable without a domain signal.
@@ -335,6 +358,71 @@ func (r *Registry) MCPToolNames() []string {
 		}
 	}
 	return out
+}
+
+// SchemasForReadOnly returns the schemas of every read-only tool in the
+// registry, plus the named extras (plan/consult) — used by read-only plan mode
+// (Hermes P0): the model may explore but not mutate until the plan is approved.
+func (r *Registry) SchemasForReadOnly(extras ...string) []llm.ToolSchema {
+	names := append([]string(nil), extras...)
+	for n, t := range r.tools {
+		if t.Risk() == RiskReadOnly && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	return r.SchemasFor(names)
+}
+
+// Hook is one lifecycle hook: a command run before ("pre") or after ("post") a
+// matching tool executes. Tool "*" matches every tool. The hook receives the
+// tool name via YAGENT_TOOL and the raw JSON args via YAGENT_ARGS. A pre-hook
+// with a non-zero exit vetoes the tool call.
+type Hook struct {
+	When    string   // "pre" or "post"
+	Tool    string   // tool name, or "*"
+	Command []string // argv to run
+}
+
+// Hooks holds the configured hook set and runs the matching ones.
+type Hooks struct {
+	hooks []Hook
+}
+
+// NewHooks wraps the configured hooks.
+func NewHooks(hooks []Hook) *Hooks { return &Hooks{hooks: hooks} }
+
+// RunPre executes every pre-hook matching tool. Returns an error (the first
+// non-zero pre-hook) to veto the call.
+func (h *Hooks) RunPre(toolName string, args json.RawMessage) error {
+	return h.run("pre", toolName, args, true)
+}
+
+// RunPost executes every post-hook matching tool (best-effort).
+func (h *Hooks) RunPost(toolName string, args json.RawMessage) {
+	_ = h.run("post", toolName, args, false)
+}
+
+func (h *Hooks) run(when, toolName string, args json.RawMessage, veto bool) error {
+	if h == nil {
+		return nil
+	}
+	for _, hook := range h.hooks {
+		if hook.When != when {
+			continue
+		}
+		if hook.Tool != "*" && hook.Tool != toolName {
+			continue
+		}
+		if len(hook.Command) == 0 {
+			continue
+		}
+		cmd := exec.Command(hook.Command[0], hook.Command[1:]...)
+		cmd.Env = append(os.Environ(), "YAGENT_TOOL="+toolName, "YAGENT_ARGS="+string(args))
+		if err := cmd.Run(); err != nil && veto {
+			return fmt.Errorf("pre-hook for %s vetoed: %v", toolName, err)
+		}
+	}
+	return nil
 }
 
 // fnSchema builds a compact OpenAI function schema. properties and required

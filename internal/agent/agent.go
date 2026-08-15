@@ -443,6 +443,10 @@ type Agent struct {
 	// ledger pins the ROOT GOAL only for autonomous goal runs (not interactive
 	// chat where the "last user message" is just the current prompt).
 	goalMode bool
+	// planMode, when true, restricts the offered tools to read-only ones plus
+	// plan/consult (Hermes P0: explore-then-edit). The plan tool's approval
+	// flips it off, letting the model start editing. Set via SetPlanMode.
+	planMode bool
 	// recentEdits is a rolling ring of the last edit targets (file paths),
 	// used to detect an oscillating (flip-flop) 2-file edit loop that slips
 	// past the per-file failure counter (agy #4).
@@ -576,6 +580,22 @@ func (a *Agent) SetRegistry(reg *tools.Registry) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.registry = reg
+}
+
+// PlanMode reports whether the loop is in read-only plan mode.
+func (a *Agent) PlanMode() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.planMode
+}
+
+// SetPlanMode toggles read-only plan mode. When on, only read-only tools (plus
+// plan/consult) are offered, so the model explores before it edits. Approving
+// the plan flips it off.
+func (a *Agent) SetPlanMode(on bool) {
+	a.mu.Lock()
+	a.planMode = on
+	a.mu.Unlock()
 }
 
 // SetSessionID switches the session that new messages persist to.
@@ -1865,6 +1885,15 @@ var (
 // the core set plus domain tools the input signals or the model already used
 // this turn.
 func (a *Agent) activeToolSchemas(input string, used map[string]bool) []llm.ToolSchema {
+	// Read-only plan mode (Hermes P0): offer only read-only tools plus
+	// plan/consult, so a small model explores before it edits. The plan tool's
+	// approval flips the mode off.
+	a.mu.RLock()
+	planMode := a.planMode
+	a.mu.RUnlock()
+	if planMode {
+		return a.registry.SchemasForReadOnly("plan", "consult")
+	}
 	names := append([]string(nil), coreToolNames...)
 	names = append(names, a.registry.MCPToolNames()...)
 	if used["web_search"] || used["web_fetch"] || researchSignal(input) {
@@ -2009,6 +2038,14 @@ func (a *Agent) assembleContext(recall, code string) []llm.Message {
 	if runningSummary != "" {
 		sections = append(sections, traceSection{Name: "summary", Content: runningSummary, Tokens: a.summaryTokens})
 		sys.WriteString("\n\nSummary of the earlier part of this conversation:\n" + runningSummary)
+	}
+
+	// read-only plan mode notice (Hermes P0)
+	a.mu.RLock()
+	planMode := a.planMode
+	a.mu.RUnlock()
+	if planMode {
+		sys.WriteString("\n\n[PLAN MODE] You are in read-only planning mode: only read-only tools (fs_read, glob, grep, index_search, code_*, consult) and the plan tool are available. Explore and design, then call plan with a step-by-step plan; once the user approves it you may edit files.")
 	}
 
 	// recall
@@ -2610,7 +2647,7 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 				slog.Error("tool panic recovered", "tool", name, "panic", p)
 			}
 		}()
-		return tool.Execute(ctx, call.Function.Arguments)
+		return a.registry.ExecuteWithHooks(ctx, name, call.Function.Arguments)
 	}()
 	if err != nil {
 		// Only argument-validation failures land here (tool contract).
@@ -2622,6 +2659,13 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 				name, valFails[name], err, name)
 		}
 		return "error: " + err.Error()
+	}
+	// Plan-mode exit: approving the plan flips read-only mode off so the model
+	// can start editing (Hermes P0 explore-then-edit).
+	if name == "plan" && strings.HasPrefix(result, "plan approved") {
+		a.mu.Lock()
+		a.planMode = false
+		a.mu.Unlock()
 	}
 	if cacheableReadTools[name] && !strings.HasPrefix(result, "error:") {
 		a.cacheReadResult(name, call.Function.Arguments, result)

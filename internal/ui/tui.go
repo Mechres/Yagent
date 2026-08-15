@@ -56,7 +56,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	inputCh := make(chan turnRequest, 1)
 	runnerCtx, runnerCancel := context.WithCancel(ctx)
 	runnerDone := make(chan struct{})
-	ap := newToggleableApprover(&tuiApprover{incoming: incoming, ctx: runnerCtx})
+	ap := newToggleableApprover(newRememberingApprover(&tuiApprover{incoming: incoming, ctx: runnerCtx}))
 	ap.SetYOLO(opts.YOLO)
 	if opts.YOLO {
 		env.registry.SetSkillsWriteApproval(false)
@@ -241,6 +241,7 @@ type tuiApprover struct {
 }
 
 func (a *tuiApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
+	notifyOS("yagent — approval needed", fmt.Sprintf("%s (%s)", call.Function.Name, risk))
 	respond := make(chan agent.Approval, 1)
 	select {
 	case a.incoming <- approvalRequestMsg{call: call, risk: risk, respond: respond}:
@@ -2679,7 +2680,7 @@ func (m *tuiModel) thinkingBlock() string {
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
 		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/settings", "/set <key> <value>", "/model", "/key",
-		"/undo", "/undo list", "/undo <N>", "/diff", "/sessions", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
+		"/undo", "/undo list", "/undo <N>", "/diff", "/plan", "/sessions", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
 		"/playbook", "/mouse",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",
 		"/skills verify <id>", "/skills approve <id|all>", "/skills reject <id|all>", "/skills approval on|off",

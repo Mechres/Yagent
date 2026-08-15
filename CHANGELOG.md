@@ -2,6 +2,26 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.75 — 2026-08-15
+
+### Added
+- **Read-only plan mode** (Hermes P0) — `/plan` (REPL + TUI) toggles a mode
+  where only read-only tools + plan/consult are offered
+  (`agent.SetPlanMode`, `registry.SchemasForReadOnly`), so a small model
+  explores before it edits. Approving the `plan` tool flips the mode off.
+- **Hook bus** (Hermes P0) — config `hooks:` declares lifecycle hooks
+  (`when: pre|post`, `tool: <name>|"*"`, `command: [argv]`) that run
+  deterministically around every tool call via `registry.ExecuteWithHooks`.
+  A pre-hook with a non-zero exit vetoes the call; hooks receive the tool via
+  `YAGENT_TOOL` and the JSON args via `YAGENT_ARGS`. Policy as code.
+- **Approval allow-remember** (Hermes P0) — `rememberingApprover` remembers an
+  approved tool+args signature and auto-approves identical calls for the rest
+  of the session (cuts approval fatigue on slow single-GPU runs; session-scoped,
+  not a blanket `/yolo`).
+- **OS notifications** (Hermes P1) — `notifyOS` fires `notify-send`/`osascript`
+  when an approval is needed or a goal-mode run completes.
+- config.example.yaml documents the `hooks:` section.
+
 ## v0.1.74 — 2026-08-15
 
 ### Added

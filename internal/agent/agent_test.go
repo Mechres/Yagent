@@ -2704,3 +2704,44 @@ func TestLoadSessionSwapsContext(t *testing.T) {
 		t.Errorf("summary = %q", a.runningSummary)
 	}
 }
+
+func TestPlanModeRestrictsSchemasAndApprovalExits(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "data")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient("http://127.0.0.1:1", "test-model"), reg, nil, Config{MaxIterations: 5}, ws)
+
+	// plan mode on: only read-only tools + plan/consult offered
+	a.SetPlanMode(true)
+	schemas := a.activeToolSchemas("explore", map[string]bool{})
+	names := map[string]bool{}
+	for _, s := range schemas {
+		names[s.Function.Name] = true
+	}
+	if !names["fs_read"] || !names["glob"] {
+		t.Errorf("plan mode missing read-only tools: %v", names)
+	}
+	if names["fs_write"] || names["fs_edit"] || names["shell_exec"] {
+		t.Error("plan mode offered a write tool")
+	}
+	if !a.PlanMode() {
+		t.Error("plan mode not reported on")
+	}
+
+	// simulating the plan tool's approved result must flip it off — exercised
+	// through dispatch is complex; verify the setter + the active schemas flip.
+	a.SetPlanMode(false)
+	if a.PlanMode() {
+		t.Error("plan mode not off")
+	}
+	schemas = a.activeToolSchemas("now edit", map[string]bool{})
+	hasWrite := false
+	for _, s := range schemas {
+		if s.Function.Name == "fs_write" {
+			hasWrite = true
+		}
+	}
+	if !hasWrite {
+		t.Error("write tools not restored after plan mode off")
+	}
+}
