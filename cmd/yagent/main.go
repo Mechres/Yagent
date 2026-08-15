@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -531,15 +532,21 @@ func runBench(cfg *config.Config, jsonOut bool, repeat int) error {
 	}
 	total := time.Since(start)
 
-	// Regression gate (T1-2): record this run as the model's baseline and warn
-	// when it's below the model's own best — a model/sampling change that
-	// silently degrades the loop should not pass unnoticed. Uses repeat>=2
-	// scores (a single flaky run shouldn't overwrite a solid best).
+	// Regression gate (T1-2): record this run against its fingerprint (model +
+	// server + window + sampling + suite) so a changed config is a NEW baseline,
+	// not a false regression. Warn when the SAME fingerprint fell below its own
+	// best. Uses repeat>=2 scores (a single flaky run shouldn't overwrite a
+	// solid best).
 	pass := passedRuns(reports)
+	fp := bench.NewFingerprint(cfg.Model, cfg.ServerURL, cfg.ContextWindow, client.Sampling)
+	tasksStats := make([]bench.TaskStat, 0, len(reports))
+	for _, r := range reports {
+		tasksStats = append(tasksStats, bench.TaskStat{Name: r.Name, Passed: r.Passed, Runs: r.Runs, Tps: r.TokensPerSec})
+	}
+	medTps, medWall := medianStats(reports)
 	base := bench.LoadBaseline(cfg.DataDir)
-	prevBest, improved := base.Record(cfg.DataDir, cfg.Model, pass, len(tasks)*repeat)
-	_ = improved
-	if repeat >= 2 && prevBest > pass {
+	prevBest, _, comparable := base.Record(cfg.DataDir, fp, pass, len(tasks)*repeat, medTps, medWall, tasksStats)
+	if repeat >= 2 && comparable && prevBest > pass {
 		fmt.Fprintf(os.Stderr, "\n⚠ regression: %q fell from %d/%d to %d/%d — re-run `yagent bench --repeat 3` to confirm before trusting this model\n",
 			cfg.Model, prevBest, len(tasks)*repeat, pass, len(tasks)*repeat)
 	}
@@ -576,8 +583,8 @@ func runBench(cfg *config.Config, jsonOut bool, repeat int) error {
 			r.TokensPerSec, think, r.Detail)
 	}
 	fmt.Printf("\n%d/%d run(s) passed · total %s\n", pass, len(tasks)*repeat, total.Round(time.Second))
-	if s := base.ScoreString(cfg.Model); s != "" {
-		fmt.Printf("baseline for %q: %s\n", cfg.Model, s)
+	if s := base.ScoreString(fp); s != "" {
+		fmt.Printf("baseline for %q under this fingerprint: %s\n", fp.Model, s)
 	}
 	return nil
 }
@@ -607,6 +614,23 @@ func passedRuns(reports []benchTaskReport) int {
 		n += r.Passed
 	}
 	return n
+}
+
+// medianStats returns the median tokens/sec and median per-task wall time
+// across the reports (robust to outlier tasks, unlike the mean).
+func medianStats(reports []benchTaskReport) (float64, int64) {
+	if len(reports) == 0 {
+		return 0, 0
+	}
+	tps := make([]float64, 0, len(reports))
+	wall := make([]int64, 0, len(reports))
+	for _, r := range reports {
+		tps = append(tps, r.TokensPerSec)
+		wall = append(wall, r.WallMS)
+	}
+	sort.Float64s(tps)
+	sort.Slice(wall, func(i, j int) bool { return wall[i] < wall[j] })
+	return tps[len(tps)/2], wall[len(wall)/2]
 }
 
 // runCalibrate runs the canonical small-model benchmark across the sampling

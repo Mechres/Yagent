@@ -2,6 +2,52 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.84 — 2026-08-15
+
+### Added
+- **Failure capsules** (persistent tool-failure memory) — `internal/capsule`
+  records project-scoped tool failures (tool + normalized error class + affected
+  path) under `.yagent/capsules.json`; on the second recurrence the error result
+  carries a `[known recurring failure: …]` hint, and the tool that eventually
+  recovers the path is recorded and named on the next failure — so a small model
+  stops re-learning the same fix across sessions. The capsule store is a
+  deterministic exact-match store (no embeddings).
+- **Research provenance bundle** — when the research gate accepts a DONE
+  verdict, a `report.md.provenance.json` sidecar is written beside the report
+  with the fetched source URLs, the queries actually run, the research notes and
+  page hashes — making a research report reproducible and letting a later
+  session distinguish claims from inferences.
+- **Evidence-gated code retrieval** — auto-injected code chunks now require
+  evidence (an FTS5 keyword hit, or query-term overlap with the returned
+  paths/content) instead of vector similarity alone, so a weak embedder can't
+  dump unrelated high-cosine chunks into context. Explicit `index_search`
+  remains the fallback.
+- **Benchmark fingerprints** — `yagent bench` baselines are now keyed by a
+  fingerprint (model + server + context window + sampling profile + task-suite
+  version), storing median t/s, median wall time and per-task pass counts. A
+  changed model/sampling/window records a NEW baseline instead of being flagged
+  as a regression against an incomparable one; `yagent doctor` reports it.
+- **Git-safety contract clarified** (AGENTS.md) — the no-git-mutations rule now
+  explicitly notes that `git_auto_commit` (default true) is the user's consent
+  to *local-only* `yagent: turn N` commits (never pushed; `git_auto_commit:
+  false` disables them), resolving the contract conflict.
+- **README api_key truthfulness** — the "keys never stored in config" claim was
+  false (`/key` and `/model` persist to the `api_key` field); the README now
+  states keys are stored there and that `/key clear` removes them and env vars
+  take precedence.
+
+### Fixed
+- Research DONE-check interruption no longer reports an unverified run as
+  success (returns an error instead).
+- Typed-nil summarizer panic (unconfigured offload server) fixed in both the UI
+  and the agent.
+
+### Tests
+- `internal/capsule` unit tests (record/match/persist, fallbacks, `ErrClassOf`,
+  corrupt-store tolerance), agent capsule integration + provenance bundle tests,
+  `TestCodeEvidence` (lexical/symbol/path gating), fingerprint-keyed baseline
+  tests (`TestBaselineFingerprintIsNewBaseline`). `go test -race` clean.
+
 ## v0.1.83 — 2026-08-15
 
 ### Fixed

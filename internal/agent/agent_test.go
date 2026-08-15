@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mechres/Yagent/internal/capsule"
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
@@ -1868,6 +1869,33 @@ func TestCodeIntendedGating(t *testing.T) {
 	}
 }
 
+func TestCodeEvidence(t *testing.T) {
+	// lexical evidence: any FTS5 (keyword) hit justifies injection
+	if !codeEvidence("where is the parser package", []index.Result{{Path: "pkg/parser/lex.go", Content: "package parser", Lexical: true}}) {
+		t.Error("lexical hit should justify injection")
+	}
+	// symbol/path evidence: query token appears in path even without a lexical hit
+	if !codeEvidence("where is the parser package", []index.Result{{Path: "internal/parser/parse.go", Content: "package parse"}}) {
+		t.Error("path token overlap should justify injection")
+	}
+	// query token in content
+	if !codeEvidence("what does validateToolInput do", []index.Result{{Path: "tools/tools.go", Content: "func validateToolInput(x string) error"}}) {
+		t.Error("content token overlap should justify injection")
+	}
+	// vector-only false positive: no lexical hit, no token overlap -> no injection
+	if codeEvidence("the weather in berlin today", []index.Result{{Path: "pkg/db/schema.go", Content: "CREATE TABLE sessions (id TEXT)"}}) {
+		t.Error("unrelated vector-only match must NOT be injected")
+	}
+	// empty results -> no injection
+	if codeEvidence("anything", nil) {
+		t.Error("no results must not inject")
+	}
+	// stopword-only input -> no meaningful tokens
+	if codeEvidence("the and for with", []index.Result{{Path: "a.go", Content: "func main(){}"}}) {
+		t.Error("stopword-only query must not inject")
+	}
+}
+
 func TestOscillationDetection(t *testing.T) {
 	ws := t.TempDir()
 	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
@@ -3321,5 +3349,112 @@ func TestCountSourcesSection(t *testing.T) {
 	cited2, found2 := countSourcesSection(body2)
 	if !found2 || cited2 != 2 {
 		t.Errorf("references section = %d found=%v, want 2 found=true", cited2, found2)
+	}
+}
+
+func TestFailureCapsuleHintAcrossRuns(t *testing.T) {
+	// A recurring fs_edit failure on the same file: the second failure's tool
+	// result must carry a "known recurring failure" hint from the capsule
+	// store, and a later fs_write success on that path must be recorded as the
+	// recovery.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "main.go", "package main\nfunc main() {}\n")
+	capsPath := filepath.Join(t.TempDir(), "capsules.json")
+	cs, err := capsule.Open(capsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true}, Config{MaxIterations: 5, Capsules: cs}, ws)
+
+	// Simulate two failed fs_edit calls (via dispatchAll on scripted calls)
+	// then a successful fs_write, and assert the capsule behavior.
+	call := func(name, args string) llm.ToolCall {
+		return llm.ToolCall{Function: llm.ToolCallFunction{Name: name, Arguments: json.RawMessage(args)}}
+	}
+	fail1 := a.dispatch(context.Background(), call("fs_edit", `{"path":"main.go","old_string":"missing","new_string":"x"}`), map[string]int{}, map[string]bool{})
+	if !strings.HasPrefix(fail1, "error:") {
+		t.Fatalf("first edit should fail, got %q", fail1)
+	}
+	if strings.Contains(fail1, "recurring failure") {
+		t.Errorf("first failure must not carry a hint: %q", fail1)
+	}
+	// vary the args so the write-dedup doesn't skip it (a real model varies
+	// old_string on retry)
+	fail2 := a.dispatch(context.Background(), call("fs_edit", `{"path":"main.go","old_string":"missing","new_string":"y"}`), map[string]int{}, map[string]bool{})
+	if !strings.Contains(fail2, "known recurring failure") {
+		t.Errorf("second failure should carry the capsule hint: %q", fail2)
+	}
+	// a successful write on the path records the recovery
+	okRes := a.dispatch(context.Background(), call("fs_write", `{"path":"main.go","content":"package main\nfunc main() {}\n"}`), map[string]int{}, map[string]bool{})
+	if strings.HasPrefix(okRes, "error:") {
+		t.Fatalf("fs_write should succeed: %q", okRes)
+	}
+	m, _ := cs.Match("fs_edit", "old_string_not_found", "main.go")
+	if m.RecoveredBy != "fs_write" {
+		t.Errorf("recovered_by = %q, want fs_write", m.RecoveredBy)
+	}
+	// a third failure now names the recovery
+	fail3 := a.dispatch(context.Background(), call("fs_edit", `{"path":"main.go","old_string":"missing","new_string":"z"}`), map[string]int{}, map[string]bool{})
+	if !strings.Contains(fail3, "fs_write") {
+		t.Errorf("third failure should name the recovery tool: %q", fail3)
+	}
+}
+
+// TestNoCapsulesDisabled: without a capsule store, failures pass through
+// unchanged (feature off by default).
+func TestNoCapsulesDisabled(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.go", "package a\n")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	res := a.dispatch(context.Background(), llm.ToolCall{Function: llm.ToolCallFunction{Name: "fs_edit", Arguments: json.RawMessage(`{"path":"a.go","old_string":"x","new_string":"y"}`)}}, map[string]int{}, map[string]bool{})
+	if strings.Contains(res, "recurring failure") {
+		t.Errorf("capsule disabled must not hint: %q", res)
+	}
+}
+
+func TestResearchProvenanceBundle(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{})
+	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	// write a report + record sources/queries/findings
+	dir := filepath.Join(ws, ".yagent", "research")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(dir, "topic.md")
+	if err := os.WriteFile(report, []byte("# T\n\n## Sources\n- https://example.com/a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.researchSources = []string{"https://example.com/a"}
+	a.researchQueries = []string{"llama.cpp quantization"}
+	a.researchFindings = []string{"found a thing [https://example.com/a]"}
+	a.mu.Unlock()
+
+	if prov := a.WriteResearchProvenance(); prov == "" {
+		t.Fatal("WriteResearchProvenance returned empty")
+	} else if prov != report+".provenance.json" {
+		t.Errorf("provenance path = %q", prov)
+	}
+	if got := a.ResearchProvenance(); got != report+".provenance.json" {
+		t.Errorf("ResearchProvenance = %q", got)
+	}
+	data, err := os.ReadFile(report + ".provenance.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{`"queries"`, "llama.cpp quantization", `"findings"`, "found a thing", `"sources"`, "https://example.com/a", `"sha256"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("provenance bundle missing %q:\n%s", want, s)
+		}
+	}
+	// no report in a fresh workspace -> no bundle
+	ws2 := t.TempDir()
+	a2 := New(&fixedSummaryLLM{summary: "unused"}, tools.NewRegistry(ws2, tools.Options{}), &stubApprover{allow: true}, Config{MaxIterations: 5}, ws2)
+	if p := a2.WriteResearchProvenance(); p != "" {
+		t.Errorf("no report should produce no bundle, got %q", p)
 	}
 }

@@ -33,6 +33,11 @@ type Result struct {
 	EndLine   int
 	Content   string
 	Score     float64
+	// Lexical is true when the chunk was in the FTS5 keyword pool (a BM25 hit
+	// on the query), i.e. the match has lexical evidence, not just vector
+	// similarity. The agent's auto-inject gate uses it to avoid dumping
+	// unrelated vector-only chunks into context.
+	Lexical bool
 }
 
 // Search hybrid-ranks indexed chunks against a natural-language query:
@@ -109,7 +114,7 @@ func (s *Store) Search(ctx context.Context, query string, k int) ([]Result, erro
 	for _, c := range list[:k] {
 		out = append(out, Result{
 			Path: c.path, StartLine: c.startLine, EndLine: c.endLine,
-			Content: c.content, Score: c.hybrid,
+			Content: c.content, Score: c.hybrid, Lexical: c.hasBM25,
 		})
 	}
 	return out, nil

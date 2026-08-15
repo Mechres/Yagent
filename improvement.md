@@ -1456,3 +1456,52 @@ doctor against the real NVIDIA NIM cloud config). All shipped:
   FAIL, `/research` ran the full flow and passed the stricter Sources-section
   gate.
 
+## Reliability/contract batch 2026-08-15 (all tested) — capsules, provenance, retrieval gate, bench fingerprints
+
+Screened from two external reviews (contract-clarity + feature proposals);
+implemented the high-value subset, rejected the false-premise / duplicate
+items. All deterministic; `go test -race` clean.
+
+- ✅ **Failure capsules** (R2 #1, first-build pick) — `internal/capsule` is a
+  project-scoped persistent tool-failure store under `.yagent/capsules.json`
+  (gitignored): records `(tool, error class, path)` on each failure, bumps the
+  count, and on the SECOND recurrence the tool error carries a
+  `[known recurring failure: …]` hint. When a write to that path eventually
+  succeeds, the recovering tool is recorded and named on the next failure —
+  so a small model stops re-learning the same fix across sessions. Exact-match
+  (no embeddings), TTL-free by design (path-scoped), corrupt file tolerates to
+  empty. Covered by `internal/capsule` unit tests + agent integration tests.
+  Un-gates the previously DEFERRED "persistent tool-failure memory" item.
+- ✅ **Research provenance bundle** (R2 #7) — when the research gate accepts a
+  DONE verdict, `report.md.provenance.json` is written beside the report with
+  the fetched source URLs, the queries actually run, the `research_note`
+  findings and per-page hashes — reproducible research, and a later session can
+  tell a claim from an inference. Covered by `TestResearchProvenanceBundle`.
+- ✅ **Evidence-gated code retrieval** (R1 #4) — `codeIndex` now only auto-
+  injects when a result has lexical evidence (FTS5 hit) or query-term overlap
+  with the returned paths/content, so a weak embedder can't dump unrelated
+  high-cosine chunks into context. Explicit `index_search` remains the
+  fallback. `index.Result` gained a `Lexical` flag. Covered by
+  `TestCodeEvidence`.
+- ✅ **Benchmark fingerprints** (R1 #5) — baselines are keyed by a fingerprint
+  (model + server + window + sampling + task-suite version) and store median
+  t/s, median wall time and per-task pass counts; a changed model/sampling/
+  window records a NEW baseline instead of a false regression, and doctor
+  reports the change. Covered by `TestBaselineFingerprintIsNewBaseline` +
+  `TestBaselineRecentFingerprints`.
+- ✅ **Git-safety contract clarified** (R1 #1) — AGENTS.md now states that
+  `git_auto_commit` (default true) is the user's consent to *local-only*
+  `yagent: turn N` commits (never pushed; `false` disables them), resolving the
+  "no git mutations" wording conflict.
+- ✅ **README api_key truthfulness** (R1 #2) — the "keys never stored in
+  config" claim was false; the README now says keys are stored in `api_key`,
+  `/key clear` removes them, and env vars take precedence.
+- ⚪ **Listener-portable tests** (R1 #6) — REJECTED on a false premise:
+  `httptest.NewServer` already binds 127.0.0.1 by default (Go stdlib); the
+  sandbox failure was environmental.
+- Known limitation (recorded, not shipped): `/research` can overflow the
+  window when the model fetches 3+ full pages in a round (each up to 32 KiB);
+  the budget prunes old turns but not the current turn's fresh fetches. A
+  future pass could cap in-flight fetch bytes per round or prompt the model to
+  fetch fewer pages at once.
+

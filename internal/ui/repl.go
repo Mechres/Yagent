@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Mechres/Yagent/internal/agent"
+	"github.com/Mechres/Yagent/internal/capsule"
 	"github.com/Mechres/Yagent/internal/checkpoint"
 	"github.com/Mechres/Yagent/internal/config"
 	"github.com/Mechres/Yagent/internal/gitops"
@@ -655,7 +656,8 @@ type chatEnv struct {
 	forkSource     string
 	undo           *undo.Buffer
 	jobs           *jobs.Registry
-	summ           *llm.Client // optional offloaded summarizer (budget + /compact)
+	summ           *llm.Client    // optional offloaded summarizer (budget + /compact)
+	capsules       *capsule.Store // persistent tool-failure memory (.yagent/capsules.json)
 	// mcpClients are connected Model Context Protocol servers whose advertised
 	// tools are registered into the tool registry (server-prefixed names).
 	mcpClients []*mcp.Client
@@ -883,6 +885,9 @@ func runResearchMode(ctx context.Context, client *llm.Client, cfg *config.Config
 	// Report the research deliverables the deterministic gate verified.
 	if report := ag.ResearchReport(); report != "" {
 		fmt.Fprintf(w, "\nreport: %s\n", report)
+		if prov := ag.ResearchProvenance(); prov != "" {
+			fmt.Fprintf(w, "provenance: %s\n", prov)
+		}
 	}
 	if srcs := ag.ResearchSources(); len(srcs) > 0 {
 		fmt.Fprintf(w, "sources (%d):\n", len(srcs))
@@ -1049,11 +1054,20 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		return nil, err
 	}
 
+	// Failure capsules: project-scoped persistent tool-failure memory under
+	// .yagent/capsules.json (gitignored). Best-effort — a broken store just
+	// disables the hint.
+	var capsulesStore *capsule.Store
+	if cps, cerr := capsule.Open(filepath.Join(ws, ".yagent", "capsules.json")); cerr == nil {
+		capsulesStore = cps
+	}
+
 	env := &chatEnv{
 		st: st, vs: vs, projVS: projVS, sk: sk, idx: idx, web: webClient,
 		sessionID: sessionID, initialHistory: initialHistory, initialSummary: initialSummary,
 		forkSource: forkSource, undo: undo.New(), jobs: jobs.New(),
 		summ:       summClient,
+		capsules:   capsulesStore,
 		mcpClients: connectMCP(ctx, cfg),
 	}
 	// A fresh session (no --continue / --fork) that never receives a message is
@@ -1156,6 +1170,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		Codegen:          cfg.Codegen,
 		Research:         true, // research_note tool + SOURCES/RESEARCH NOTES ledger
 		VramThresholdTPS: cfg.VramThresholdTPS,
+		Capsules:         env.capsules,
 	}
 	if env.summ != nil {
 		// Only set the offloaded summarizer when actually configured: passing a
@@ -1993,6 +2008,9 @@ func (h *skillsHandler) runResearch(ag *agent.Agent, topic string) (bool, error)
 	}
 	if report := ag.ResearchReport(); report != "" {
 		fmt.Fprintf(h.w, "\nresearch complete — report written to %s\n", report)
+		if prov := ag.ResearchProvenance(); prov != "" {
+			fmt.Fprintf(h.w, "provenance: %s\n", prov)
+		}
 	} else {
 		fmt.Fprintf(h.w, "\nresearch complete.\n")
 	}

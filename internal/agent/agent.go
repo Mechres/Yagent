@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Mechres/Yagent/internal/capsule"
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
@@ -316,6 +318,11 @@ type Config struct {
 	// InitialHistory/InitialSummary seed a resumed session (chat --continue).
 	InitialHistory []llm.Message
 	InitialSummary string
+
+	// Capsules is the persistent tool-failure store (nil disables the feature).
+	// On a recurring failure, the recorded recovery hint is appended to the
+	// error result; on the eventual successful write, the recovery is recorded.
+	Capsules *capsule.Store
 
 	// Research enables the research_note tool and the TASK STATE research
 	// ledger (SOURCES / RESEARCH NOTES). UI-enabled so the model can persist
@@ -663,6 +670,19 @@ func (a *Agent) ResearchSources() []string {
 // (the deterministic research deliverable), or "" when none exists yet.
 func (a *Agent) ResearchReport() string {
 	return a.findResearchReport()
+}
+
+// ResearchProvenance returns the path of the provenance bundle written beside
+// the research report, or "" when none exists yet.
+func (a *Agent) ResearchProvenance() string {
+	report := a.findResearchReport()
+	if report == "" {
+		return ""
+	}
+	if _, err := os.Stat(report + ".provenance.json"); err != nil {
+		return ""
+	}
+	return report + ".provenance.json"
 }
 
 // LoadSession replaces the conversation context with another session's history
@@ -1461,6 +1481,7 @@ func (a *Agent) RunResearch(ctx context.Context, topic string, maxRounds int, on
 				}
 				continue // DONE refused; the report must exist with cited sources
 			}
+			a.WriteResearchProvenance() // evidence bundle beside the report
 			return last, nil
 		}
 	}
@@ -1556,6 +1577,59 @@ func (a *Agent) findResearchReport() string {
 		}
 	}
 	return newest
+}
+
+// WriteResearchProvenance writes a JSON evidence bundle beside the research
+// report (report.md.provenance.json): the fetched source URLs, the queries
+// actually run, the research notes, and page content hashes — so the report is
+// reproducible and a later session can tell a claim from an inference. Called
+// when the research gate accepts the DONE verdict.
+func (a *Agent) WriteResearchProvenance() string {
+	report := a.findResearchReport()
+	if report == "" {
+		return ""
+	}
+	a.mu.RLock()
+	sources := append([]string(nil), a.researchSources...)
+	queries := append([]string(nil), a.researchQueries...)
+	findings := append([]string(nil), a.researchFindings...)
+	a.mu.RUnlock()
+
+	type pageHash struct {
+		URL  string `json:"url"`
+		Hash string `json:"sha256"`
+	}
+	bundle := struct {
+		Report   string     `json:"report"`
+		Created  string     `json:"created"`
+		Queries  []string   `json:"queries"`
+		Findings []string   `json:"findings"`
+		Sources  []pageHash `json:"sources"`
+	}{
+		Report: report, Created: time.Now().Format(time.RFC3339),
+		Queries: queries, Findings: findings,
+	}
+	for _, u := range sources {
+		bundle.Sources = append(bundle.Sources, pageHash{URL: u, Hash: hashURL(u)})
+	}
+	data, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return ""
+	}
+	out := report + ".provenance.json"
+	if err := os.WriteFile(out, data, 0o644); err != nil {
+		return ""
+	}
+	return out
+}
+
+// hashURL is a stable placeholder content hash for a fetched page (the page
+// body is not retained after pruning, so the hash is derived from the URL; a
+// full content hash would require caching the body). This records WHICH pages
+// were fetched, not a verification of their current content.
+func hashURL(u string) string {
+	sum := sha256.Sum256([]byte(u))
+	return fmt.Sprintf("%x", sum[:16])
 }
 
 // goalGateCheck runs workspace_diagnostics and returns a DONE-refusal message
@@ -2855,6 +2929,16 @@ func (a *Agent) codeIndex(ctx context.Context, input string) string {
 	if err != nil || len(results) == 0 {
 		return ""
 	}
+	// Evidence gate (retrieval confidence): auto-inject only when the match has
+	// real evidence, not just vector similarity. A weak embedder can return
+	// high-cosine chunks for an unrelated query; dumping those into context
+	// distracts a small model. Inject when (a) any result came from the FTS5
+	// keyword pool (lexical evidence), or (b) query terms lexically overlap the
+	// returned paths/content (symbol/path evidence), or (c) the top score is
+	// strong. Otherwise return "" — the model can still call index_search.
+	if !codeEvidence(input, results) {
+		return ""
+	}
 	block := renderIndexBlock(results, false)
 	if len(block) > maxIndexTokens*4 {
 		block = renderIndexBlock(results, true) // collapse bodies
@@ -2863,6 +2947,66 @@ func (a *Agent) codeIndex(ctx context.Context, input string) string {
 		return block[:maxIndexTokens*4] + "\n…"
 	}
 	return block
+}
+
+// codeEvidence reports whether a code-retrieval result set has enough evidence
+// to justify auto-injection: any lexical (FTS5) hit, or query-term overlap
+// with the returned paths/content, or a strong top score. This is the
+// deterministic guard against vector-only false positives on weak embedders.
+func codeEvidence(input string, results []index.Result) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, r := range results {
+		if r.Lexical {
+			return true // a real keyword hit
+		}
+	}
+	// Lexical overlap: do any significant query tokens appear in the paths or
+	// content of the returned chunks? A query like "the weather in berlin"
+	// shares no tokens with unrelated code chunks -> no injection.
+	tokens := significantTokens(input)
+	if len(tokens) == 0 {
+		return false
+	}
+	// strong top score is weak evidence alone; require at least one token match
+	// in the returned material (symbol/path evidence).
+	hay := strings.ToLower(strings.Join(func() []string {
+		var parts []string
+		for _, r := range results {
+			parts = append(parts, r.Path, r.Content)
+		}
+		return parts
+	}(), " "))
+	for _, t := range tokens {
+		if strings.Contains(hay, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// significantTokens extracts meaningful query words (≥3 chars, not stopwords)
+// for lexical-overlap evidence.
+func significantTokens(input string) []string {
+	stop := map[string]bool{
+		"the": true, "and": true, "for": true, "with": true, "what": true,
+		"when": true, "where": true, "how": true, "which": true, "does": true,
+		"is": true, "are": true, "was": true, "were": true, "you": true,
+		"your": true, "this": true, "that": true, "there": true, "please": true,
+		"tell": true, "me": true, "about": true, "can": true, "could": true,
+		"find": true, "show": true, "give": true, "need": true, "want": true,
+		"code": true, "file": true, "from": true, "into": true, "then": true,
+		"have": true, "has": true, "been": true, "get": true, "look": true,
+	}
+	var out []string
+	for _, w := range strings.Fields(strings.ToLower(input)) {
+		w = strings.Trim(w, ".,;:!?()[]{}\"'`")
+		if len(w) >= 3 && !stop[w] {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func renderIndexBlock(results []index.Result, compact bool) string {
@@ -3442,6 +3586,20 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		}
 		return "error: " + err.Error()
 	}
+	// Failure capsules (persistent tool-failure memory): record the failure and
+	// append any known recovery hint from a previous session to the error
+	// result, so a small model stops re-learning the same fix. Writes that
+	// eventually succeed mark the recovery for the next time.
+	if strings.HasPrefix(result, "error:") {
+		result = a.recordFailureCapsule(name, call.Function.Arguments, result)
+	} else if a.cfg.Capsules != nil && (name == "fs_write" || name == "fs_edit" || name == "fs_patch" || name == "fs_refactor") {
+		var wpa struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(call.Function.Arguments, &wpa) == nil && wpa.Path != "" {
+			a.cfg.Capsules.RecordRecovery(wpa.Path, name)
+		}
+	}
 	// Plan-mode exit: approving the plan flips read-only mode off so the model
 	// can start editing (Hermes P0 explore-then-edit). Also record the approved
 	// steps so TASK STATE can track them (plan-step tracker, AGY #6) — a small
@@ -3604,6 +3762,30 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	a.mu.Unlock()
 	slog.Debug("tool executed", "tool", name)
 	armed = true // a successful call arms the dedup for an identical repeat
+	return result
+}
+
+// recordFailureCapsule persists a tool failure into the capsule store (when
+// configured) and, when a matching capsule from a previous session carries a
+// recovery hint, appends it to the error result so the model gets the fix
+// instead of repeating the loop.
+func (a *Agent) recordFailureCapsule(name string, args json.RawMessage, result string) string {
+	cs := a.cfg.Capsules
+	if cs == nil {
+		return result
+	}
+	path := ""
+	var pa struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(args, &pa) == nil {
+		path = pa.Path
+	}
+	errClass := capsule.ErrClassOf(result)
+	cap := cs.Record(name, errClass, path)
+	if h := capsule.Hint(cap); h != "" && !strings.Contains(result, h) {
+		return result + h
+	}
 	return result
 }
 

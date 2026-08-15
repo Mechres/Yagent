@@ -1,6 +1,7 @@
 /yagent
 /ideas/
 # per-project runtime state (keep .yagent/config.yaml committable)
+/.yagent/capsules.json
 /.yagent/checkpoints/
 /.yagent/memory/
 /.yagent/playbooks/

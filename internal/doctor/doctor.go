@@ -20,6 +20,7 @@ import (
 
 	"github.com/Mechres/Yagent/internal/bench"
 	"github.com/Mechres/Yagent/internal/config"
+	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
 )
 
@@ -307,11 +308,17 @@ func Run(cfg *config.Config) Report {
 	// --- bench regression gate (T1-2) ---
 	if cfg.Model != "" {
 		base := bench.LoadBaseline(cfg.DataDir)
-		if s := base.ScoreString(cfg.Model); s != "" {
-			if reg := base.Regression(cfg.Model); reg != "" {
+		fp := bench.NewFingerprint(cfg.Model, cfg.ServerURL, cfg.ContextWindow, llmSamplingFrom(cfg))
+		if s := base.ScoreString(fp); s != "" {
+			if reg := base.Regression(fp); reg != "" {
 				rep.add("bench", StatusWarn, reg)
 			} else {
 				rep.add("bench", StatusPass, "recorded baseline "+s)
+			}
+			// Show the configured sampling vs the baselined one, so a
+			// regression-free "changed config = new baseline" is explicit.
+			if fps := base.RecentFingerprints(cfg.Model); len(fps) > 1 {
+				rep.add("bench", StatusInfo, fmt.Sprintf("%d recorded fingerprint(s) for %s — a changed sampling/window records a new baseline, not a regression", len(fps), cfg.Model))
 			}
 		} else {
 			rep.add("bench", StatusInfo, "no recorded baseline (run `yagent bench --repeat 3`)")
@@ -399,6 +406,19 @@ func orDefault(value, def string) string {
 		return def
 	}
 	return value
+}
+
+// llmSamplingFrom maps a config sampling block to the llm.Sampling the bench
+// fingerprint is derived from.
+func llmSamplingFrom(cfg *config.Config) llm.Sampling {
+	return llm.Sampling{
+		Temperature:        cfg.Sampling.Temperature,
+		TopP:               cfg.Sampling.TopP,
+		TopK:               cfg.Sampling.TopK,
+		RepetitionPenalty:  cfg.Sampling.RepetitionPenalty,
+		MinP:               cfg.Sampling.MinP,
+		ReasoningMaxTokens: cfg.Sampling.ReasoningMaxTokens,
+	}
 }
 
 func fetchModels(client *http.Client, base, apiKey string) ([]string, string) {
