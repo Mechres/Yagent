@@ -191,7 +191,7 @@ Legend: ✅ full · ⚠️ partial/adjacent · ❌ absent.
 | 2 | **Hook bus** (Pre/Post-tool) | Pushes policy into deterministic Go; reduces model burden | Med | **P0 → DONE v0.1.75** |
 | 3 | **Approval tiers + allow-remember** | Cuts approval fatigue on slow single-GPU runs | Med | **P0 → DONE v0.1.75 (allow-remember)** |
 | 4 | **Idle/long-run OS notifications** | Local runs are slow; user walks away | Low | **P1 → DONE v0.1.75** |
-| 5 | **`/steer` mid-run redirect** | Cheap course-correction without history loss | Low-Med | **P1 — not yet built** |
+| 5 | **`/steer` mid-run redirect** | Cheap course-correction without history loss | Low-Med | **P1 → DONE v0.1.79** (pins `USER STEER` at the top of TASK STATE; the plan-step tracker rides along as `ACTIVE PLAN`) |
 | 6 | **Git worktree isolation** | Cleanliness for subagent experiments (not a bottleneck yet) | Med | **P2 — deferred** |
 | 7 | **MCP resources** | Read-only context into recall pipeline | Low | **P2 — deferred** |
 | — | Voice / browser / marketplace / LSP | — | — | **Skip** |
@@ -224,8 +224,8 @@ succeed. Candidate next moves, in assessed order:
    few days, then fix what it hits. Surfaces gaps synthetic evals can't.
 4. **Adversarial-QA pass on the new surface** — gitops, MCP, hooks, plan mode,
    allow-remember (the v0.1.35 pass found 9 real bugs on the old surface).
-5. **Polish backlog** — `/steer`, git worktree, MCP resources (deferred,
-   low-value).
+5. **Polish backlog** — git worktree, MCP resources (deferred, low-value).
+   (`/steer` shipped in v0.1.79.)
 
 Recommendation recorded 2026-08-15: #1 first (settles C3 with data), then #2
 (the genuine ceiling-raiser).
