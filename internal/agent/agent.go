@@ -1212,9 +1212,20 @@ func (a *Agent) InjectSystem(content string) {
 }
 
 // maybeOfferSkillCreation gates the end-of-turn opportunity on trigger size
-// and the per-session staging cap.
+// and the per-session staging cap. It is suppressed while an autonomous
+// goal/research loop is driving (RunGoal/RunResearch): the opportunity's
+// extra LLM round trip and its meta "should I create a skill?" deliberation
+// divert a model mid-goal — observed burning all 8 rounds on skill planning
+// instead of the task (Nemotron-3-30B, 2026-08-16). Skill distillation is
+// offered once after a goal completes (offerDistillation) instead.
 func (a *Agent) maybeOfferSkillCreation(ctx context.Context, turnCalls int) error {
 	if a.cfg.Skills == nil || turnCalls < skillTriggerMinCalls {
+		return nil
+	}
+	a.mu.RLock()
+	autonomous := a.goalMode || a.researchMode
+	a.mu.RUnlock()
+	if autonomous {
 		return nil
 	}
 	return a.offerSkillCreation(ctx)

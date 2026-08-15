@@ -3458,3 +3458,36 @@ func TestResearchProvenanceBundle(t *testing.T) {
 		t.Errorf("no report should produce no bundle, got %q", p)
 	}
 }
+
+func TestSkillCreationSuppressedInGoalMode(t *testing.T) {
+	// A 5+ tool-call turn inside an autonomous goal loop must NOT trigger the
+	// end-of-turn skill-creation opportunity — it diverts the model into skill
+	// planning mid-goal (observed: Nemotron-3-30B burned all 8 goal rounds on
+	// skill deliberation instead of the task). The session-end Finish() is the
+	// single distillation point.
+	ws := t.TempDir()
+	sk, err := skills.Open(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry(ws, tools.Options{Skills: sk, SkillsWriteApproval: true})
+
+	// Goal mode: 5 calls -> suppressed (offerSkillCreation returns early via the
+	// autonomous guard). Set goalMode and confirm the offer is skipped by
+	// checking no extra request was made to the LLM.
+	s := newScriptedLLM(t, [][]string{finalContent("done")})
+	goal := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true},
+		Config{MaxIterations: 5, Skills: sk}, ws)
+	goal.mu.Lock()
+	goal.goalMode = true
+	goal.totalToolCalls = 6
+	goal.mu.Unlock()
+	if err := goal.maybeOfferSkillCreation(context.Background(), 6); err != nil {
+		t.Fatalf("maybeOfferSkillCreation in goal mode: %v", err)
+	}
+	// The scripted server would have been hit by offerSkillCreation's ChatStream
+	// if it ran; the suppression means zero requests were made.
+	if n := len(s.requests); n != 0 {
+		t.Errorf("goal-mode skill offer made %d LLM request(s), want 0 (suppressed)", n)
+	}
+}

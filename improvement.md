@@ -1527,3 +1527,17 @@ items. All deterministic; `go test -race` clean.
   transcript writer, which isn't goroutine-safe) — same freeze risk, not yet
   routed. Low priority (rarer command); a future pass can route it via
   progress messages like goal/research.
+
+## Goal-loop skill-distraction fix 2026-08-16 (all tested)
+
+- ✅ **Goal mode no longer diverts into skill planning** — the end-of-turn
+  skill-creation opportunity fired after every 5+ tool-call turn *inside*
+  autonomous goal/research loops, adding an extra LLM round-trip per round and
+  inviting meta-deliberation ("should I create a skill?"). Observed live on
+  Nemotron-3-30B (NVIDIA API): the model spent all 8 goal rounds planning a
+  "setup-3d-tetris-sdl-project" skill instead of building the Tetris game. The
+  per-turn offer is now suppressed while `RunGoal`/`RunResearch` drive the loop
+  (`maybeOfferSkillCreation` checks `goalMode`/`researchMode`); skill
+  distillation happens once at session end (`Finish`) or via the goal-mode
+  playbook distillation. Interactive chat unchanged (eval 04 still passes).
+  Covered by `TestSkillCreationSuppressedInGoalMode`.

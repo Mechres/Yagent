@@ -2,6 +2,24 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.86 — 2026-08-16
+
+### Fixed
+- **Goal mode no longer diverts into skill planning** — the end-of-turn
+  skill-creation opportunity fired after every 5+ tool-call turn *including
+  inside autonomous goal/research loops*, adding an extra LLM round-trip per
+  round and inviting the model to deliberate about creating a skill instead of
+  working the goal. Observed live on Nemotron-3-30B (NVIDIA API): the model
+  burned all 8 goal rounds planning a "setup-3d-tetris-sdl-project" skill
+  instead of finishing the Tetris task. The opportunity is now suppressed while
+  `RunGoal`/`RunResearch` drive the loop — skill distillation happens once at
+  session end (`Finish`), not mid-goal. Interactive chat is unchanged (eval 04
+  still passes).
+
+### Tests
+- `TestSkillCreationSuppressedInGoalMode` (a 5+ call turn inside goal mode
+  makes zero LLM requests). `go test -race` clean.
+
 ## v0.1.85 — 2026-08-15
 
 ### Fixed
