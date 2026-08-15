@@ -1337,3 +1337,36 @@ priority). All deterministic where it matters; golden eval 59 locks in the gate.
   The report path and fetched sources are printed at the end of the run; the
   session id enables `--continue` to pick the conversation back up.
 
+## Scholarly + provider expansion 2026-08-15 (all tested) — paper_search, LangSearch
+
+Follow-up research batch adding scholarly search and a hosted provider. All
+deterministic where it matters; golden eval 60 locks in paper_search.
+
+- ✅ **`paper_search` tool** (`web_search.papers: true`) — parallel scholarly
+  search over **arXiv + PubMed** (both keyless) plus **Semantic Scholar**
+  (with `web_search.semanticscholar_api_key`; keyless use is 429 rate-limited,
+  surfaced as a readable error). Returns structured per-paper metadata — title,
+  authors, year, venue, abstract, URL, DOI — merged and deduped by URL, with
+  per-source fallback (a 429'd source degrades, the working ones answer).
+  The arXiv query is split into an AND conjunction (`all:quantization AND
+  all:llama`) so a topical query finds papers instead of one exact-phrase
+  match. Live-verified: "llama.cpp quantization" → 8 real arXiv papers.
+  Covered by `TestArxivSearch`, `TestPubMedSearch`,
+  `TestSemanticScholarSearch`, `TestSemanticScholarRateLimited`,
+  `TestSearchPapersMergesAndDedups`, `TestSearchPapersFallsBackOnError`,
+  `TestPaperSearchTool` + **golden eval 60**.
+- ✅ **LangSearch web-search provider** — `web_search.provider: langsearch` +
+  `web_search.langsearch_api_key` (free hosted API; key from langsearch.com).
+  As a primary provider or, when a key is set, joins the DDG/Mojeek/SearXNG
+  fallback chain. Bing-compatible JSON parsed into the existing `Result` shape.
+  Covered by `TestLangSearchProvider` + `TestLangSearchInFallbackChain` +
+  config round-trips.
+- ✅ **Stall-nudge false-positive fix** — `prosePermissionNudge` strips quoted
+  spans (paper titles like "Which Quantization Should I Use?", cited snippets,
+  code fences) before matching the permission-ask patterns, so a quoted phrase
+  can't stall a genuine answer into an extra round-trip. Found live while
+  verifying paper_search. Covered by the extended `TestProsePermissionNudge`.
+- Wiring: `paper_search` registered when `Web` + `Papers` are configured, added
+  to the web tool-schema group, and the research-mode prompt now says to call
+  paper_search first for academic questions.
+

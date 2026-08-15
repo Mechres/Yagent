@@ -69,9 +69,12 @@ context_window: 16384
 # data_dir: ~/.local/share/yagent   # sessions, memories, skills, logs
 
 web_search:
-  provider: duckduckgo        # duckduckgo | mojeek | searxng
+  provider: duckduckgo        # duckduckgo | mojeek | searxng | langsearch
   # searxng_url: http://localhost:8080
   # max_fetch_kib: 96         # web_fetch extracted-text cap in KiB (0 = 32)
+  # langsearch_api_key: ...    # free hosted web-search API (langsearch.com/dashboard); joins fallback chain
+  # papers: true               # enable the paper_search tool (arXiv + PubMed; needs no key)
+  # semanticscholar_api_key: ... # optional key for the Semantic Scholar paper index (keyless use is rate-limited)
 
 skills:
   write_approval: false       # false = skills apply immediately; true = stage for review

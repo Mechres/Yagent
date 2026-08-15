@@ -1,0 +1,12 @@
+name: paper-search
+description: v0.1.81 — paper_search returns arXiv papers with metadata; the model cites a paper URL
+web: true
+papers: true
+input: what academic papers study quantization for llama.cpp?
+steps:
+  - tool_call: {name: paper_search, args: '{"query":"quantization llama.cpp"}'}
+  - answer: "The paper \"Which Quantization Should I Use?\" (arXiv 2601.14277) studies quantization for llama.cpp — source: http://arxiv.org/abs/2601.14277v1"
+assert:
+  min_tool_results: 1
+  tool_results_contain: ["Which Quantization Should I Use?", "arxiv.org/abs/2601.14277v1"]
+  final_answer_contains: "arxiv.org/abs/2601.14277v1"

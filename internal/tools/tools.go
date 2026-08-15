@@ -97,7 +97,9 @@ type Options struct {
 	Index *index.Store
 	// Web enables the M5 web tools (may be nil).
 	Web *web.Client
-	// Consult enables the `consult` advisor tool (may be nil).
+	// Papers enables the paper_search tool (requires Web; searches arXiv,
+	// PubMed, Semantic Scholar when the client has paper sources configured).
+	Papers  bool // Consult enables the `consult` advisor tool (may be nil).
 	Consult *llm.Client
 	// Undo records file writes for /undo (may be nil).
 	Undo *undo.Buffer
@@ -198,6 +200,9 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	if opts.Web != nil {
 		reg["web_search"] = &webSearchTool{client: opts.Web}
 		reg["web_fetch"] = &webFetchTool{client: opts.Web}
+		if opts.Papers {
+			reg["paper_search"] = &paperSearchTool{client: opts.Web}
+		}
 	}
 	if opts.Consult != nil || len(opts.ConsultCmd) > 0 {
 		reg["consult"] = &consultTool{client: opts.Consult, cmd: opts.ConsultCmd}

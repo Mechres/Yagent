@@ -1018,7 +1018,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		return nil, fmt.Errorf("open code index: %w", err)
 	}
 	idx.SetBearerToken(cfg.APIKey)
-	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL, MaxFetchBytes: cfg.Web.MaxFetchKib * 1024})
+	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL, MaxFetchBytes: cfg.Web.MaxFetchKib * 1024, LangSearchKey: cfg.Web.LangSearchKey, Papers: cfg.Web.Papers, SemanticScholarKey: cfg.Web.SemanticScholarKey})
 	if err != nil {
 		return nil, fmt.Errorf("web search config: %w", err)
 	}
@@ -1067,6 +1067,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		Skills:              sk,
 		Index:               idx,
 		Web:                 webClient,
+		Papers:              cfg.Web.Papers,
 		Consult:             consultClient,
 		ConsultCmd:          cfg.Consult.Cmd,
 		Undo:                env.undo,
@@ -1892,6 +1893,16 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 			return err
 		}
 		c.Web.MaxFetchKib = n
+	case "web_search.langsearch_api_key":
+		c.Web.LangSearchKey = value
+	case "web_search.papers":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		c.Web.Papers = b
+	case "web_search.semanticscholar_api_key":
+		c.Web.SemanticScholarKey = value
 	case "skills.write_approval":
 		b, err := strconv.ParseBool(value)
 		if err != nil {

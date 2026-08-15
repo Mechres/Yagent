@@ -1482,6 +1482,21 @@ func TestProsePermissionNudge(t *testing.T) {
 	if n := prosePermissionNudge("Here is the complete report."); n != "" {
 		t.Errorf("plain answer should not nudge: %q", n)
 	}
+	// A quoted phrase ("Should I Use?" as a paper title) must NOT trip the
+	// detector — quoted content is a citation, not a permission ask.
+	if n := prosePermissionNudge(`The paper "Which Quantization Should I Use?" recommends q4_0 — source: http://arxiv.org/abs/1`); n != "" {
+		t.Errorf("quoted should-I must not nudge: %q", n)
+	}
+	if n := prosePermissionNudge("See 'How should I tune top_k?' in the docs at https://example.com"); n != "" {
+		t.Errorf("single-quoted should-I must not nudge: %q", n)
+	}
+	if n := prosePermissionNudge("```\nshould i = question\n```"); n != "" {
+		t.Errorf("fenced should-I must not nudge: %q", n)
+	}
+	// Unquoted question marks still fire.
+	if n := prosePermissionNudge("Should I review the code first?"); !strings.Contains(n, "clarify") {
+		t.Errorf("unquoted should-I nudge missing: %q", n)
+	}
 }
 
 func TestRunNudgesProsePermissionAsk(t *testing.T) {

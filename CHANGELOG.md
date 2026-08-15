@@ -2,6 +2,36 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.81 — 2026-08-15
+
+### Added
+- **`paper_search` tool** (`web_search.papers: true`) — searches scholarly
+  indexes (arXiv + PubMed keyless, Semantic Scholar when
+  `web_search.semanticscholar_api_key` is set) in parallel and returns
+  structured per-paper metadata: title, authors, year, venue, abstract, URL,
+  DOI. The arXiv query is split into an AND conjunction so topical queries find
+  papers instead of one exact-phrase match. Wired into the research mode
+  prompt (paper_search first for academic questions) and the tool-schema group.
+- **LangSearch web-search provider** — `web_search.provider: langsearch` +
+  `web_search.langsearch_api_key` (free hosted API, key from langsearch.com).
+  As a primary provider or, when a key is set, joins the DDG/Mojeek/SearXNG
+  fallback chain. Bing-compatible JSON, keyless-compatible with the existing
+  provider interface.
+- **Stall-nudge false-positive fix** — `prosePermissionNudge` now strips
+  quoted spans (paper titles like "Which Quantization Should I Use?", cited
+  snippets, code fences) before matching, so a quoted phrase can't trip the
+  "asking for permission" nudge and stall a genuine answer.
+
+### Tests
+- Golden eval 60 (paper-search), `TestArxivSearch`, `TestPubMedSearch`,
+  `TestSemanticScholarSearch`, `TestSemanticScholarRateLimited`,
+  `TestLangSearchProvider`, `TestLangSearchInFallbackChain`,
+  `TestSearchPapersMergesAndDedups`, `TestSearchPapersFallsBackOnError`,
+  `TestSetPaperSrcsConfig`, `TestPaperSearchTool`,
+  `TestProsePermissionNudge` (quoted-should-I cases), config round-trips for
+  the new keys. Live-verified: `paper_search` returned 8 real arXiv papers and
+  the model answered with titles + URLs.
+
 ## v0.1.80 — 2026-08-15
 
 ### Added

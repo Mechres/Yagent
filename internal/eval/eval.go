@@ -41,6 +41,9 @@ type Task struct {
 	Skills bool `yaml:"skills"`
 	Index  bool `yaml:"index"`
 	Web    bool `yaml:"web"`
+	// Papers enables the paper_search tool with a fake arXiv index on the web
+	// server (requires Web).
+	Papers bool `yaml:"papers"`
 	// Window shrinks the context budget when set.
 	Window int `yaml:"window"`
 	// Summary makes budget summarization deterministic (the value is returned
@@ -221,6 +224,10 @@ func Run(t *testing.T, task Task) {
 	if task.Web {
 		wc, _ = web.New(web.Config{Provider: "searxng", SearxngURL: webTS.URL})
 		opts.Web = wc
+		if task.Papers {
+			wc.SetPaperSources([]web.PaperSource{web.NewArxivSource(webTS.Client(), webTS.URL+"/arxiv")})
+			opts.Papers = true
+		}
 	}
 	if task.Jobs {
 		opts.Jobs = jobs.New()
@@ -626,6 +633,18 @@ func webServer(t *testing.T) *httptest.Server {
 		case "/vulkan":
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte(`<html><body><h1>Vulkan</h1><p>llama.cpp also builds on the Vulkan backend.</p></body></html>`))
+		case "/arxiv":
+			w.Header().Set("Content-Type", "application/atom+xml")
+			_, _ = w.Write([]byte(`<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2601.14277v1</id>
+    <title>Which Quantization Should I Use?</title>
+    <published>2026-01-11T18:52:37Z</published>
+    <author><name>Alice Example</name></author>
+    <summary>Quantization lowers memory use for LLM inference.</summary>
+  </entry>
+</feed>`))
 		default:
 			http.NotFound(w, r)
 		}

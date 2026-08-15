@@ -306,6 +306,25 @@ func TestLoadConfigWebSearch(t *testing.T) {
 	if err := Set(path, "web_search.max_fetch_kib", "99999"); err == nil {
 		t.Error("oversized max_fetch_kib should be rejected")
 	}
+
+	// papers + langsearch keys round-trip.
+	path = writeConfig(t, "web_search:\n  papers: true\n  langsearch_api_key: ls-key\n  semanticscholar_api_key: ss-key\n")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Web.Papers || cfg.Web.LangSearchKey != "ls-key" || cfg.Web.SemanticScholarKey != "ss-key" {
+		t.Errorf("Web = %+v", cfg.Web)
+	}
+	if got := cfg.Get("web_search.papers"); got != "true" {
+		t.Errorf("Get(papers) = %q", got)
+	}
+	if err := Set(path, "web_search.provider", "langsearch"); err != nil {
+		t.Errorf("Set(provider langsearch): %v", err)
+	}
+	if err := Set(path, "web_search.provider", "brave"); err == nil {
+		t.Error("unknown provider should be rejected")
+	}
 }
 
 func TestSetWriteApprovalPersists(t *testing.T) {

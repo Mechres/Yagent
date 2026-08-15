@@ -44,6 +44,10 @@ type Client struct {
 	mu    sync.Mutex
 	cache map[string]cacheEntry
 	hits  int // total cache hits (for tool result markers / diagnostics)
+
+	// paperSrcs are the scholarly indexes the paper search queries (arXiv,
+	// PubMed, Semantic Scholar). Empty when paper search is disabled.
+	paperSrcs []PaperSource
 }
 
 type cacheEntry struct {
@@ -114,6 +118,15 @@ type Config struct {
 	// MaxFetchBytes caps web_fetch's extracted-text output (0 = default
 	// maxFetchText).
 	MaxFetchBytes int
+	// LangSearchKey enables the hosted LangSearch web-search provider (free
+	// API; requires a dashboard key). When set, it joins the fallback chain.
+	LangSearchKey string
+	// Papers enables the paper_search tool (arXiv + PubMed by default,
+	// Semantic Scholar when SemanticScholarKey is set).
+	Papers bool
+	// SemanticScholarKey enables the Semantic Scholar paper index (keyless use
+	// is rate-limited to 1 req/sec without a key).
+	SemanticScholarKey string
 }
 
 // DefaultConfig uses DuckDuckGo.
@@ -122,7 +135,7 @@ func DefaultConfig() Config { return Config{Provider: "duckduckgo"} }
 // New builds a web client for cfg. duckduckgo and mojeek need no setup; searxng
 // requires SearxngURL. Fallback order: the configured provider first, then the
 // no-key third-party alternatives. A searxng primary never falls back to third
-// parties (privacy).
+// parties (privacy). A LangSearch API key adds it to the fallback chain.
 func New(cfg Config) (*Client, error) {
 	http := defaultHTTP()
 	var primary Provider
@@ -135,14 +148,23 @@ func New(cfg Config) (*Client, error) {
 		if cfg.SearxngURL == "" {
 			return nil, fmt.Errorf("web_search.provider searxng requires web_search.searxng_url")
 		}
-		return newClient([]Provider{&SearXNG{baseURL: strings.TrimRight(cfg.SearxngURL, "/"), http: http}}).setMaxFetchBytes(cfg.MaxFetchBytes), nil
+		return newClient([]Provider{&SearXNG{baseURL: strings.TrimRight(cfg.SearxngURL, "/"), http: http}}).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg), nil
+	case "langsearch":
+		if cfg.LangSearchKey == "" {
+			return nil, fmt.Errorf("web_search.provider langsearch requires web_search.langsearch_api_key")
+		}
+		return newClient([]Provider{&LangSearch{http: http, key: cfg.LangSearchKey}}).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg), nil
 	default:
-		return nil, fmt.Errorf("unknown web_search.provider %q (duckduckgo | mojeek | searxng)", cfg.Provider)
+		return nil, fmt.Errorf("unknown web_search.provider %q (duckduckgo | mojeek | searxng | langsearch)", cfg.Provider)
 	}
-	// DDG/Mojeek primaries fall back to the other + SearXNG when configured.
+	// DDG/Mojeek primaries fall back to the other + SearXNG/LangSearch when
+	// configured.
 	fallbacks := []Provider{&DuckDuckGo{http: http}, &Mojeek{http: http}}
 	if cfg.SearxngURL != "" {
 		fallbacks = append(fallbacks, &SearXNG{baseURL: strings.TrimRight(cfg.SearxngURL, "/"), http: http})
+	}
+	if cfg.LangSearchKey != "" {
+		fallbacks = append(fallbacks, &LangSearch{http: http, key: cfg.LangSearchKey})
 	}
 	ordered := []Provider{primary}
 	for _, f := range fallbacks {
@@ -150,13 +172,37 @@ func New(cfg Config) (*Client, error) {
 			ordered = append(ordered, f)
 		}
 	}
-	return newClient(ordered).setMaxFetchBytes(cfg.MaxFetchBytes), nil
+	return newClient(ordered).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg), nil
 }
 
 // setMaxFetchBytes sets the extracted-text cap on a fresh client (before any
 // concurrent use, so no lock is needed).
 func (c *Client) setMaxFetchBytes(n int) *Client {
 	c.MaxFetchBytes = n
+	return c
+}
+
+// SetPaperSources replaces the paper-search sources (used by tests to point
+// the sources at httptest servers). Exporting it also lets tools tests wire a
+// client whose paper_search runs offline.
+func (c *Client) SetPaperSources(sources []PaperSource) {
+	c.mu.Lock()
+	c.paperSrcs = sources
+	c.mu.Unlock()
+}
+
+// setPaperSrcs builds the paper-search sources from the config. arXiv and
+// PubMed are keyless; Semantic Scholar only when a key is configured.
+func (c *Client) setPaperSrcs(cfg Config) *Client {
+	if !cfg.Papers {
+		return c
+	}
+	srcs := []PaperSource{&arXiv{http: c.http}}
+	if cfg.SemanticScholarKey != "" {
+		srcs = append(srcs, &SemanticScholar{http: c.http, key: cfg.SemanticScholarKey})
+	}
+	srcs = append(srcs, &PubMed{http: c.http})
+	c.paperSrcs = srcs
 	return c
 }
 

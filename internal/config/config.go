@@ -388,6 +388,16 @@ type WebConfig struct {
 	// MaxFetchKib caps web_fetch's extracted-text output in KiB (0 = default
 	// 32 KiB). Raise for research-heavy sessions where pages must be read whole.
 	MaxFetchKib int `yaml:"max_fetch_kib"`
+	// LangSearchKey enables the hosted LangSearch web-search provider (free
+	// API, requires a dashboard key at langsearch.com). When set it joins the
+	// provider fallback chain.
+	LangSearchKey string `yaml:"langsearch_api_key"`
+	// Papers enables the paper_search tool (arXiv + PubMed; Semantic Scholar
+	// when SemanticScholarKey is set).
+	Papers bool `yaml:"papers"`
+	// SemanticScholarKey enables the Semantic Scholar paper index (keyless use
+	// is rate-limited).
+	SemanticScholarKey string `yaml:"semanticscholar_api_key"`
 }
 
 // ShellConfig configures shell_exec.
@@ -806,9 +816,12 @@ func Settings() []SettingKey {
 		{Key: "sampling.reasoning_max_tokens", Label: "Reasoning cap per request (0 = off; speeds up reasoning models)"},
 		{Key: "ui.show_reasoning", Label: "Show thinking block", Options: []string{"true", "false"}},
 		{Key: "ui.loop_guard", Label: "Stop repeating-generation loops", Options: []string{"true", "false"}},
-		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng"}},
+		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng", "langsearch"}},
 		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
 		{Key: "web_search.max_fetch_kib", Label: "web_fetch text cap (KiB, 0 = 32)"},
+		{Key: "web_search.langsearch_api_key", Label: "LangSearch API key (free web-search API)"},
+		{Key: "web_search.papers", Label: "paper_search tool (arXiv + PubMed + Semantic Scholar)", Options: []string{"false", "true"}},
+		{Key: "web_search.semanticscholar_api_key", Label: "Semantic Scholar API key (paper search)"},
 		{Key: "skills.write_approval", Label: "Skills write approval", Options: []string{"false", "true"}},
 		{Key: "skills.data_dir", Label: "Skills data dir"},
 		{Key: "skills.project_dir", Label: "Skills project dir"},
@@ -866,6 +879,12 @@ func (c *Config) Get(key string) string {
 		return c.Web.SearxngURL
 	case "web_search.max_fetch_kib":
 		return strconv.Itoa(c.Web.MaxFetchKib)
+	case "web_search.langsearch_api_key":
+		return c.Web.LangSearchKey
+	case "web_search.papers":
+		return strconv.FormatBool(c.Web.Papers)
+	case "web_search.semanticscholar_api_key":
+		return c.Web.SemanticScholarKey
 	case "skills.write_approval":
 		return strconv.FormatBool(c.Skills.WriteApproval)
 	case "skills.data_dir":
@@ -970,8 +989,10 @@ func validateKey(parts []string, value string) error {
 		"ui.show_reasoning":   true,
 		"ui.loop_guard":       true,
 		"web_search.provider": true, "web_search.searxng_url": true,
-		"web_search.max_fetch_kib": true,
-		"skills.write_approval":    true, "skills.data_dir": true, "skills.project_dir": true,
+		"web_search.max_fetch_kib":      true,
+		"web_search.langsearch_api_key": true, "web_search.papers": true,
+		"web_search.semanticscholar_api_key": true,
+		"skills.write_approval":              true, "skills.data_dir": true, "skills.project_dir": true,
 		"shell.sandbox":      true,
 		"vram_threshold_tps": true,
 		"codegen":            true,
@@ -996,10 +1017,16 @@ func validateKey(parts []string, value string) error {
 		}
 	case "web_search.provider":
 		switch value {
-		case "duckduckgo", "mojeek", "searxng":
+		case "duckduckgo", "mojeek", "searxng", "langsearch":
 		default:
-			return &ValidationError{msg: "web_search.provider must be duckduckgo, mojeek or searxng"}
+			return &ValidationError{msg: "web_search.provider must be duckduckgo, mojeek, searxng or langsearch"}
 		}
+	case "web_search.papers":
+		if value != "true" && value != "false" {
+			return &ValidationError{msg: "web_search.papers must be true or false"}
+		}
+	case "web_search.langsearch_api_key", "web_search.semanticscholar_api_key":
+		// empty value clears the key (allowed)
 	case "web_search.max_fetch_kib":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 0 || n > 512 {
@@ -1057,7 +1084,7 @@ func validateKey(parts []string, value string) error {
 // existing write_approval/context_window convention.
 func typedScalar(key, value string) *yaml.Node {
 	switch key {
-	case "write_approval", "show_reasoning", "loop_guard":
+	case "write_approval", "show_reasoning", "loop_guard", "papers":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
 	case "context_window", "top_k", "reasoning_max_tokens", "max_fetch_kib":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
