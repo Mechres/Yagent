@@ -2,6 +2,24 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.90 — 2026-08-16
+
+### Fixed
+- **NVIDIA's own models disappeared from the `/model` selector** — the
+  models.dev list is sorted alphabetically, so `nvidia/nemotron-*` (position
+  32) fell past the 20-model cap, hidden behind `mistralai/*`/`microsoft/*`.
+  `FetchModelsDev` now prioritizes (1) the **currently configured model** (it
+  is always selectable, even if it would sort past the cap) and (2) the
+  provider's **own-name models** (`nvidia/*` on NVIDIA, `deepseek/*` on
+  DeepSeek, etc.) before the coding-relevant and remainder buckets. Your active
+  model is guaranteed to appear at the top of the list.
+
+### Tests
+- `TestFetchModelsDevPrioritizesCurrentModel`,
+  `TestFetchModelsDevPrefersProviderOwnModels` (offline stubs). Live-verified
+  against real models.dev: `nvidia/nemotron-3-nano-30b-a3b` now appears at
+  index 0 with the current model set. `go test -race` clean.
+
 ## v0.1.89 — 2026-08-16
 
 ### Fixed

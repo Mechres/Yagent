@@ -1579,3 +1579,17 @@ items. All deterministic; `go test -race` clean.
   live models.dev list instead of the static catalog, matching local providers.
   Covered by `TestModelSelectorRefreshesOnProviderNavigate`; live-verified that
   `FetchModelsDev("deepseek")` returns the current list. `go test -race` clean.
+
+## NVIDIA models missing from /model selector 2026-08-16 (all tested)
+
+- ✅ **NVIDIA's own models restored** — the models.dev index lists NVIDIA's
+  models alphabetically, so `nvidia/nemotron-*` (position ~32) fell past the
+  cap of 20, hidden behind `mistralai/*`/`microsoft/*`. `FetchModelsDev` now
+  orders the result: (1) the **currently configured model** (guaranteed to
+  appear regardless of the cap, at the top), (2) the provider's **own-name
+  models** (`nvidia/*` on NVIDIA, `deepseek/*` on DeepSeek), (3) coding-
+  relevant, (4) the rest. Live-verified against real models.dev: the user's
+  `nvidia/nemotron-3-nano-30b-a3b` appears at index 0; without a current model
+  the `nvidia/*` own-models still lead the list. Covered by
+  `TestFetchModelsDevPrioritizesCurrentModel` +
+  `TestFetchModelsDevPrefersProviderOwnModels`. `go test -race` clean.

@@ -299,7 +299,13 @@ func FetchModels(ctx context.Context, baseURL string) ([]string, bool) {
 // It returns the provider's model IDs filtered to coding-relevant ones and
 // capped, or ok=false when the fetch fails. This is the cloud counterpart of
 // FetchModels (which reads a local /v1/models endpoint).
-func FetchModelsDev(ctx context.Context, providerKey string) ([]string, bool) {
+//
+// currentModel, when non-empty, is guaranteed to appear in the result even if
+// it would sort past the cap — the user's active model must stay selectable.
+// Models whose id contains the provider's own name (e.g. "nvidia/…" on NVIDIA)
+// are prioritized so a provider's native models don't get alphabetically
+// squeezed out by third-party listings.
+func FetchModelsDev(ctx context.Context, providerKey, currentModel string) ([]string, bool) {
 	if providerKey == "" {
 		return nil, false
 	}
@@ -327,10 +333,25 @@ func FetchModelsDev(ctx context.Context, providerKey string) ([]string, bool) {
 	if !ok {
 		return nil, false
 	}
-	// prefer coding-relevant models first, then any others, capped.
-	var coding, other []string
+	// Order: the ACTIVE/configured model first (it must always be selectable
+	// regardless of the cap), then the provider's own models (id starts with
+	// "<provider>/" or contains the provider name), then coding-relevant, then
+	// the rest. Keeps the cap from hiding the user's current model or a
+	// provider's native models (NVIDIA's nemotron-* sort behind mistralai/*
+	// alphabetically, and behind dozens of other nvidia/* entries).
+	own := providerKey
+	var ownNames, current, coding, other []string
 	for id := range prov.Models {
 		low := strings.ToLower(id)
+		isOwn := own != "" && strings.HasPrefix(low, own+"/")
+		if currentModel != "" && id == currentModel {
+			current = append(current, id)
+			continue
+		}
+		if isOwn {
+			ownNames = append(ownNames, id)
+			continue
+		}
 		if strings.Contains(low, "coder") || strings.Contains(low, "code") ||
 			strings.Contains(low, "instruct") || strings.Contains(low, "deepseek") ||
 			strings.Contains(low, "qwen3") || strings.Contains(low, "devstral") ||
@@ -340,9 +361,12 @@ func FetchModelsDev(ctx context.Context, providerKey string) ([]string, bool) {
 			other = append(other, id)
 		}
 	}
+	sort.Strings(ownNames)
 	sort.Strings(coding)
 	sort.Strings(other)
-	out := append(coding, other...)
+	out := append(current, ownNames...)
+	out = append(out, coding...)
+	out = append(out, other...)
 	const max = 20
 	if len(out) > max {
 		out = out[:max]

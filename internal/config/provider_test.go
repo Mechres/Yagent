@@ -3,10 +3,12 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -265,8 +267,63 @@ func TestFetchModelsDevShape(t *testing.T) {
 	// models.dev returns {provider: {models: {id: {...}}}}. We can't hit the
 	// real endpoint offline, but the filter/cap logic is exercised through the
 	// helper's handling of a minimal fixture via an unreachable URL -> false.
-	if _, ok := FetchModelsDev(context.Background(), "nope"); ok {
+	if _, ok := FetchModelsDev(context.Background(), "nope", ""); ok {
 		t.Error("unknown provider key should report ok=false")
+	}
+}
+
+// TestFetchModelsDevPrioritizesCurrentModel: the currently configured model
+// must stay in the capped result even if it sorts past the cap — the user's
+// active model has to remain selectable.
+func TestFetchModelsDevPrioritizesCurrentModel(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		models := map[string]any{}
+		for i := 0; i < 30; i++ {
+			models[fmt.Sprintf("thirdparty/model-%02d-instruct", i)] = map[string]any{}
+		}
+		models["nvidia/nemotron-3-nano-30b-a3b"] = map[string]any{}
+		_ = json.NewEncoder(w).Encode(map[string]any{"nvidia": map[string]any{"models": models}})
+	}))
+	defer ts.Close()
+	old := modelsDevURL
+	modelsDevURL = ts.URL
+	defer func() { modelsDevURL = old }()
+
+	// nvidia's own models sort first (own-prefix priority), so even without a
+	// current model the nemotron entry survives the cap.
+	out, _ := FetchModelsDev(context.Background(), "nvidia", "")
+	if !slices.Contains(out, "nvidia/nemotron-3-nano-30b-a3b") {
+		t.Error("provider's own model should appear in the capped list via own-prefix priority")
+	}
+	// with the current model, it is guaranteed to appear (and stays if the
+	// own-prefix list grew past the cap)
+	out, _ = FetchModelsDev(context.Background(), "nvidia", "nvidia/nemotron-3-nano-30b-a3b")
+	if !slices.Contains(out, "nvidia/nemotron-3-nano-30b-a3b") {
+		t.Errorf("current model missing from capped list: %v", out)
+	}
+}
+
+// TestFetchModelsDevPrefersProviderOwnModels: models whose id starts with the
+// provider's own key (nvidia/...) are listed before third-party models, so a
+// provider's native models aren't alphabetically squeezed out by the cap.
+func TestFetchModelsDevPrefersProviderOwnModels(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		models := map[string]any{}
+		for i := 0; i < 10; i++ {
+			models[fmt.Sprintf("zzthirdparty/model-%02d-instruct", i)] = map[string]any{}
+		}
+		models["nvidia/nemotron-3-nano-30b-a3b"] = map[string]any{}
+		models["nvidia/nemotron-3-super-120b-a12b"] = map[string]any{}
+		_ = json.NewEncoder(w).Encode(map[string]any{"nvidia": map[string]any{"models": models}})
+	}))
+	defer ts.Close()
+	old := modelsDevURL
+	modelsDevURL = ts.URL
+	defer func() { modelsDevURL = old }()
+
+	out, _ := FetchModelsDev(context.Background(), "nvidia", "")
+	if len(out) < 2 || out[0] != "nvidia/nemotron-3-nano-30b-a3b" || out[1] != "nvidia/nemotron-3-super-120b-a12b" {
+		t.Errorf("provider's own models should sort first, got %v", out)
 	}
 }
 

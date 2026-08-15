@@ -814,10 +814,11 @@ func (m *tuiModel) fetchLocalModels() tea.Cmd {
 // fetchModelsDev fetches a cloud provider's current model list from models.dev.
 func (m *tuiModel) fetchModelsDev(providerKey string) tea.Cmd {
 	provider := m.modelProvider
+	currentModel := m.cfg.Model
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.runnerCtx, 10*time.Second)
 		defer cancel()
-		models, ok := config.FetchModelsDev(ctx, providerKey)
+		models, ok := config.FetchModelsDev(ctx, providerKey, currentModel)
 		return modelListMsg{models: models, ok: ok, dev: true, provider: provider}
 	}
 }
