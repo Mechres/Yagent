@@ -54,6 +54,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 
 	incoming := make(chan tea.Msg, 4096)
 	inputCh := make(chan turnRequest, 1)
+	workflowCh := make(chan workflowRequest, 1)
 	runnerCtx, runnerCancel := context.WithCancel(ctx)
 	runnerDone := make(chan struct{})
 	ap := newToggleableApprover(newRememberingApprover(&tuiApprover{incoming: incoming, ctx: runnerCtx}))
@@ -78,7 +79,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		opts.Trace)
 	m := tuiModel{
 		cfg: cfg, env: env, ag: ag, client: client,
-		incoming: incoming, inputCh: inputCh,
+		incoming: incoming, inputCh: inputCh, workflowCh: workflowCh,
 		runnerCtx: runnerCtx, runnerCancel: runnerCancel, runnerDone: runnerDone,
 		msgInput: newInput(), yoloToggler: ap, trace: opts.Trace,
 	}
@@ -130,6 +131,32 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 				env.turnSeq++
 				if ws, werr := os.Getwd(); werr == nil {
 					env.commitTurn(ws, fmt.Sprintf("turn %d", env.turnSeq))
+				}
+				incoming <- turnDoneMsg{answer: answer, err: err, seq: req.seq}
+			case req := <-workflowCh:
+				// Long-running autonomous commands run off the update thread so
+				// the TUI keeps streaming/rendering. The agent's OnToken/etc.
+				// callbacks push into `incoming`, which the update loop drains.
+				env.undo.StartTurn()
+				ag := m.currentAgent()
+				var answer string
+				var err error
+				switch req.kind {
+				case "goal":
+					answer, err = ag.RunGoal(req.ctx, req.arg, 0, func(r int, _ string) {
+						incoming <- progressMsg{text: fmt.Sprintf("goal round %d", r)}
+					})
+				case "research":
+					answer, err = ag.RunResearch(req.ctx, req.arg, 0, func(r int, _ string) {
+						incoming <- progressMsg{text: fmt.Sprintf("research round %d", r)}
+					})
+				default:
+					err = fmt.Errorf("unknown workflow %q", req.kind)
+				}
+				env.undo.EndTurn()
+				env.turnSeq++
+				if ws, werr := os.Getwd(); werr == nil {
+					env.commitTurn(ws, fmt.Sprintf("%s: %s", req.kind, req.arg))
 				}
 				incoming <- turnDoneMsg{answer: answer, err: err, seq: req.seq}
 			}
@@ -221,6 +248,17 @@ type turnRequest struct {
 	ctx  context.Context
 	seq  int
 }
+
+// workflowRequest carries a long-running autonomous command (/goal, /research,
+// /playbook) to the runner goroutine, so it streams like a normal turn instead
+// of blocking the TUI's update loop. kind is "goal" or "research"; arg is the
+// goal text or topic.
+type workflowRequest struct {
+	kind string
+	arg  string
+	ctx  context.Context
+	seq  int
+}
 type approvalRequestMsg struct {
 	call    llm.ToolCall
 	risk    tools.RiskLevel
@@ -278,6 +316,7 @@ type tuiModel struct {
 
 	incoming     chan tea.Msg
 	inputCh      chan turnRequest
+	workflowCh   chan workflowRequest
 	runnerCtx    context.Context
 	runnerCancel context.CancelFunc
 	runnerDone   chan struct{}
@@ -1244,6 +1283,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.msgInput.SetValue(matches[0])
 					m.msgInput.CursorEnd()
 				}
+				// A completed command still carrying a "<...>" placeholder (e.g.
+				// "/research <topic>" from "/rese") has no real argument: keep
+				// the palette open for the user to fill it in, instead of
+				// running the command with the literal placeholder text.
+				if hasPlaceholder(m.msgInput.Value()) {
+					m.tabIndex = -1
+					return m, nil
+				}
 			}
 			return m.submitLine()
 		case "tab":
@@ -1353,7 +1400,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case progressMsg:
 		m.flushStream()
-		m.append("  [index] " + msg.text)
+		if strings.HasPrefix(msg.text, "goal round") || strings.HasPrefix(msg.text, "research round") {
+			m.append("  " + msg.text)
+		} else {
+			m.append("  [index] " + msg.text)
+		}
 		return m, m.nextCmd()
 
 	case modelListMsg:
@@ -1440,6 +1491,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.append(fmt.Sprintf("  error: %v", msg.err))
 		}
+		// A finished autonomous command (/goal, /research) clears the header
+		// badge — the workflow is no longer active.
+		m.activeWorkflow = ""
 		return m, m.nextCmd()
 	}
 	return m, m.nextCmd()
@@ -1570,17 +1624,27 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(text, "/") {
 		m.msgInput.Reset()
+		// Long-running autonomous commands run through the runner goroutine so
+		// the TUI keeps rendering (streaming, spinner, esc-cancel). Routing
+		// them here instead of the synchronous skillsCmd.handle path fixes the
+		// frozen-UI bug when the command takes minutes.
 		if strings.HasPrefix(text, "/goal ") {
 			goal := strings.TrimSpace(strings.TrimPrefix(text, "/goal"))
-			m.activeWorkflow = "goal: " + shorten(goal, 20)
-		} else if strings.HasPrefix(text, "/research ") {
-			topic := strings.TrimSpace(strings.TrimPrefix(text, "/research"))
-			m.activeWorkflow = "research: " + shorten(topic, 20)
-		} else if strings.HasPrefix(text, "/playbook ") {
-			parts := strings.Fields(text)
-			if len(parts) > 1 {
-				m.activeWorkflow = "playbook: " + parts[1]
+			if goal == "" {
+				m.append("usage: /goal <what to achieve>")
+				return m, m.nextCmd()
 			}
+			m.activeWorkflow = "goal: " + shorten(goal, 20)
+			return m.startWorkflow("goal", goal)
+		}
+		if strings.HasPrefix(text, "/research ") {
+			topic := strings.TrimSpace(strings.TrimPrefix(text, "/research"))
+			if topic == "" {
+				m.append("usage: /research <topic>")
+				return m, m.nextCmd()
+			}
+			m.activeWorkflow = "research: " + shorten(topic, 20)
+			return m.startWorkflow("research", topic)
 		}
 		skillsCmd := &skillsHandler{
 			store:       m.env.sk,
@@ -1640,6 +1704,33 @@ func (m *tuiModel) submitTurn(text string) {
 	m.turnCancel = turnCancel
 	m.turnSeq++
 	m.inputCh <- turnRequest{text: text, ctx: turnCtx, seq: m.turnSeq}
+}
+
+// startWorkflow launches an autonomous command (/goal, /research) through the
+// runner goroutine under a cancelable context, exactly like a normal turn, so
+// the TUI keeps rendering and Esc cancels it. Returns the (model, cmd) to
+// return from the Update handler.
+func (m *tuiModel) startWorkflow(kind, arg string) (tea.Model, tea.Cmd) {
+	if m.busy {
+		m.append("  still working — wait for the current turn to finish")
+		return m, m.nextCmd()
+	}
+	parent := m.runnerCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	turnCtx, turnCancel := context.WithCancel(parent)
+	m.turnCancel = turnCancel
+	m.turnSeq++
+	m.stream.Reset()
+	m.reasoning = ""
+	m.turnTokens = 0
+	m.toolCalls = 0
+	m.busy = true
+	m.follow = true
+	m.append("> /" + kind + " " + arg)
+	m.workflowCh <- workflowRequest{kind: kind, arg: arg, ctx: turnCtx, seq: m.turnSeq}
+	return m, m.nextCmd()
 }
 
 // fsApprovalDiff renders a colorized before/after preview for fs_edit,
@@ -2732,6 +2823,13 @@ func (m *tuiModel) slashMatches() []string {
 		}
 	}
 	return out
+}
+
+// hasPlaceholder reports whether a command string still contains a "<...>"
+// argument placeholder (e.g. "/research <topic>"), which means it is a palette
+// template, not a runnable command.
+func hasPlaceholder(s string) bool {
+	return strings.Contains(s, "<") && strings.Contains(s, ">")
 }
 
 // completeCommand implements Tab completion: if the input is already a full

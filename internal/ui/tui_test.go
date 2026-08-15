@@ -105,6 +105,75 @@ func TestSlashAutoCompleteOnEnter(t *testing.T) {
 	}
 }
 
+// TestSlashPlaceholderNotRunOnEnter: entering a partial command that completes
+// to a palette template with a "<...>" placeholder (e.g. "/rese" ->
+// "/research <topic>") must NOT run the command with the literal placeholder.
+// It stays in the input so the user fills in the real topic.
+func TestSlashPlaceholderNotRunOnEnter(t *testing.T) {
+	m := testModel(t)
+	m.inputCh = make(chan turnRequest, 10)
+	m.workflowCh = make(chan workflowRequest, 10)
+	// /rese completes to exactly one command: "/research <topic>".
+	m.msgInput.SetValue("/rese")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.msgInput.Value() != "/research <topic>" {
+		t.Fatalf("input = %q, want the completed placeholder", m.msgInput.Value())
+	}
+	if m.busy {
+		t.Error("/rese must not start a workflow (placeholder not run)")
+	}
+	if len(m.workflowCh) > 0 {
+		t.Error("a workflow was dispatched for the placeholder command")
+	}
+	// same for /goal -> "/goal <what>"
+	m.msgInput.SetValue("/go")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.busy || len(m.workflowCh) > 0 {
+		t.Error("/go placeholder must not run")
+	}
+}
+
+// TestGoalResearchRoutedAsync: a fully-typed /research <topic> is dispatched to
+// the runner goroutine (workflowCh) instead of running synchronously in the
+// update loop — so the TUI keeps rendering during the run.
+func TestGoalResearchRoutedAsync(t *testing.T) {
+	m := testModel(t)
+	m.inputCh = make(chan turnRequest, 10)
+	m.workflowCh = make(chan workflowRequest, 10)
+	m.runnerCtx = context.Background()
+	m.msgInput.SetValue("/research llama.cpp ROCm")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.busy {
+		t.Fatal("research workflow should mark the TUI busy")
+	}
+	select {
+	case req := <-m.workflowCh:
+		if req.kind != "research" || req.arg != "llama.cpp ROCm" {
+			t.Errorf("workflow = %+v, want research/llama.cpp ROCm", req)
+		}
+	default:
+		t.Fatal("research workflow was not dispatched to the runner")
+	}
+	// goal routes the same way
+	m.busy = false // the research workflow "finished" (no runner in this test)
+	m.msgInput.SetValue("/goal make the build pass")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	select {
+	case req := <-m.workflowCh:
+		if req.kind != "goal" || req.arg != "make the build pass" {
+			t.Errorf("workflow = %+v, want goal/make the build pass", req)
+		}
+	default:
+		t.Fatal("goal workflow was not dispatched to the runner")
+	}
+	// a bare "/goal" with no argument shows usage, no dispatch
+	m.msgInput.SetValue("/goal")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(m.workflowCh) > 0 {
+		t.Error("bare /goal must not dispatch a workflow")
+	}
+}
+
 func TestSlashMatchesIncludeSkills(t *testing.T) {
 	m := testModel(t)
 	if _, err := m.env.sk.Apply(skills.Op{

@@ -2,6 +2,28 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.85 — 2026-08-15
+
+### Fixed
+- **TUI frozen during `/goal` and `/research`** — the commands ran synchronously
+  inside the bubbletea update loop (`skillsCmd.handle` → `RunGoal`/`RunResearch`),
+  blocking all rendering for the whole run (user-visible as a stuck TUI after
+  Enter). They now dispatch through a `workflowCh` to the existing runner
+  goroutine, streaming like a normal turn: the spinner animates, the context
+  gauge/tool counters update, and Esc cancels the workflow (only the turn, not
+  the session).
+- **Enter on a partial command auto-ran the placeholder** — `/rese` + Enter
+  auto-completed to the literal `/research <topic>` and ran it *with `<topic>`
+  as the topic*. Enter now keeps the palette open when the completed command
+  still carries a `<...>` placeholder, so the user fills in the real argument.
+
+### Tests
+- `TestSlashPlaceholderNotRunOnEnter` (placeholder never dispatches a
+  workflow), `TestGoalResearchRoutedAsync` (fully-typed `/research`/`/goal`
+  dispatch to the runner and mark the TUI busy). Live-verified via a PTY:
+  `/research` ran with the spinner and live status updating, and the UI never
+  locked. `go test -race` clean.
+
 ## v0.1.84 — 2026-08-15
 
 ### Added

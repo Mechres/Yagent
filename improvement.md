@@ -1505,3 +1505,25 @@ items. All deterministic; `go test -race` clean.
   future pass could cap in-flight fetch bytes per round or prompt the model to
   fetch fewer pages at once.
 
+
+## TUI workflow fix 2026-08-15 (all tested)
+
+- ✅ **`/goal`/`/research` no longer freeze the TUI** — the reported "tui just
+  stuck" after Enter: those commands ran synchronously inside the bubbletea
+  update loop (`skillsCmd.handle` → `RunGoal`/`RunResearch`), blocking all
+  rendering until the run finished (minutes), so the screen appeared frozen and
+  users resorted to SIGKILL. They now dispatch through a `workflowCh` to the
+  runner goroutine (the same one normal turns use): the spinner animates, the
+  context gauge / tool counters / t/s update live, and Esc cancels just the
+  workflow. Covered by `TestGoalResearchRoutedAsync`; live-verified via a PTY
+  (spinner frames during `/research`, UI never locked).
+- ✅ **Enter on a partial command no longer runs the `<...>` placeholder** —
+  `/rese` + Enter auto-completed to `/research <topic>` (a palette template)
+  and then ran the command with the literal topic "<topic>". Enter now holds
+  the palette open when the completed command still carries a `<...>`
+  placeholder, so the user types a real argument. Covered by
+  `TestSlashPlaceholderNotRunOnEnter`.
+- Note: `/playbook` still runs synchronously in the TUI (it writes to the
+  transcript writer, which isn't goroutine-safe) — same freeze risk, not yet
+  routed. Low priority (rarer command); a future pass can route it via
+  progress messages like goal/research.
