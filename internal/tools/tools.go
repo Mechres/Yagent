@@ -729,6 +729,7 @@ func resolvePath(workspace, p string) (string, error) {
 	if p == "" {
 		return "", validationErrorf(`argument "path" is required`)
 	}
+	p = sanitizePathArg(workspace, p)
 	// Absolute paths are accepted when they stay inside the workspace: local
 	// models habitually emit them, and rejecting outright derails the loop.
 	// Containment below handles the safety either way.
@@ -751,6 +752,27 @@ func resolvePath(workspace, p string) (string, error) {
 	// Return the resolved path so reads/writes hit the verified real location,
 	// not a link that could be swapped after the check.
 	return resolved, nil
+}
+
+// sanitizePathArg cleans a small-model path slip before resolution (AGY #4):
+//   - trims wrapping single/double quotes ("'main.go'" -> main.go)
+//   - normalizes Windows backslashes to the platform separator (pkg\config.go)
+//   - strips a leading "<workspace-name>/" prefix the model copied from a
+//     trace or its own assumptions
+//
+// It never fabricates a path — containment checks still apply afterwards.
+func sanitizePathArg(workspace, p string) string {
+	p = strings.TrimSpace(p)
+	p = strings.Trim(p, `"'`)
+	// Windows-style separators: normalize to the local separator.
+	if filepath.Separator != '\\' {
+		p = strings.ReplaceAll(p, `\`, "/")
+	}
+	// A leading "<workspace basename>/..." prefix is a common slip; strip it.
+	if base := filepath.Base(workspace); base != "" && base != "/" && base != "." && strings.HasPrefix(p, base+"/") {
+		p = p[len(base)+1:]
+	}
+	return p
 }
 
 // ensureContained reports an error when abs escapes root.

@@ -2,6 +2,41 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.78 — 2026-08-15
+
+### Fixed
+- **Truncated responses are no longer accepted as final answers** (GPT sol #5) —
+  `ParseSSE` treated EOF-without-`[DONE]` as a clean end and the client ignored
+  `finish_reason`, so a prose reply cut off by a generation cap or a dropped
+  connection could pass as a final answer. Now: EOF-without-`[DONE]` returns
+  `ErrStreamTruncated` (tolerated when a terminal `finish_reason` was already
+  seen — some third-party endpoints omit the marker), the client captures
+  `finish_reason`, and the agent recovers with a bounded nudge — the partial
+  reply is fed back and the model continues instead of the turn aborting.
+- **The context gauge now counts tool schemas** (GPT sol #6) — the serialized
+  `tools` field the server actually puts in the prompt was invisible to
+  `ContextUsage` and the budget, so with MCP servers attached the gauge lied
+  about the real usage. `setSchemaTokens` records it before each request and
+  `estTokensLocked` adds it. Resumed sessions also retokenize their history via
+  the server tokenizer instead of the len/4 heuristic.
+- **Fenced tool calls execute instead of burning a turn** (AGY #3) — a model
+  that puts a tool call inside a ```json fence (a 3B-7B slip when running
+  without a tool-call grammar template) now has it extracted and executed on
+  the same turn, subject to the normal approval gate — no wasted prose-nudge
+  round-trip.
+- **Small-model path slips are cleaned before resolution** (AGY #4) —
+  wrapping quotes (`"'main.go'"`), Windows backslashes (`pkg\config.go`), a
+  leading workspace-basename prefix (`myproj/src/main.go`), and case mismatches
+  (`readme.md` → `README.md`, exactly-one match only) all resolve instead of
+  erroring and forcing a retry.
+
+### Added
+- Golden evals 55–58: fenced tool-call execution, path sanitizer, truncated
+  stream recovery, and `finish_reason=length` recovery (the eval harness gained
+  `truncated` and `finish_reason` step fields). Unit tests for
+  `ErrStreamTruncated`, the finish-reason capture, the agent recovery nudges,
+  the fenced extractor, and the path sanitizer/case fallback.
+
 ## v0.1.77 — 2026-08-15
 
 ### Fixed

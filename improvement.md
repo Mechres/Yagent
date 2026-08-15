@@ -1234,12 +1234,27 @@ accurate):
 - ✅ **Test-gate scope** (GPT sol #4) — `testGateCheck` tests every uniquely
   touched file, not just `touched[0]` (whole-project fallback when nothing was
   touched).
-- 🟡 **Deferred as queued (P1, from AGY)**: proactive tool-output sliding
-  window (prune read results older than ~2 turns), fenced/markdown tool-call
-  extraction (rescue a ````json```-wrapped call), and path/quote sanitization —
-  all value-carrying but lower-risk than the P0 correctness fixes; tracked for
-  the next pass.
+- ✅ **Truncated-response detection** (GPT sol #5) — `ParseSSE` now returns
+  `ErrStreamTruncated` on EOF-without-`[DONE]` (tolerated when a terminal
+  `finish_reason` was seen), the client captures `finish_reason` ("length" =
+  generation cap), and the agent recovers with a bounded nudge
+  (`maxTruncationNudges`) instead of aborting or accepting truncated prose as
+  final.
+- ✅ **Tool schemas in context accounting** (GPT sol #6) — `setSchemaTokens`
+  records the serialized `tools` field cost before each request; the gauge and
+  budget now include it (MCP servers no longer invisible); resumed history
+  retokenizes via the server tokenizer instead of len/4.
+- ✅ **Fenced tool-call extractor** (AGY #3) — a ```json fenced tool call is
+  executed on the same turn (approval still applies) instead of a prose-nudge
+  round-trip.
+- ✅ **Path sanitizer** (AGY #4) — `sanitizePathArg` trims wrapping quotes,
+  normalizes `\` → `/`, strips a workspace-basename prefix;
+  `caseInsensitiveResolve` fixes Readme.md → README.md (exactly-one match).
+- 🟡 **Deferred as queued (P1, remaining)**: MCP selective schema exposure
+  (GPT sol #7), proactive tool-output sliding window (AGY #2), dependency-
+  ranked fix sequencing (AGY #5), `/steer` + plan-step tracker (AGY #6/luna #1),
+  and the bench expansion — all tracked in `docs/audit-backlog.md`.
 - ⚪ **Not a fit (agreed)**: C3 structured returns (gated on eval evidence),
-  `/steer`, fine-tune script, capability probing, permission policies.
+  fine-tune script (plumbing), capability probing, permission policies.
 
 Golden evals 52–54 + unit tests; `go test -race` clean.

@@ -1,0 +1,14 @@
+name: path-sanitizer
+description: "AGY #4 — small-model path slips are cleaned before resolution: wrapping quotes, a workspace-basename prefix, and case fallback (readme.md -> README.md) all resolve instead of erroring"
+files:
+  README.md: |
+    # Project readme
+
+    setup notes
+input: read readme.md
+steps:
+  - tool_call: {name: fs_read, args: '{"path": "\"readme.md\""}'}
+  - answer: the readme mentions setup notes
+assert:
+  tool_results_contain: ["resolved to README.md"]
+  final_answer_contains: "setup notes"

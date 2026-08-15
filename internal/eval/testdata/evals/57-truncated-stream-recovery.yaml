@@ -1,0 +1,10 @@
+name: truncated-stream-recovery
+description: "GPT sol #5 — an SSE stream that dies without a [DONE] marker must not abort the turn or be accepted as a final answer; the agent nudges and the model completes"
+input: tell me about the project
+steps:
+  # first reply is cut off mid-stream (no [DONE]); the agent feeds a nudge back
+  - answer: "the project is a local-"
+    truncated: true
+  - answer: "the project is a local-first AI agent in Go"
+assert:
+  final_answer_contains: "local-first"

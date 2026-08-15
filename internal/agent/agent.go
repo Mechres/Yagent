@@ -53,6 +53,11 @@ const toolLoopThreshold = 6
 // calls in one turn trigger the failed-write loop nudge.
 const maxFailedWriteLoops = 4
 
+// maxTruncationNudges is how many truncated-response recoveries are attempted
+// per turn before giving up (GPT sol #5). A server that keeps cutting streams
+// off would otherwise loop forever.
+const maxTruncationNudges = 3
+
 // toolLoopTools are the exploration tools whose repeated use signals a stuck
 // model (fs_read is excluded — a legit audit reads many files).
 var toolLoopTools = map[string]bool{
@@ -414,6 +419,16 @@ type Agent struct {
 	// program must also *run* without crashing.
 	smokePassed bool
 
+	// truncationNudges counts truncated-response recoveries in the current turn
+	// (GPT sol #5): a bounded feed-back so a broken server can't loop forever.
+	truncationNudges int
+
+	// schemaTokens is the token cost of the tool schemas sent in the last
+	// request (GPT sol #6). The server puts the `tools` field in the prompt, so
+	// the gauge/budget must count it too — with MCP servers it can be
+	// substantial. Updated by setSchemaTokens before each request.
+	schemaTokens int
+
 	// lastSmokeArgs is the raw arguments of the most recent runtime_smoke call
 	// (the model's behavioral steps probe). The smoke gate re-runs the SAME
 	// probe at the final answer, so a crash-only {} run can't silently replace
@@ -523,7 +538,9 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 	a.sysTokens = a.tokensFor(shortCtx(), a.systemPrompt)
 	a.summaryTokens = a.tokensFor(shortCtx(), cfg.InitialSummary)
 	for _, m := range cfg.InitialHistory {
-		a.history = append(a.history, historyEntry{msg: m, tokens: len(m.Content) / 4})
+		// Use the server tokenizer when available instead of the len/4 heuristic
+		// so a resumed session's gauge starts accurate (GPT sol #6).
+		a.history = append(a.history, historyEntry{msg: m, tokens: a.tokensFor(shortCtx(), m.Content)})
 	}
 	return a
 }
@@ -746,7 +763,9 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 				reqCancel()
 			}
 		}
-		resp, err := a.llm.ChatStream(reqCtx, a.assembleContext(recall, code), a.activeToolSchemas(input, used),
+		schemas := a.activeToolSchemas(input, used)
+		a.setSchemaTokens(ctx, schemas)
+		resp, err := a.llm.ChatStream(reqCtx, a.assembleContext(recall, code), schemas,
 			func(d string) {
 				streamTokens += len(d) / 4
 				if a.cfg.OnToken != nil {
@@ -771,14 +790,70 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 			continue
 		}
 		if err != nil {
+			// Truncated-response recovery (GPT sol #5): the stream ended without
+			// a terminal finish_reason (server dropped the connection, hit a
+			// generation cap, or a proxy cut it off). A truncated prose reply
+			// must not be accepted as a final answer — feed the partial content
+			// (already streamed/appended) back and let the model finish. Bounded
+			// so a broken server can't loop forever.
+			if errors.Is(err, llm.ErrStreamTruncated) {
+				a.mu.Lock()
+				trunc := a.truncationNudges
+				a.mu.Unlock()
+				if trunc < maxTruncationNudges {
+					a.mu.Lock()
+					a.truncationNudges++
+					a.mu.Unlock()
+					if _, aerr := a.appendMessage(ctx, llm.Message{Role: "user", Content: "Your previous reply was cut off mid-stream (the generation ended prematurely). Continue from where you stopped and complete the answer or tool call."}); aerr != nil {
+						return "", aerr
+					}
+					continue
+				}
+			}
 			return "", err
 		}
 		a.detectVramPressure(streamStart, streamTokens, streamReasoning)
 		if _, err := a.appendMessage(ctx, resp.Message); err != nil {
 			return "", err
 		}
+		// finish_reason="length": the model hit the token cap. A prose reply
+		// here is truncated, not final — nudge it to continue (bounded). Tool
+		// calls with length are fine; dispatch recovers truncated args itself.
+		if resp.FinishReason == "length" && len(resp.ToolCalls) == 0 {
+			a.mu.Lock()
+			trunc := a.truncationNudges
+			a.mu.Unlock()
+			if trunc < maxTruncationNudges {
+				a.mu.Lock()
+				a.truncationNudges++
+				a.mu.Unlock()
+				if _, aerr := a.appendMessage(ctx, llm.Message{Role: "user", Content: "Your previous reply hit the generation limit and was cut off. Continue from where you stopped and finish the answer."}); aerr != nil {
+					return "", aerr
+				}
+				continue
+			}
+		}
 
 		if len(resp.ToolCalls) == 0 {
+			// Fenced tool-call rescue (AGY #3): the model put a tool call inside
+			// a ```json fence instead of the wire tool_calls field. Extract and
+			// execute it this turn (approval still applies via dispatch) instead
+			// of burning a round-trip nudge. Only when no tool ran yet.
+			if turnCalls == 0 && !nudged {
+				if fenced := a.fencedToolCallExtractor(resp.Message.Content); fenced != nil {
+					nudged = true
+					if _, err := a.appendMessage(ctx, llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{*fenced}}); err != nil {
+						return "", err
+					}
+					result := a.dispatch(ctx, *fenced, valFails, blocked)
+					turnCalls++
+					used[fenced.Function.Name] = true
+					if _, err := a.appendMessage(ctx, llm.Message{Role: "tool", ToolCallID: fenced.ID, Content: result}); err != nil {
+						return "", err
+					}
+					continue
+				}
+			}
 			// Prose tool-call nudge: small models often NARRATE a tool call
 			// ("I will fs_read main.go") instead of emitting tool_calls, which
 			// would end the turn without running anything. Nudge once — never
@@ -1753,6 +1828,90 @@ func prosePermissionNudge(content string) string {
 // an intent-bearing line (will/let me/use/…) that names a known tool, outside
 // code fences. The caller only nudges when no tool has run this turn, and the
 // model is nudged — never auto-executed.
+// fencedToolCallExtractor rescues a tool call the model emitted inside a
+// markdown code fence (AGY #3) instead of the wire `tool_calls` field — a
+// common 3B-7B slip when running without a tool-call grammar template. It
+// scans the reply for a fenced JSON object shaped like a tool call
+// ({"name","arguments"} or {"tool","parameters"}) and returns the first one
+// whose tool name is a registered tool. Executing it transparently on this
+// turn avoids a wasted round-trip nudge.
+func (a *Agent) fencedToolCallExtractor(content string) *llm.ToolCall {
+	var fenced []string
+	inFence := false
+	for _, line := range strings.Split(content, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			fenced = append(fenced, line)
+		}
+	}
+	if len(fenced) == 0 {
+		return nil
+	}
+	jsonText := strings.Join(fenced, "\n")
+	// The fence may wrap a single object or a list containing one.
+	var probe any
+	if err := json.Unmarshal([]byte(jsonText), &probe); err != nil {
+		return nil
+	}
+	objs := []map[string]any{}
+	switch v := probe.(type) {
+	case map[string]any:
+		objs = append(objs, v)
+	case []any:
+		for _, it := range v {
+			if m, ok := it.(map[string]any); ok {
+				objs = append(objs, m)
+			}
+		}
+	}
+	for _, obj := range objs {
+		name := ""
+		switch n := obj["name"].(type) {
+		case string:
+			name = n
+		}
+		if name == "" {
+			if fn, ok := obj["function"].(map[string]any); ok {
+				if n, ok := fn["name"].(string); ok {
+					name = n
+				}
+			}
+		}
+		if name == "" {
+			if t, ok := obj["tool"].(string); ok {
+				name = t
+			}
+		}
+		if name == "" {
+			continue
+		}
+		if _, ok := a.registry.Get(name); !ok {
+			continue // not a tool we know — leave it as content
+		}
+		argsRaw := json.RawMessage(`{}`)
+		switch args := obj["arguments"].(type) {
+		case map[string]any:
+			if b, err := json.Marshal(args); err == nil {
+				argsRaw = b
+			}
+		case string:
+			argsRaw = json.RawMessage(args)
+		case nil:
+			if p, ok := obj["parameters"].(map[string]any); ok {
+				if b, err := json.Marshal(p); err == nil {
+					argsRaw = b
+				}
+			}
+		}
+		return &llm.ToolCall{Type: "function", Function: llm.ToolCallFunction{Name: name, Arguments: argsRaw}}
+	}
+	return nil
+}
+
 func proseToolNudge(content string) string {
 	inFence := false
 	for _, line := range strings.Split(content, "\n") {
@@ -2323,7 +2482,31 @@ func (a *Agent) estTokensLocked() int {
 	for _, h := range a.history {
 		total += h.tokens
 	}
+	// Tool schemas are sent in the request's `tools` field, which the server
+	// puts into the prompt — the gauge/budget must count them too (GPT sol #6).
+	// Updated by setSchemaTokens before each request.
+	total += a.schemaTokens
 	return total
+}
+
+// setSchemaTokens records the token cost of the tool schemas about to be sent
+// so the context gauge and budget reflect the real prompt (GPT sol #6). The
+// schemas serialize to the request's `tools` field; with MCP servers attached
+// that can be a large fixed overhead.
+func (a *Agent) setSchemaTokens(ctx context.Context, schemas []llm.ToolSchema) {
+	if len(schemas) == 0 {
+		a.mu.Lock()
+		a.schemaTokens = 0
+		a.mu.Unlock()
+		return
+	}
+	b, err := json.Marshal(schemas)
+	if err != nil {
+		return
+	}
+	a.mu.Lock()
+	a.schemaTokens = a.tokensFor(ctx, string(b))
+	a.mu.Unlock()
 }
 
 // tokensFor estimates the token count of text: accurate via the configured

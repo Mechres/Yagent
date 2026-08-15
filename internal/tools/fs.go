@@ -78,6 +78,16 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 			}
 		}
 	}
+	if err != nil && os.IsNotExist(err) && resolved == "" {
+		// AGY #4 — case-insensitive fallback (Readme.md -> README.md): only
+		// when exactly one existing file differs from the given path by case.
+		if fixed, ok := caseInsensitiveResolve(t.ws, a.Path); ok {
+			if data, err = os.ReadFile(fixed); err == nil {
+				path = fixed
+				resolved = a.Path
+			}
+		}
+	}
 	if err != nil {
 		return errorClass("missing_path", true, []string{"glob"}, fmt.Sprintf("%v — the file does not exist", err)), nil
 	}
@@ -162,6 +172,44 @@ func fuzzyResolve(ws, p string) (string, bool) {
 		}
 		name := d.Name()
 		if strings.HasPrefix(name, base) && name != base && strings.Contains(name, ".") {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+	return "", false
+}
+
+// caseInsensitiveResolve finds an existing file whose path differs from p only
+// by letter case (Readme.md -> README.md), when exactly one candidate matches.
+// Returns the real path, or "", false. Filesystem walks stay bounded to the
+// workspace (which fs_read already contains via resolvePath).
+func caseInsensitiveResolve(ws, p string) (string, bool) {
+	p = strings.Trim(p, `"'`)
+	p = strings.ReplaceAll(p, `\`, "/")
+	clean := filepath.Clean(p)
+	if clean == "." || clean == "" {
+		return "", false
+	}
+	var matches []string
+	_ = filepath.WalkDir(ws, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipRefactorDir[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(ws, path)
+		if err != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(rel)
+		if strings.EqualFold(relSlash, clean) {
 			matches = append(matches, path)
 		}
 		return nil

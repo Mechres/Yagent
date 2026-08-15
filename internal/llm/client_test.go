@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,8 +30,13 @@ func sseServer(t *testing.T, events ...string) *httptest.Server {
 }
 
 func chunkData(content string) string {
+	return chunkDataFR(content, "")
+}
+
+func chunkDataFR(content, finishReason string) string {
 	b, _ := json.Marshal(chatChunk{Choices: []struct {
-		Delta struct {
+		FinishReason string `json:"finish_reason"`
+		Delta        struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
 			ToolCalls        []struct {
@@ -43,7 +49,7 @@ func chunkData(content string) string {
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
-	}{{Delta: struct {
+	}{{FinishReason: finishReason, Delta: struct {
 		Content          string `json:"content"`
 		ReasoningContent string `json:"reasoning_content"`
 		ToolCalls        []struct {
@@ -438,6 +444,67 @@ func TestChatStreamGivesUpAfterMaxRetries(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "after 3 attempts") {
 		t.Errorf("error = %v, want retry-exhausted message", err)
+	}
+}
+
+func TestChatStreamTruncatedWithoutDONE(t *testing.T) {
+	// GPT sol #5: an SSE stream that ends without "[DONE]" and without a
+	// terminal finish_reason is a truncated response, not a success.
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+chunkData("partial answer")+"\n\n")
+		flusher.Flush()
+		// no [DONE] — the connection just dies
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}, nil)
+	if !errors.Is(err, ErrStreamTruncated) {
+		t.Errorf("err = %v, want ErrStreamTruncated", err)
+	}
+}
+
+func TestChatStreamDONElessWithFinishReasonIsOK(t *testing.T) {
+	// A server that streams the terminal chunk (finish_reason=stop) but omits
+	// "[DONE]" is NOT truncation — the reply is complete.
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+chunkDataFR("complete answer", "stop")+"\n\n")
+		flusher.Flush()
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Message.Content != "complete answer" {
+		t.Errorf("content = %q", resp.Message.Content)
+	}
+	if resp.FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", resp.FinishReason)
+	}
+}
+
+func TestChatStreamLengthFinishReason(t *testing.T) {
+	// finish_reason=length is captured so the agent can nudge continuation.
+	t.Parallel()
+	ts := sseServer(t, chunkDataFR("hit the limit", "length"), "[DONE]")
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, func(string) {}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.FinishReason != "length" {
+		t.Errorf("finish_reason = %q, want length", resp.FinishReason)
 	}
 }
 

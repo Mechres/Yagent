@@ -97,6 +97,12 @@ type Step struct {
 	ToolCall *ToolCallStep `yaml:"tool_call"`
 	// Answer sets the response to a final answer.
 	Answer *string `yaml:"answer"`
+	// Truncated ends the SSE stream without a "[DONE]" marker (GPT sol #5):
+	// the agent must recover with a nudge instead of aborting the turn.
+	Truncated bool `yaml:"truncated"`
+	// FinishReason is attached to the answer's terminal chunk ("" = stream
+	// normally; "length" simulates hitting the generation cap).
+	FinishReason string `yaml:"finish_reason"`
 }
 
 // ToolCallStep names the tool and the raw JSON argument object.
@@ -551,10 +557,16 @@ func scriptedServer(t *testing.T, steps []Step) (*httptest.Server, *reqLog) {
 			if step.Answer != nil {
 				text = *step.Answer
 			}
-			write(fmt.Sprintf(`{"choices":[{"delta":{"content":%q}}]}`, text))
+			if step.FinishReason != "" {
+				write(fmt.Sprintf(`{"choices":[{"delta":{"content":%q}},"finish_reason":%q}]}`, text, step.FinishReason))
+			} else {
+				write(fmt.Sprintf(`{"choices":[{"delta":{"content":%q}}]}`, text))
+			}
 		}
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		if !step.Truncated {
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			flusher.Flush()
+		}
 	})), log
 }
 

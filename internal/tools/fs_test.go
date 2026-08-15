@@ -198,6 +198,58 @@ func TestFuzzyResolve(t *testing.T) {
 	}
 }
 
+func TestSanitizePathArg(t *testing.T) {
+	// AGY #4: wrapping quotes, Windows backslashes, and a leading workspace
+	// basename prefix are all common small-model slips.
+	cases := []struct{ in, want string }{
+		{`'main.go'`, "main.go"},
+		{`"src/app.ts"`, "src/app.ts"},
+		{`pkg\config\config.go`, "pkg/config/config.go"},
+		{`myproj/src/main.go`, "src/main.go"}, // workspace basename prefix
+		{`src/main.go`, "src/main.go"},        // already clean, untouched
+		{"  main.go  ", "main.go"},
+	}
+	for _, tc := range cases {
+		if got := sanitizePathArg("/ws/myproj", tc.in); got != tc.want {
+			t.Errorf("sanitizePathArg(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCaseInsensitiveResolve(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "README.md", "# readme\n")
+	writeFile(t, ws, "src/App.js", "x\n")
+
+	if got, ok := caseInsensitiveResolve(ws, "readme.md"); !ok || !strings.HasSuffix(got, "README.md") {
+		t.Errorf("case fallback readme.md = %q, %v", got, ok)
+	}
+	if got, ok := caseInsensitiveResolve(ws, "SRC/app.js"); !ok || !strings.HasSuffix(got, "src/App.js") {
+		t.Errorf("case fallback SRC/app.js = %q, %v", got, ok)
+	}
+	// a case twin (two files differing only in case) -> ambiguous, no resolve
+	writeFile(t, ws, "readme.md", "other\n")
+	if _, ok := caseInsensitiveResolve(ws, "README.MD"); ok {
+		t.Error("case twin should be ambiguous")
+	}
+	// nonexistent path -> no resolve
+	if _, ok := caseInsensitiveResolve(ws, "nope.txt"); ok {
+		t.Error("nonexistent path resolved")
+	}
+}
+
+func TestFSReadCaseFallbackWired(t *testing.T) {
+	// AGY #4: fs_read {path:"readme.md"} against README.md resolves and notes
+	// the correction instead of erroring.
+	ws := t.TempDir()
+	writeFile(t, ws, "README.md", "# readme\n")
+	reg := NewRegistry(ws, Options{})
+	res := execTool(t, reg, "fs_read", map[string]any{"path": "readme.md"})
+	if !strings.Contains(res, "resolved to README.md") || !strings.Contains(res, "readme") {
+		t.Errorf("fs_read case fallback = %q", res)
+	}
+}
+
 func TestFSReadDedupCache(t *testing.T) {
 	ws := t.TempDir()
 	writeFile(t, ws, "big.txt", strings.Repeat("line of content\n", 100))

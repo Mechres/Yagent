@@ -1,0 +1,9 @@
+name: length-finish-recovery
+description: "GPT sol #5 — finish_reason=length means the generation hit the token cap; a prose reply cut off this way is nudged to continue instead of being accepted as final"
+input: summarize the project
+steps:
+  - answer: "the project is a local-first agent that"
+    finish_reason: length
+  - answer: "the project is a local-first agent that runs on a single GPU"
+assert:
+  final_answer_contains: "single GPU"

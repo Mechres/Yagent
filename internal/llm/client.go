@@ -38,6 +38,10 @@ type ToolCallFunction struct {
 type Response struct {
 	Message   Message
 	ToolCalls []ToolCall
+	// FinishReason is the server's terminal stop reason ("stop", "length",
+	// "tool_calls", ...) captured from the final stream chunk. "length" means
+	// the generation hit the context/limit cap and the reply is truncated.
+	FinishReason string
 }
 
 // ToolSchema is the OpenAI tools-API function schema sent in the request.
@@ -137,7 +141,10 @@ type chatCompletionRequest struct {
 // chatChunk is one streaming delta from /v1/chat/completions.
 type chatChunk struct {
 	Choices []struct {
-		Delta struct {
+		// FinishReason arrives on the final chunk ("" mid-stream, "length" when
+		// the generation hit the token cap, "stop"/"tool_calls" on completion).
+		FinishReason string `json:"finish_reason"`
+		Delta        struct {
 			Content string `json:"content"`
 			// ReasoningContent is the model's thinking span, streamed by
 			// llama.cpp/Ollama for reasoning models (Qwen3.5/Qwythos). It is
@@ -194,8 +201,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []Message, tools []Too
 			return nil, ctx.Err()
 		}
 		// Only transport-level errors are retried; a server response with a
-		// non-2xx status is deterministic and would just fail again.
-		if isHTTPError(err) {
+		// non-2xx status is deterministic and would just fail again, and a
+		// truncated stream is a signal for the agent to recover, not retry.
+		if isHTTPError(err) || errors.Is(err, ErrStreamTruncated) {
 			return nil, err
 		}
 	}
@@ -252,6 +260,9 @@ func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta, onRea
 		if len(chunk.Choices) == 0 {
 			return nil
 		}
+		if chunk.Choices[0].FinishReason != "" {
+			respMessage.FinishReason = chunk.Choices[0].FinishReason
+		}
 		delta := chunk.Choices[0].Delta
 		if delta.ReasoningContent != "" {
 			// Thinking is display-only: surfaced via onReasoning, never added
@@ -282,6 +293,13 @@ func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta, onRea
 		}
 		return nil
 	})
+	// A server that streams the terminal chunk with a finish_reason but closes
+	// without "[DONE]" (llama.cpp/Ollama always send [DONE], but third-party
+	// OpenAI-compatible endpoints occasionally omit it) is NOT truncation: the
+	// reply is complete. Only a bare EOF with no terminal reason is truncation.
+	if errors.Is(err, ErrStreamTruncated) && respMessage.FinishReason != "" {
+		err = nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read stream: %w", err)
 	}

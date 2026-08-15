@@ -82,6 +82,15 @@ func toolCall(id, name, args string) []string {
 	return []string{fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":%q,"type":"function","function":{"name":%q,"arguments":%q}}]}}]}`, id, name, args)}
 }
 
+// fencedCallJSON builds a content-only response carrying a tool call inside a
+// markdown JSON fence (AGY #3) — the "no tool_calls field" slip a 3B-7B model
+// makes without a grammar template.
+func fencedCallJSON(name, args string) string {
+	fence := "```json\n"
+	inner := fmt.Sprintf(`{"name": %q, "arguments": %s}`, name, args)
+	return fmt.Sprintf(`{"choices":[{"delta":{"content":%q}}]}`, fence+inner+"\n```\n")
+}
+
 // chatCompletionRequest mirrors the wire shape for inspecting captured bodies.
 type chatCompletionRequest struct {
 	Messages []struct {
@@ -110,6 +119,46 @@ type failingSummLLM struct{ calls int }
 func (f *failingSummLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
 	f.calls++
 	return nil, errors.New("summarizer server unreachable")
+}
+
+// truncatingLLM fails the first request with a truncated stream, then answers
+// normally (GPT sol #5 — the agent must nudge and continue, not abort).
+type truncatingLLM struct {
+	mu   sync.Mutex
+	n    int
+	body string
+}
+
+func (t *truncatingLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
+	t.mu.Lock()
+	t.n++
+	n := t.n
+	t.mu.Unlock()
+	if n == 1 {
+		return nil, llm.ErrStreamTruncated
+	}
+	return &llm.Response{Message: llm.Message{Role: "assistant", Content: t.body}}, nil
+}
+
+// lengthLLM returns a prose answer with finish_reason=length once, then a full
+// one — the agent must nudge the model to continue instead of accepting the
+// truncated reply as final.
+type lengthLLM struct {
+	mu    sync.Mutex
+	n     int
+	first string
+	body  string
+}
+
+func (l *lengthLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
+	l.mu.Lock()
+	l.n++
+	n := l.n
+	l.mu.Unlock()
+	if n == 1 {
+		return &llm.Response{Message: llm.Message{Role: "assistant", Content: l.first}, FinishReason: "length"}, nil
+	}
+	return &llm.Response{Message: llm.Message{Role: "assistant", Content: l.body}}, nil
 }
 
 type stubApprover struct {
@@ -1198,6 +1247,61 @@ func TestRunSubagentRolePrompt(t *testing.T) {
 	}
 }
 
+func TestFencedToolCallExtractor(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	a := New(llm.NewClient("http://127.0.0.1:1", "test-model"), reg, &stubApprover{allow: true}, Config{}, ws)
+
+	// a fenced JSON tool call -> extracted
+	tc := a.fencedToolCallExtractor("I will read it:\n```json\n{\"name\": \"fs_read\", \"arguments\": {\"path\": \"main.go\"}}\n```\n")
+	if tc == nil {
+		t.Fatal("fenced tool call not extracted")
+	}
+	if tc.Function.Name != "fs_read" {
+		t.Errorf("name = %q", tc.Function.Name)
+	}
+	if !strings.Contains(string(tc.Function.Arguments), "main.go") {
+		t.Errorf("args = %s", tc.Function.Arguments)
+	}
+	// "tool"/"parameters" alternate shape
+	tc = a.fencedToolCallExtractor("```\n{\"tool\": \"glob\", \"parameters\": {\"pattern\": \"*.go\"}}\n```")
+	if tc == nil || tc.Function.Name != "glob" {
+		t.Errorf("alternate shape not extracted: %+v", tc)
+	}
+	// unknown tool name -> not extracted (left as content)
+	if tc := a.fencedToolCallExtractor("```json\n{\"name\": \"not_a_tool\", \"arguments\": {}}\n```"); tc != nil {
+		t.Errorf("unknown tool extracted: %+v", tc)
+	}
+	// no fence -> not extracted
+	if tc := a.fencedToolCallExtractor(`{"name": "fs_read", "arguments": {"path": "main.go"}}`); tc != nil {
+		t.Errorf("unfenced JSON extracted: %+v", tc)
+	}
+	// plain prose -> not extracted
+	if tc := a.fencedToolCallExtractor("I will fs_read main.go."); tc != nil {
+		t.Errorf("prose extracted: %+v", tc)
+	}
+}
+
+func TestFencedToolCallExecutedInTurn(t *testing.T) {
+	// AGY #3: a fenced tool call executes on the same turn (approval applies),
+	// instead of burning a round-trip on the prose nudge.
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "main.go", "package main\n")
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	s := newScriptedLLM(t, [][]string{
+		{fencedCallJSON("fs_read", `{"path": "main.go"}`)},
+		finalContent("done reading"),
+	})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	if _, err := a.Run(context.Background(), "read main.go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	results := toolResultText(a)
+	if len(results) != 1 || !strings.Contains(results[0], "package main") {
+		t.Errorf("tool results = %q, want the fs_read result", results)
+	}
+}
+
 func TestProseToolNudge(t *testing.T) {
 	// narrated intent -> nudge
 	if n := proseToolNudge("I will fs_read main.go and look at it."); !strings.Contains(n, "fs_read") {
@@ -1774,10 +1878,17 @@ func TestContextUsageUsesAccurateCounter(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	used, _ := a.ContextUsage()
-	// system (1) + user message (1) + assistant message (1) = 3, each 1000
-	if used != 3000 {
-		t.Errorf("ContextUsage = %d, want 3000 (accurate counter not wired)", used)
+	// system (1) + user message (1) + assistant message (1) = 3, each 1000.
+	// Plus the tool schemas sent in the request's `tools` field (GPT sol #6):
+	// with a fixed 1000-token counter that's another 1000.
+	if used != 4000 {
+		t.Errorf("ContextUsage = %d, want 4000 (3 messages + tool schemas, accurate counter)", used)
 	}
+	a.mu.RLock()
+	if a.schemaTokens == 0 {
+		t.Error("schemaTokens not recorded (GPT sol #6)")
+	}
+	a.mu.RUnlock()
 }
 
 func TestTraceSegmentsSumToContextUsage(t *testing.T) {
@@ -1793,18 +1904,20 @@ func TestTraceSegmentsSumToContextUsage(t *testing.T) {
 	}
 	used, _ := a.ContextUsage()
 	// ContextUsage = the trace's non-history sections + the LIVE history
-	// totals (history grows after the last assembly). Verify the trace file's
-	// section estimates are exactly the ones the gauge accounts from.
+	// totals (history grows after the last assembly) + the tool-schema cost
+	// (GPT sol #6). Verify the trace file's section estimates are exactly the
+	// ones the gauge accounts from.
 	nonHist, histTrace := lastTraceSections(trace.String())
 	a.mu.RLock()
 	liveHist := 0
 	for _, h := range a.history {
 		liveHist += h.tokens
 	}
+	schemaTokens := a.schemaTokens
 	a.mu.RUnlock()
-	if got := nonHist + liveHist; got != used {
-		t.Errorf("ContextUsage = %d, want %d (non-history %d + live history %d)\n%s",
-			used, got, nonHist, liveHist, trace.String())
+	if got := nonHist + liveHist + schemaTokens; got != used {
+		t.Errorf("ContextUsage = %d, want %d (non-history %d + live history %d + schemas %d)\n%s",
+			used, got, nonHist, liveHist, schemaTokens, trace.String())
 	}
 	if histTrace > liveHist {
 		t.Errorf("trace history %d exceeds live history %d", histTrace, liveHist)
@@ -2823,5 +2936,51 @@ func TestGateMarkersTrustExitStatus(t *testing.T) {
 		if got := DiagnosticsFailed(tc.in); got != tc.want {
 			t.Errorf("DiagnosticsFailed(%q) = %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestTruncatedStreamRecoversWithNudge(t *testing.T) {
+	// GPT sol #5: a stream that dies mid-generation must NOT abort the turn.
+	// The agent feeds the partial reply back and lets the model finish.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	tllm := &truncatingLLM{body: "the answer is 42"}
+	a := New(tllm, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	answer, err := a.Run(context.Background(), "what is the answer?")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "the answer is 42" {
+		t.Errorf("answer = %q", answer)
+	}
+	tllm.mu.Lock()
+	calls := tllm.n
+	tllm.mu.Unlock()
+	if calls != 2 {
+		t.Errorf("llm called %d times, want 2 (truncated + recovery)", calls)
+	}
+}
+
+func TestLengthFinishReasonRecoversWithNudge(t *testing.T) {
+	// GPT sol #5: finish_reason=length on a prose reply means the generation
+	// hit the cap — the agent must nudge continuation, not accept it as final.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	llm2 := &lengthLLM{first: "let me explain...", body: "the full explanation"}
+	a := New(llm2, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+
+	answer, err := a.Run(context.Background(), "explain it")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "the full explanation" {
+		t.Errorf("answer = %q", answer)
+	}
+	llm2.mu.Lock()
+	calls := llm2.n
+	llm2.mu.Unlock()
+	if calls != 2 {
+		t.Errorf("llm called %d times, want 2 (length + continuation)", calls)
 	}
 }
