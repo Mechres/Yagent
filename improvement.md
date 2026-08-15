@@ -1564,3 +1564,18 @@ items. All deterministic; `go test -race` clean.
 - Note: the model's heavy *thinking* itself (Nemotron-3-Nano reasons a lot) is
   a separate knob — set `sampling.reasoning_max_tokens` for the cloud model if
   the API accepts it. These nudges stop the *loop* regardless.
+
+## /model selector refresh fix 2026-08-16 (all tested)
+
+- ✅ **`/model` now refreshes models when navigating providers** — the live
+  fetch (local `/v1/models` for Dynamic providers, models.dev for cloud)
+  previously fired only when the selector opened, so navigating between
+  providers with left/right showed the *previous* provider's stale list or left
+  "detecting…" stuck. Provider navigation now re-fires the fetch
+  (`loadModelsForProvider`), clears the stale `modelLive`, and marks loading;
+  a late response from the old provider is dropped via a `provider` index on
+  `modelListMsg`. Entering the model pane also re-fires if no fetch started.
+  Cloud selection (`applyModelSelection`) and model-pane navigation now use the
+  live models.dev list instead of the static catalog, matching local providers.
+  Covered by `TestModelSelectorRefreshesOnProviderNavigate`; live-verified that
+  `FetchModelsDev("deepseek")` returns the current list. `go test -race` clean.

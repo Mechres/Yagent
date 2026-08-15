@@ -1421,6 +1421,50 @@ func TestModelSelectorOpenAndNavigate(t *testing.T) {
 	}
 }
 
+// TestModelSelectorRefreshesOnProviderNavigate: navigating providers re-fires
+// the live model fetch and clears the previous provider's cached list, so the
+// model pane never shows stale models from another provider.
+func TestModelSelectorRefreshesOnProviderNavigate(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{
+		ServerURL: "http://localhost:8089", Model: "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+		ContextWindow: 16384, Path: filepath.Join(t.TempDir(), "config.yaml"),
+	}
+	m.busy = false
+	m.runnerCtx = context.Background()
+	m.msgInput.SetValue("/model")
+	m.submitLine()
+	// simulate a completed fetch for provider 0 (local): its /v1/models result
+	m.Update(modelListMsg{models: []string{"Qwen3VL-8B-Instruct-Q4_K_M.gguf", "qwen3:8b"}, ok: true, provider: 0})
+	if m.modelProvider != 0 || m.modelLive == nil || len(m.modelLive) != 2 {
+		t.Fatalf("initial live list not applied: provider=%d live=%v", m.modelProvider, m.modelLive)
+	}
+	// navigate to provider 4 (DeepSeek, a cloud provider with a ModelsDev key).
+	// Navigating must clear the stale local list and mark loading.
+	for i := 0; i < 4; i++ {
+		m.handleModelKey(tea.KeyMsg{Type: tea.KeyRight})
+	}
+	if m.modelProvider != 4 {
+		t.Fatalf("provider = %d, want 4 (DeepSeek)", m.modelProvider)
+	}
+	if m.modelLive != nil {
+		t.Errorf("navigating providers must clear the previous provider's stale list, live=%v", m.modelLive)
+	}
+	if !m.modelLoading {
+		t.Error("navigating to a models.dev provider must mark the fetch as loading")
+	}
+	// a stale fetch response from provider 0 must be dropped (not repopulate)
+	m.Update(modelListMsg{models: []string{"stale-local"}, ok: true, provider: 0})
+	if m.modelLive != nil {
+		t.Errorf("stale fetch from the old provider must be dropped, live=%v", m.modelLive)
+	}
+	// the correct provider's response is applied
+	m.Update(modelListMsg{models: []string{"deepseek-v4-pro", "deepseek-v4-flash"}, ok: true, provider: 4})
+	if m.modelLive == nil || len(m.modelLive) != 2 {
+		t.Errorf("provider 4 live list not applied: %v", m.modelLive)
+	}
+}
+
 func TestModelSelectorRefusesWhileBusy(t *testing.T) {
 	m := testModel(t)
 	m.busy = true

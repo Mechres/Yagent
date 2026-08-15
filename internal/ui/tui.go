@@ -207,9 +207,10 @@ type progressMsg struct{ text string }
 // (local llama.cpp/Ollama) or a models.dev-backed cloud provider when the
 // /model selector opens.
 type modelListMsg struct {
-	models []string
-	ok     bool
-	dev    bool // true = from models.dev (cloud)
+	models   []string
+	ok       bool
+	dev      bool // true = from models.dev (cloud)
+	provider int  // which provider pane index this fetch was for; stale responses are dropped
 }
 
 type turnDoneMsg struct {
@@ -801,21 +802,23 @@ func (m *tuiModel) openModelSelector() (tea.Model, tea.Cmd) {
 // in a tea.Cmd so the TUI stays responsive; the result lands as a modelListMsg.
 func (m *tuiModel) fetchLocalModels() tea.Cmd {
 	base := config.Providers[m.modelProvider].BaseURL
+	provider := m.modelProvider
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.runnerCtx, 4*time.Second)
 		defer cancel()
 		models, ok := config.FetchModels(ctx, base)
-		return modelListMsg{models: models, ok: ok}
+		return modelListMsg{models: models, ok: ok, provider: provider}
 	}
 }
 
 // fetchModelsDev fetches a cloud provider's current model list from models.dev.
 func (m *tuiModel) fetchModelsDev(providerKey string) tea.Cmd {
+	provider := m.modelProvider
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.runnerCtx, 10*time.Second)
 		defer cancel()
 		models, ok := config.FetchModelsDev(ctx, providerKey)
-		return modelListMsg{models: models, ok: ok, dev: true}
+		return modelListMsg{models: models, ok: ok, dev: true, provider: provider}
 	}
 }
 
@@ -883,10 +886,14 @@ func (m *tuiModel) handleModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.modelProvider = (m.modelProvider + 1) % n
 			}
 			m.modelModelIdx = 0
+			// The newly selected provider's live model list is a fresh fetch —
+			// re-fire it so the model pane doesn't show the previous provider's
+			// (stale) list or leave the wrong "detecting…" state.
+			return m, m.loadModelsForProvider()
 		} else {
 			prov := config.Providers[m.modelProvider]
 			names := prov.Models
-			if prov.Dynamic {
+			if prov.Dynamic || prov.ModelsDev != "" {
 				names = m.modelLive
 			}
 			if len(names) > 0 {
@@ -901,6 +908,12 @@ func (m *tuiModel) handleModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if !m.modelOnModels {
 			m.modelOnModels = true
+			// Entering the model pane: make sure a live fetch is running for
+			// this provider (e.g. after opening the selector it was still in
+			// flight, or the provider needs a retry).
+			if !m.modelLoading {
+				return m, m.loadModelsForProvider()
+			}
 		} else {
 			m.modelConfirm = true
 		}
@@ -909,13 +922,36 @@ func (m *tuiModel) handleModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// loadModelsForProvider returns the tea.Cmd that fetches the CURRENT provider's
+// live model list (local /v1/models for Dynamic providers, models.dev for cloud
+// providers with a ModelsDev key, or nil for static providers). Clears the
+// previous provider's cached list first so the pane can't show stale models.
+func (m *tuiModel) loadModelsForProvider() tea.Cmd {
+	prov := config.Providers[m.modelProvider]
+	m.modelLive = nil
+	switch {
+	case prov.Dynamic:
+		m.modelLoading = true
+		return m.fetchLocalModels()
+	case prov.ModelsDev != "":
+		m.modelLoading = true
+		return m.fetchModelsDev(prov.ModelsDev)
+	}
+	m.modelLoading = false
+	return nil
+}
+
 // applyModelSelection persists the chosen provider/model and rebuilds the
 // client + agent so the next turn uses the new endpoint.
 func (m *tuiModel) applyModelSelection() {
 	prov := config.Providers[m.modelProvider]
 	names := prov.Models
-	if prov.Dynamic {
-		names = m.modelLive
+	// Dynamic (local /v1/models) and cloud (models.dev) providers show the LIVE
+	// list; use it for the selection too, not the stale static catalog.
+	if prov.Dynamic || prov.ModelsDev != "" {
+		if len(m.modelLive) > 0 {
+			names = m.modelLive
+		}
 	}
 	model := ""
 	if m.modelModelIdx >= 0 && m.modelModelIdx < len(names) {
@@ -1414,7 +1450,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.nextCmd()
 
 	case modelListMsg:
-		// live model list from a Dynamic (local) provider
+		// live model list from a Dynamic (local) provider or models.dev (cloud).
+		// Drop stale responses: if the user navigated to another provider while
+		// the fetch was in flight, a late response from the old provider must
+		// not overwrite the new provider's list.
+		if msg.provider != m.modelProvider {
+			return m, nil
+		}
 		m.modelLoading = false
 		if msg.ok && len(msg.models) > 0 {
 			m.modelLive = msg.models

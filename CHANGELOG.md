@@ -2,6 +2,27 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.89 — 2026-08-16
+
+### Fixed
+- **`/model` selector didn't refresh models when navigating providers** — the
+  live fetch (local `/v1/models` or models.dev) only fired when the selector
+  opened, so switching between providers with left/right showed the *previous*
+  provider's stale list (or "detecting…" forever). Navigating providers now
+  re-fires the fetch for the newly selected provider and clears the stale list;
+  a late response from the old provider is dropped (`modelListMsg.provider`).
+  Entering the model pane also re-fires if the fetch didn't start.
+- **Cloud selection used the stale static catalog** — `applyModelSelection`
+  and model-pane navigation used `prov.Models` for cloud providers even after a
+  fresh models.dev fetch; they now use the live list like local providers.
+
+### Tests
+- `TestModelSelectorRefreshesOnProviderNavigate` (navigating clears stale
+  models, marks loading, drops stale responses, applies the new provider's).
+  Live-verified: `FetchModelsDev(deepseek)` returns the current list
+  (`deepseek-chat`/`deepseek-reasoner`/`deepseek-v4-flash`). `go test -race`
+  clean.
+
 ## v0.1.88 — 2026-08-16
 
 ### Fixed
