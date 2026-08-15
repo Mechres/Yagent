@@ -200,3 +200,32 @@ All three original items (opencode MCP, aider git-undo, plandex diff sandbox) ar
 shipped (v0.1.71–73). The D-section items above are the next frontier and extend
 the existing `Registry`/`Approver`/`Options` seams in `internal/tools/tools.go`
 and `internal/agent/agent.go`.
+
+---
+
+## E. Next directions (assessed 2026-08-15, not yet started)
+
+After ~18 versions of deterministic-gate work, the harness has diminishing
+returns. The original bottleneck is unchanged: a 9B-14B local model can't
+reliably *finish* long multi-file work — the gates make it fail honestly, not
+succeed. Candidate next moves, in assessed order:
+
+1. **Re-measure `TestLiveGoalStress` with the current gates** — codegen mode,
+   TestGate, success checks, impact hints and plan mode all landed since the
+   last measurement (1/5 → 3/3 → copy-not-move). A fresh run settles whether
+   C3 (structured subagent returns) is still needed or the single loop now
+   clears the bar. 30 minutes, evidence-driven.
+2. **Fine-tune a small model on our own trajectories** — `export-dataset`
+   (OpenAI/ShareGPT/DPO JSONL) exists for this. A LoRA/QLoRA on
+   Qwen3VL-8B-Instruct using verified successful tool-call trajectories is the
+   one move that *raises the model ceiling* (the exact weakness every bench
+   shows) instead of adding scaffolding.
+3. **Real-world soak** — run Yagent on real tasks against real projects for a
+   few days, then fix what it hits. Surfaces gaps synthetic evals can't.
+4. **Adversarial-QA pass on the new surface** — gitops, MCP, hooks, plan mode,
+   allow-remember (the v0.1.35 pass found 9 real bugs on the old surface).
+5. **Polish backlog** — `/steer`, git worktree, MCP resources (deferred,
+   low-value).
+
+Recommendation recorded 2026-08-15: #1 first (settles C3 with data), then #2
+(the genuine ceiling-raiser).
