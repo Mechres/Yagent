@@ -555,6 +555,38 @@ models:
 	if cfg2.Sampling.Temperature != 0.2 {
 		t.Errorf("qwen profile not applied: %+v", cfg2.Sampling)
 	}
+
+	// a per-model reasoning_max_tokens cap overrides the base sampling
+	path3 := writeConfig(t, `model: "Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+sampling:
+  temperature: 0.6
+  reasoning_max_tokens: 0
+models:
+  - match: Qwen3VL-8B
+    reasoning_max_tokens: 1024
+`)
+	cfg3, err := LoadConfig(path3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg3.Sampling.ReasoningMaxTokens != 1024 {
+		t.Errorf("profile reasoning_max_tokens not applied: %+v", cfg3.Sampling)
+	}
+	// a profile without reasoning_max_tokens leaves the base value alone
+	path4 := writeConfig(t, `model: "other-model"
+sampling:
+  reasoning_max_tokens: 512
+models:
+  - match: other
+    temperature: 0.5
+`)
+	cfg4, err := LoadConfig(path4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg4.Sampling.ReasoningMaxTokens != 512 {
+		t.Errorf("unset profile reasoning_max_tokens must inherit base: %+v", cfg4.Sampling)
+	}
 }
 
 func TestLoadConfigTheme(t *testing.T) {

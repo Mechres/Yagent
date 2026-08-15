@@ -490,6 +490,7 @@ type ModelProfile struct {
 	TopK              *int     `yaml:"top_k"`
 	RepetitionPenalty *float64 `yaml:"repetition_penalty"`
 	MinP              *float64 `yaml:"min_p"`
+	ReasoningMax      *int     `yaml:"reasoning_max_tokens"`
 }
 
 // applyModels applies the first matching per-model profile to the base sampling
@@ -513,6 +514,9 @@ func (c *Config) applyModels() {
 		}
 		if p.MinP != nil {
 			c.Sampling.MinP = *p.MinP
+		}
+		if p.ReasoningMax != nil {
+			c.Sampling.ReasoningMaxTokens = *p.ReasoningMax
 		}
 		return
 	}

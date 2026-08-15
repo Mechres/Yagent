@@ -309,6 +309,14 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
+// RegisterForTest injects a tool into the registry (used by bench tasks to
+// simulate MCP-scale schemas; not part of the production wiring).
+func (r *Registry) RegisterForTest(t Tool) {
+	if t != nil && t.Schema().Function.Name != "" {
+		r.tools[t.Schema().Function.Name] = t
+	}
+}
+
 // Names returns all tool names, sorted for determinism.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.tools))

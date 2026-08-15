@@ -16,7 +16,7 @@ leading system message only.
 
 | Model | Server | tool-call | bench (6 tasks ×3) | notes |
 |---|---|---|---|---|
-| `Qwen3VL-8B-Instruct-Q4_K_M` | llama.cpp :8089 | excellent | **18/18** | **default model**; best measured; fast; no mandatory thinking; the vision encoder is unused by Yagent but the Qwen3 text/tool base is excellent |
+| `Qwen3VL-8B-Instruct-Q4_K_M` | llama.cpp :8089 | excellent | **18/18** | **default model**; best measured; fast; no mandatory thinking; the vision encoder is unused by Yagent but the Qwen3 text/tool base is excellent. A `models:` profile with `reasoning_max_tokens` (e.g. 1024) caps the thinking span on long autonomous/research runs — the biggest 12 GB speed lever |
 | `Qwopus3.5-9B-coder-Exp-Q4_K_M` | llama.cpp | good | 12/18 (temp 1.0) | agentic coder (Apache-2.0); card's ToolCall claims don't transfer to llama.cpp OpenAI format; grep-find/code-locate weak; needs temp 1.0 |
 | `Qwen3-8B-Q4_K_M` (non-VL) | llama.cpp | excellent | 14/18 | same base but **thinks by default on llama.cpp** → ~4× slower than the VL variant; cap `reasoning_max_tokens` if you use it |
 | `LFM2.5-8B-A1B-UD-Q4_K_M` | llama.cpp | good | 13/18 (recipe 0.2/80/1.05) | MoE; recipe helps (10→13); code-locate 0/3 both recipes |

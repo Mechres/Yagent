@@ -19,12 +19,16 @@ type paperSearchTool struct {
 type paperSearchArgs struct {
 	Query string `json:"query"`
 	K     int    `json:"k,omitempty"`
+	// Since restricts to papers published in or after this year (recency
+	// filter; 0 = no filter).
+	Since int `json:"since,omitempty"`
 }
 
-var paperSearchSchema = fnSchema("paper_search", "search scholarly databases (arXiv, PubMed, Semantic Scholar) for research papers matching the query; returns title, authors, year, venue, abstract and URL per paper. Use it for academic/research questions, then web_fetch the paper's HTML page (e.g. the arxiv abs/ URL) for the full text",
+var paperSearchSchema = fnSchema("paper_search", "search scholarly databases (arXiv, PubMed, Semantic Scholar) for research papers matching the query; returns title, authors, year, venue, abstract and URL per paper. Use it for academic/research questions, then web_fetch the paper's HTML page (e.g. the arxiv abs/ URL, or arxiv.org/html/<ID> / ar5iv.labs.arxiv.org/html/<ID> for the full body) for the full text",
 	map[string]any{
 		"query": strProp("the research topic or paper query"),
 		"k":     intProp("max results, default 5, max 10 (optional)"),
+		"since": intProp("only papers from this year onward, e.g. 2023 (optional; 0 = no filter)"),
 	},
 	[]string{"query"})
 
@@ -45,10 +49,13 @@ func (t *paperSearchTool) Execute(ctx context.Context, raw json.RawMessage) (str
 	if a.K > 10 {
 		return "", validationErrorf("k must be at most 10")
 	}
+	if a.Since < 0 || a.Since > 2100 {
+		return "", validationErrorf("since must be a year between 0 and 2100")
+	}
 	if t.client == nil {
 		return "error: paper search is not configured", nil
 	}
-	papers, err := t.client.SearchPapers(ctx, a.Query, a.K)
+	papers, err := t.client.SearchPapers(ctx, a.Query, a.K, a.Since)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
@@ -56,6 +63,9 @@ func (t *paperSearchTool) Execute(ctx context.Context, raw json.RawMessage) (str
 		return "no papers found", nil
 	}
 	var b strings.Builder
+	if a.Since > 0 {
+		b.WriteString(fmt.Sprintf("[papers since %d]\n", a.Since))
+	}
 	for i, p := range papers {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, p.Title)
 		if len(p.Authors) > 0 {

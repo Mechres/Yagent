@@ -51,9 +51,9 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 [current user message]
 ```
 
-Defaults: `context_window: 16384`, `reserve_for_response: 2048`. Token counting is heuristic (`len(s)/4`, tune later); llama.cpp's `/tokenize` may be used when the server is llama.cpp, but must stay optional.
+Defaults: `context_window: 16384`, `reserve_for_response: 2048`. Token counting uses the **server tokenizer** (`llama.cpp /tokenize` / Ollama `/api/tokenize`, probed once at startup) via `llm.Client.CountTokens`, with a `len/4` fallback when the server has no tokenizer. Every request's tool-schema cost is accounted too (MCP servers included), so the context gauge and budget reflect the real prompt. The reserve is auto-sized as `Window/8`.
 
-When recent history doesn't fit, the **oldest half is summarized** (by the same local model, with a dedicated summarization prompt) into the running summary. See `memory.md`.
+When recent history doesn't fit, the **oldest half is summarized** (by the same local model, or a configured offloaded `summarizer:` model, with a dedicated summarization prompt) into the running summary. Before summarization, old tool outputs are collapsed to one-line `[tool output concealed; N lines hidden]` markers (kept in memory, re-pruned on resume). See `memory.md`.
 
 ## Tool-call protocol
 
@@ -103,11 +103,13 @@ type Approver interface {              // implemented by ui
 agent:
   max_iterations: 25
 context:
-  window: 16384
-  reserve: 2048
+  window: 16384            # capped at the server's real n_ctx when lower (P2 auto-detect)
+  reserve: 2048            # auto-sized as window/8 (llama.cpp /props n_ctx probe)
   summary_max_tokens: 600
   memory_max_tokens: 1000
   index_max_tokens: 2000
+sampling:
+  reasoning_max_tokens: 0  # opt-in cap on thinking (the biggest 12 GB speed lever)
 ```
 
 ## What the loop must never do

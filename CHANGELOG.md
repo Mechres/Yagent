@@ -2,6 +2,40 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.82 — 2026-08-15
+
+### Added
+- **`paper_search` recency filter** — a `since <year>` argument restricts to
+  papers published in or after that year, wired through every source: arXiv
+  (`submittedDate` range), PubMed (`"YYYY/01/01"[dp]`), Semantic Scholar
+  (`year:YYYY-now`).
+- **arXiv full-text path** — the research-mode and main system prompts now tell
+  the model to fetch an arXiv paper's HTML body (`arxiv.org/html/<ID>` for
+  newer papers, `ar5iv.labs.arxiv.org/html/<ID>` for older) instead of the
+  PDF/abstract-only page.
+- **Per-model `reasoning_max_tokens`** — `models:` profiles can now set a
+  reasoning cap (pointer field, inherits when unset), so a slow-thinking model
+  gets capped automatically; `config.example.yaml` and `docs/models.md` updated
+  with the Qwen3VL-8B recipe.
+- **Live-soak bench cases (previously deferred)** — `yagent bench` gained
+  `long-resumed-session` (seeded near-limit `InitialHistory`, budget must prune
+  before the answer) and `big-mcp-context` (synthetic MCP-scale schema via a
+  new `Task.ConfigureRegistry` hook + `tools.Registry.RegisterForTest`); the
+  schema-accounting and resumed-retokenize fixes are now exercised in-process,
+  closing the last two audit-backlog TODO items.
+- **Doc sync** — `docs/design/agent-loop.md` + `memory.md` now describe
+  accurate server-tokenizer counting, tool-schema accounting, proactive
+  tool-output pruning, auto-reserve, and the `reasoning_max_tokens` knob.
+
+### Tests
+- `TestArxivRecencyFilter`, `TestPubMedRecencyFilter`,
+  `TestSemanticScholarRecencyFilter`, `TestSearchPapersMergesAndDedups` (since
+  plumbing), `paper_search` `since` validation, per-model reasoning-cap config
+  round-trips, `TestRunTaskLongResumedSession`, `TestRunTaskBigMCPContext`,
+  `TestBigSchemaToolSchemaScale`. Live-verified on Qwen3VL-8B (:8089):
+  `paper_search` `since: 2025` → 5 real papers, and `web_fetch` of
+  `arxiv.org/html/2601.14277v1` read the full paper body.
+
 ## v0.1.81 — 2026-08-15
 
 ### Added

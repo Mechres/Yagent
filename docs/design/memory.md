@@ -11,7 +11,7 @@ L4 codebase index    tree-sitter chunks + embeddings          (index pkg)
 
 ## L1 — Working context
 
-The slice of messages actually sent to the model, assembled per `agent-loop.md`. Budgeted by heuristic token count (`len/4`). When over budget: oldest 50% of history (excluding system/tool-schema) is summarized and replaced by the running summary.
+The slice of messages actually sent to the model, assembled per `agent-loop.md`. Budgeted by accurate token counts from the server tokenizer (`llm.Client.CountTokens`; `len/4` fallback). When over budget: old tool outputs are first collapsed to one-line `[tool output concealed; N lines hidden]` markers (user/assistant turns kept), then the oldest 50% of history (excluding system/tool-schema) is summarized and replaced by the running summary.
 
 Summarization prompt (dedicated, no tools): *"Condense this conversation segment into ≤400 words. Preserve: decisions made, file paths touched, errors encountered, user preferences, open tasks. Drop: pleasantries, repeated code, verbose tool output."*
 

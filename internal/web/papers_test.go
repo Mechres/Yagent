@@ -34,7 +34,7 @@ func TestArxivSearch(t *testing.T) {
 	ts := fakearXiv(t)
 	defer ts.Close()
 	a := &arXiv{http: ts.Client(), endpoint: ts.URL + "/api/query"}
-	papers, err := a.SearchPapers(context.Background(), "llama.cpp", 5)
+	papers, err := a.SearchPapers(context.Background(), "llama.cpp", 5, 0)
 	if err != nil {
 		t.Fatalf("SearchPapers: %v", err)
 	}
@@ -65,8 +65,29 @@ func TestArxivHTTPError(t *testing.T) {
 	}))
 	defer ts.Close()
 	a := &arXiv{http: ts.Client(), endpoint: ts.URL + "/api/query"}
-	if _, err := a.SearchPapers(context.Background(), "x", 5); err == nil {
+	if _, err := a.SearchPapers(context.Background(), "x", 5, 0); err == nil {
 		t.Error("arxiv 500 should error")
+	}
+}
+
+func TestArxivRecencyFilter(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("search_query")
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`))
+	}))
+	defer ts.Close()
+	a := &arXiv{http: ts.Client(), endpoint: ts.URL + "/api/query"}
+	if _, err := a.SearchPapers(context.Background(), "llama quantization", 5, 2024); err != nil {
+		t.Fatal(err)
+	}
+	// the recency filter must AND a submittedDate range onto the query
+	if !strings.Contains(gotQuery, "submittedDate:[20240101000000 TO 99991231235959]") {
+		t.Errorf("arxiv recency filter missing from query: %q", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "all:llama AND all:quantization") {
+		t.Errorf("arxiv term conjunction lost: %q", gotQuery)
 	}
 }
 
@@ -102,7 +123,7 @@ func TestPubMedSearch(t *testing.T) {
 	ts := fakePubMed(t)
 	defer ts.Close()
 	p := &PubMed{http: ts.Client(), base: ts.URL}
-	papers, err := p.SearchPapers(context.Background(), "llm inference", 5)
+	papers, err := p.SearchPapers(context.Background(), "llm inference", 5, 0)
 	if err != nil {
 		t.Fatalf("SearchPapers: %v", err)
 	}
@@ -115,6 +136,23 @@ func TestPubMedSearch(t *testing.T) {
 	}
 	if !strings.HasPrefix(p0.URL, "https://pubmed.ncbi.nlm.nih.gov/42600735") {
 		t.Errorf("url = %q", p0.URL)
+	}
+}
+
+func TestPubMedRecencyFilter(t *testing.T) {
+	var gotTerm string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTerm = r.URL.Query().Get("term")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"esearchresult": map[string]any{"idlist": []string{}}})
+	}))
+	defer ts.Close()
+	p := &PubMed{http: ts.Client(), base: ts.URL}
+	if _, err := p.SearchPapers(context.Background(), "llm inference", 5, 2023); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotTerm, `"2023/01/01"[dp]`) {
+		t.Errorf("pubmed recency filter missing: %q", gotTerm)
 	}
 }
 
@@ -146,7 +184,7 @@ func TestSemanticScholarSearch(t *testing.T) {
 	ts := fakeScholar(t)
 	defer ts.Close()
 	s := &SemanticScholar{http: ts.Client(), base: ts.URL, key: "testkey"}
-	papers, err := s.SearchPapers(context.Background(), "quantized inference", 5)
+	papers, err := s.SearchPapers(context.Background(), "quantized inference", 5, 0)
 	if err != nil {
 		t.Fatalf("SearchPapers: %v", err)
 	}
@@ -159,13 +197,30 @@ func TestSemanticScholarSearch(t *testing.T) {
 	}
 }
 
+func TestSemanticScholarRecencyFilter(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+	}))
+	defer ts.Close()
+	s := &SemanticScholar{http: ts.Client(), base: ts.URL}
+	if _, err := s.SearchPapers(context.Background(), "quantized inference", 5, 2022); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "year:2022-"+itoa(currentYear())) {
+		t.Errorf("semantic scholar recency filter missing: %q", gotQuery)
+	}
+}
+
 func TestSemanticScholarRateLimited(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer ts.Close()
 	s := &SemanticScholar{http: ts.Client(), base: ts.URL}
-	_, err := s.SearchPapers(context.Background(), "x", 5)
+	_, err := s.SearchPapers(context.Background(), "x", 5, 0)
 	if err == nil || !strings.Contains(err.Error(), "rate-limited") {
 		t.Errorf("429 should produce a rate-limit error, got %v", err)
 	}
@@ -241,7 +296,7 @@ type countingPaperSource struct {
 }
 
 func (f *countingPaperSource) Name() string { return "counting" }
-func (f *countingPaperSource) SearchPapers(ctx context.Context, q string, k int) ([]Paper, error) {
+func (f *countingPaperSource) SearchPapers(ctx context.Context, q string, k, sinceYear int) ([]Paper, error) {
 	f.calls.Add(1)
 	if f.err != nil {
 		return nil, f.err
@@ -253,7 +308,7 @@ func TestSearchPapersMergesAndDedups(t *testing.T) {
 	a := &countingPaperSource{papers: []Paper{{Title: "Paper A", URL: "https://example.com/a"}, {Title: "Paper B", URL: "https://example.com/b"}}}
 	b := &countingPaperSource{papers: []Paper{{Title: "Paper A dup", URL: "https://example.com/a"}}}
 	c := &Client{http: defaultHTTP(), paperSrcs: []PaperSource{a, b}}
-	papers, err := c.SearchPapers(context.Background(), "query", 5)
+	papers, err := c.SearchPapers(context.Background(), "query", 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +324,7 @@ func TestSearchPapersFallsBackOnError(t *testing.T) {
 	bad := &countingPaperSource{err: errors.New("source down")}
 	good := &countingPaperSource{papers: []Paper{{Title: "Good", URL: "https://example.com/good"}}}
 	c := &Client{http: defaultHTTP(), paperSrcs: []PaperSource{bad, good}}
-	papers, err := c.SearchPapers(context.Background(), "query", 5)
+	papers, err := c.SearchPapers(context.Background(), "query", 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +335,7 @@ func TestSearchPapersFallsBackOnError(t *testing.T) {
 
 func TestSearchPapersNoSources(t *testing.T) {
 	c := &Client{http: defaultHTTP()}
-	if _, err := c.SearchPapers(context.Background(), "query", 5); err == nil {
+	if _, err := c.SearchPapers(context.Background(), "query", 5, 0); err == nil {
 		t.Error("no paper sources should error")
 	}
 }

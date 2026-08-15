@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Paper is one scholarly result (arxiv / pubmed / semantic-scholar).
@@ -27,7 +28,10 @@ type Paper struct {
 // PaperSource is a scholarly index the paper search queries.
 type PaperSource interface {
 	Name() string
-	SearchPapers(ctx context.Context, query string, k int) ([]Paper, error)
+	// SearchPapers queries for papers matching query, returning at most k
+	// results. sinceYear, when > 0, restricts to papers published in or after
+	// that year (recency filter).
+	SearchPapers(ctx context.Context, query string, k, sinceYear int) ([]Paper, error)
 }
 
 // arXiv searches the keyless arXiv Atom API (export.arxiv.org). No API key,
@@ -47,7 +51,7 @@ func NewArxivSource(httpClient *http.Client, endpoint string) *arXiv {
 	return &arXiv{http: httpClient, endpoint: endpoint}
 }
 
-func (a *arXiv) SearchPapers(ctx context.Context, query string, k int) ([]Paper, error) {
+func (a *arXiv) SearchPapers(ctx context.Context, query string, k, sinceYear int) ([]Paper, error) {
 	endpoint := a.endpoint
 	if endpoint == "" {
 		endpoint = "https://export.arxiv.org/api/query"
@@ -65,6 +69,11 @@ func (a *arXiv) SearchPapers(ctx context.Context, query string, k int) ([]Paper,
 			parts = append(parts, "all:"+t)
 		}
 		q = strings.Join(parts, " AND ")
+	}
+	// Recency filter: restrict to submissions from the given year onward.
+	if sinceYear > 0 {
+		lo := fmt.Sprintf("%04d0101000000", sinceYear)
+		q += " AND submittedDate:[" + lo + " TO 99991231235959]"
 	}
 	u := endpoint + "?search_query=" + url.QueryEscape(q) + "&start=0&max_results=" + itoa(k)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -143,8 +152,8 @@ func (p *PubMed) baseURL() string {
 	return "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 }
 
-func (p *PubMed) SearchPapers(ctx context.Context, query string, k int) ([]Paper, error) {
-	ids, err := p.esearch(ctx, query, k)
+func (p *PubMed) SearchPapers(ctx context.Context, query string, k, sinceYear int) ([]Paper, error) {
+	ids, err := p.esearch(ctx, query, k, sinceYear)
 	if err != nil {
 		return nil, err
 	}
@@ -154,8 +163,14 @@ func (p *PubMed) SearchPapers(ctx context.Context, query string, k int) ([]Paper
 	return p.esummary(ctx, ids)
 }
 
-func (p *PubMed) esearch(ctx context.Context, query string, k int) ([]string, error) {
-	u := p.baseURL() + "/esearch.fcgi?db=pubmed&retmode=json&retmax=" + itoa(k) + "&term=" + url.QueryEscape(query)
+func (p *PubMed) esearch(ctx context.Context, query string, k, sinceYear int) ([]string, error) {
+	term := query
+	if sinceYear > 0 {
+		// PubMed date-range syntax: "2023/01/01"[dp] restricts to publication
+		// dates on or after that day.
+		term += fmt.Sprintf(` AND "%04d/01/01"[dp]`, sinceYear)
+	}
+	u := p.baseURL() + "/esearch.fcgi?db=pubmed&retmode=json&retmax=" + itoa(k) + "&term=" + url.QueryEscape(term)
 	var out struct {
 		Result struct {
 			IDList []string `json:"idlist"`
@@ -244,8 +259,12 @@ func (s *SemanticScholar) baseURL() string {
 	return "https://api.semanticscholar.org/graph/v1"
 }
 
-func (s *SemanticScholar) SearchPapers(ctx context.Context, query string, k int) ([]Paper, error) {
-	u := s.baseURL() + "/paper/search?query=" + url.QueryEscape(query) +
+func (s *SemanticScholar) SearchPapers(ctx context.Context, query string, k, sinceYear int) ([]Paper, error) {
+	q := query
+	if sinceYear > 0 {
+		q += " year:" + itoa(sinceYear) + "-" + itoa(currentYear())
+	}
+	u := s.baseURL() + "/paper/search?query=" + url.QueryEscape(q) +
 		"&limit=" + itoa(k) + "&fields=title,abstract,year,venue,url,externalIds,authors.name"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -301,8 +320,9 @@ func (s *SemanticScholar) SearchPapers(ctx context.Context, query string, k int)
 // SearchPapers runs the configured paper sources in parallel and merges their
 // results (deduped by URL), falling back per-source on error. Sources with
 // rate limits or failures degrade gracefully — the tool returns whatever the
-// working sources found.
-func (c *Client) SearchPapers(ctx context.Context, query string, k int) ([]Paper, error) {
+// working sources found. sinceYear, when > 0, restricts to papers from that
+// year onward (recency filter, passed to every source).
+func (c *Client) SearchPapers(ctx context.Context, query string, k, sinceYear int) ([]Paper, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("query is required")
 	}
@@ -321,7 +341,7 @@ func (c *Client) SearchPapers(ctx context.Context, query string, k int) ([]Paper
 		wg.Add(1)
 		go func(i int, src PaperSource) {
 			defer wg.Done()
-			ps, err := src.SearchPapers(ctx, query, k)
+			ps, err := src.SearchPapers(ctx, query, k, sinceYear)
 			results[i] = srcResult{src: src.Name(), papers: ps, err: err}
 		}(i, src)
 	}
@@ -368,6 +388,11 @@ func (c *Client) paperSources() []PaperSource {
 
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// currentYear returns the local calendar year (for recency-filter ranges).
+func currentYear() int {
+	return time.Now().Year()
 }
 
 // oneLine collapses whitespace so an abstract/snippet reads as a single line.

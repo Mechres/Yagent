@@ -10,9 +10,10 @@ this file is the canonical status, `improvement.md` is the narrative roadmap.
 
 Status: **all audit items shipped through v0.1.79** (2026-08-15). The only
 remaining entries are deferred-with-rationale below (do not re-open without new
-evidence) plus the two noted live-soak bench sub-tasks. v0.1.80 shipped a
-research-mode overhaul (fetch quality, research ledger, `/research`); see
-`improvement.md`.
+evidence). v0.1.80 shipped a research-mode overhaul and v0.1.81 shipped
+scholarly search (`paper_search` + LangSearch); v0.1.82 closed the two
+previously-deferred live-soak bench cases as deterministic tasks (see
+`improvement.md`).
 
 ---
 
@@ -88,16 +89,14 @@ research-mode overhaul (fetch quality, research ledger, `/research`); see
 - DONE — **Benchmark/measurement expansion** (GPT sol, measurement section) —
   `bench.Tasks` gained edit-recover (real edit→fail→verify), denied-write
   recovery, plan-mode enforcement, truncated-recover (client-wrapper-injected),
-  and multi-file-refactor tasks; `Task` gained `Configure`/`WrapLLM` hooks and
-  `agent.Config.PlanMode`. Deferred (recorded, not done): long resumed session
-  near the real context limit and big-MCP-server context cost — both need a
-  live server with a specific setup and are covered indirectly by the schema-
-  accounting fix; tracked below.
-
-- NOTE — **long-resumed-session** and **big-MCP-server context-cost** bench
-  cases: not shipped — they require a live model + configured MCP server to be
-  meaningful. The deterministic parts (schema accounting, resumed retokenize)
-  are already covered by unit tests; a live soak is a future measurement task.
+  multi-file-refactor, and (v0.1.82) **long-resumed-session** (seeded near-limit
+  `InitialHistory`, budget must prune before the answer) and
+  **big-mcp-context** (synthetic MCP-scale schema registered via
+  `ConfigureRegistry`; the schema-accounting fix keeps the gauge honest);
+  `Task` gained `Configure`/`WrapLLM`/`ConfigureRegistry` hooks and
+  `agent.Config.PlanMode`. The two previously-deferred live-soak cases are now
+  deterministic bench tasks (no live server needed — the accounting +
+  retokenize fixes are exercised in-process).
 
 ## Rejected / deferred with rationale (do not re-open without new evidence)
 

@@ -1370,3 +1370,38 @@ deterministic where it matters; golden eval 60 locks in paper_search.
   to the web tool-schema group, and the research-mode prompt now says to call
   paper_search first for academic questions.
 
+## Follow-up batch 2026-08-15 (all tested) — recency, arXiv full-text, per-model reasoning, live-soak benches, doc sync
+
+The four items the user picked after v0.1.81, live-verified on **Qwen3VL-8B** :8089:
+
+- ✅ **`paper_search` recency filter** — a `since <year>` argument (0 = off)
+  restricts to papers from that year onward, passed to every source: arXiv
+  `AND submittedDate:[YYYY0101000000 TO 99991231235959]`, PubMed
+  `AND "YYYY/01/01"[dp]`, Semantic Scholar `year:YYYY-now`. Covered by
+  `TestArxivRecencyFilter`, `TestPubMedRecencyFilter`,
+  `TestSemanticScholarRecencyFilter`, plus tool `since` validation and a
+  `[papers since YYYY]` marker. Live: `since: 2025` → 5 real arXiv papers.
+- ✅ **arXiv full-text path** — `web_fetch` still rejects PDFs by design, so the
+  research-mode and main system prompts now teach the model the HTML body
+  route: `arxiv.org/html/<ID>` (papers published since ~Dec 2023) or
+  `ar5iv.labs.arxiv.org/html/<ID>` (older). Live-verified: the model fetched
+  `arxiv.org/html/2601.14277v1` and reported a genuine finding (Q5_0/Q5_1
+  exceeding the F16 baseline) from the paper body, not the abstract.
+- ✅ **Per-model `reasoning_max_tokens`** — `models:` profiles gained a pointer
+  `reasoning_max_tokens` field (inherits the base recipe when unset), so a
+  slow-thinking model gets capped automatically on long autonomous/research
+  runs. Qwen3VL-8B recipe added to config.example.yaml + docs/models.md.
+  Covered by the extended `TestLoadConfigSamplingProfiles`.
+- ✅ **Live-soak bench cases (last audit-backlog TODO)** — the two
+  previously-deferred cases are now deterministic `yagent bench` tasks:
+  `long-resumed-session` (seeded `InitialHistory` at ~90% of the window, so the
+  budget must prune old tool output before the answer) and `big-mcp-context`
+  (a synthetic 80-param schema via the new `Task.ConfigureRegistry` hook +
+  `tools.Registry.RegisterForTest`, exercising the schema-accounting fix
+  in-process). Covered by `TestRunTaskLongResumedSession` +
+  `TestRunTaskBigMCPContext` + `TestBigSchemaToolSchemaScale`.
+- ✅ **Doc sync** — `docs/design/agent-loop.md` + `memory.md` now describe the
+  accurate server-tokenizer counting (not len/4), tool-schema accounting
+  (MCP included), proactive tool-output pruning, `Window/8` auto-reserve, and
+  the `reasoning_max_tokens` knob.
+

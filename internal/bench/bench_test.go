@@ -29,10 +29,64 @@ func TestTasksIncludesMeasurementExpansion(t *testing.T) {
 	}
 	for _, want := range []string{
 		"edit-recover", "denied-write", "plan-mode", "truncated-recover", "multi-file-refactor",
+		"long-resumed-session", "big-mcp-context",
 	} {
 		if !names[want] {
 			t.Errorf("measurement-expansion task %q missing from Tasks()", want)
 		}
+	}
+}
+
+func TestRunTaskLongResumedSession(t *testing.T) {
+	// Deterministic (no real model): the fake LLM answers "done", so the
+	// RESUME-FACT check fails — but the turn must complete without a panic,
+	// proving the near-limit InitialHistory doesn't break the budget path.
+	var tk Task
+	for _, t2 := range Tasks() {
+		if t2.Name == "long-resumed-session" {
+			tk = t2
+			break
+		}
+	}
+	if tk.Name == "" {
+		t.Fatal("long-resumed-session task not found")
+	}
+	res := RunTask(&fakeChatLLM{}, tk)
+	if strings.Contains(res.Detail, "panic") {
+		t.Errorf("long-resumed-session path panicked: %s", res.Detail)
+	}
+	if res.Detail == "" {
+		t.Error("expected a detail (either pass or a fail reason)")
+	}
+}
+
+func TestRunTaskBigMCPContext(t *testing.T) {
+	var tk Task
+	for _, t2 := range Tasks() {
+		if t2.Name == "big-mcp-context" {
+			tk = t2
+			break
+		}
+	}
+	if tk.Name == "" {
+		t.Fatal("big-mcp-context task not found")
+	}
+	res := RunTask(&fakeChatLLM{}, tk)
+	if strings.Contains(res.Detail, "panic") {
+		t.Errorf("big-mcp-context path panicked: %s", res.Detail)
+	}
+	if res.Detail == "" {
+		t.Error("expected a detail (either pass or a fail reason)")
+	}
+}
+
+func TestBigSchemaToolSchemaScale(t *testing.T) {
+	// the synthetic MCP tool's schema is genuinely large (the accounting fix
+	// exists because such schemas cost real context).
+	b := &bigSchemaTool{}
+	props, _ := b.Schema().Function.Parameters["properties"].(map[string]any)
+	if len(props) < 40 {
+		t.Errorf("big_schema tool schema too small: %d properties", len(props))
 	}
 }
 

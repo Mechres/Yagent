@@ -53,6 +53,7 @@ theme: tokyo
 #   - match: Qwen3VL-8B       # recommended default on a 12 GB card (18/18)
 #     temperature: 0.6
 #     top_p: 0.95
+#     reasoning_max_tokens: 1024   # cap thinking (the biggest 12 GB speed lever on long runs)
 #   - match: Ornith-1.0-9B    # Qwen3.5 coding-agent model (14/18; fastest per task)
 #     temperature: 0.6
 #     top_p: 0.95

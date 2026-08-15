@@ -6,6 +6,7 @@ package bench
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,10 @@ type Task struct {
 	// approve). Used by the measurement-expansion cases so they exercise real
 	// edit→fail→recover loops, not just reads (GPT sol, measurement section).
 	Configure func(cfg *agent.Config) agent.Approver
+	// ConfigureRegistry, when set, customizes the tool registry after it is
+	// built (e.g. injecting a synthetic big-schema tool to measure MCP-scale
+	// context cost). Runs before the agent is constructed.
+	ConfigureRegistry func(reg *tools.Registry)
 	// WrapLLM, when set, wraps the model client before the agent is built —
 	// used to inject a truncated stream (truncated-recover task).
 	WrapLLM func(agent.ChatLLM) agent.ChatLLM
@@ -278,6 +283,65 @@ func Tasks() []Task {
 				return false, "no passing test result after the refactor"
 			},
 		},
+		{
+			// long-resumed-session near the real context limit: the agent is
+			// seeded with a large history (InitialHistory) that nearly fills the
+			// window, then asked a simple question. The deterministic parts —
+			// resumed-session retokenize via the server tokenizer and the budget
+			// pruning old tool output before it trips — must keep the turn alive
+			// and the answer correct (previously deferred: needs a live server
+			// to be meaningful; the accounting fix made it unit-testable).
+			Name: "long-resumed-session",
+			Setup: func(ws string) error {
+				return os.WriteFile(filepath.Join(ws, "data.txt"), []byte("RESUME-FACT-2233\n"), 0o644)
+			},
+			Inputs: []string{"read the file data.txt and tell me its unique value"},
+			Configure: func(cfg *agent.Config) agent.Approver {
+				// Seed ~90% of the 8192-token window with old tool-output-heavy
+				// history, so the budget must prune before the answer request.
+				var hist []llm.Message
+				for i := 0; i < 30; i++ {
+					hist = append(hist, llm.Message{Role: "user", Content: fmt.Sprintf("turn %d request", i)})
+					hist = append(hist, llm.Message{Role: "tool", Content: strings.Repeat("old tool output line with padding to fill context ", 8)})
+					hist = append(hist, llm.Message{Role: "assistant", Content: fmt.Sprintf("turn %d done", i)})
+				}
+				cfg.InitialHistory = hist
+				cfg.Window = 8192
+				return &autoApprover{}
+			},
+			Check: func(answer string, toolResults []string) (bool, string) {
+				if !strings.Contains(answer, "RESUME-FACT-2233") {
+					return false, "final answer lacks the fact (history/budget killed it)"
+				}
+				for _, r := range toolResults {
+					if strings.Contains(r, "RESUME-FACT-2233") {
+						return true, "read the fact with a full near-limit context"
+					}
+				}
+				return true, "answered with the fact in a resumed near-limit session"
+			},
+		},
+		{
+			// big-MCP-server context cost: a synthetic tool with a huge schema
+			// (simulating a large MCP server) is registered. The schema-
+			// accounting fix (GPT sol #6) counts the serialized tools field, so
+			// the gauge/budget reflect the real prompt even with MCP-scale
+			// schemas, and the turn still completes.
+			Name: "big-mcp-context",
+			Setup: func(ws string) error {
+				return os.WriteFile(filepath.Join(ws, "data.txt"), []byte("MCP-FACT-7744\n"), 0o644)
+			},
+			Inputs: []string{"read the file data.txt and tell me its unique value"},
+			ConfigureRegistry: func(reg *tools.Registry) {
+				reg.RegisterForTest(&bigSchemaTool{})
+			},
+			Check: func(answer string, toolResults []string) (bool, string) {
+				if !strings.Contains(answer, "MCP-FACT-7744") {
+					return false, "final answer lacks the fact"
+				}
+				return true, "completed a turn with an MCP-scale tool schema"
+			},
+		},
 	}
 }
 
@@ -323,6 +387,34 @@ type autoApprover struct{}
 
 func (a *autoApprover) Approve(ctx context.Context, call llm.ToolCall, risk tools.RiskLevel) (agent.Approval, error) {
 	return agent.Approval{OK: true}, nil
+}
+
+// bigSchemaTool simulates a large MCP server's schema: a tool whose parameter
+// set is huge, so the serialized `tools` field alone costs a meaningful chunk
+// of context (GPT sol #6). Registered by the big-mcp-context bench task.
+type bigSchemaTool struct{}
+
+func (t *bigSchemaTool) Schema() llm.ToolSchema {
+	props := map[string]any{}
+	var required []string
+	for i := 0; i < 80; i++ {
+		name := fmt.Sprintf("param_%03d", i)
+		props[name] = map[string]any{"type": "string", "description": "a long description for parameter " + name + " that pads the schema to MCP-server scale"}
+		if i < 3 {
+			required = append(required, name)
+		}
+	}
+	s := llm.ToolSchema{Type: "function"}
+	s.Function.Name = "big_mcp_tool"
+	s.Function.Description = "a synthetic tool mimicking a large MCP server's schema surface"
+	s.Function.Parameters = map[string]any{"type": "object", "properties": props, "required": required}
+	return s
+}
+
+func (t *bigSchemaTool) Risk() tools.RiskLevel { return tools.RiskReadOnly }
+
+func (t *bigSchemaTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	return "big mcp tool ok", nil
 }
 
 // Recipe is one sampling configuration under test.
@@ -377,6 +469,9 @@ func RunTask(client agent.ChatLLM, task Task) Result {
 	}
 	var tokens, reasonTokens int
 	reg := tools.NewRegistry(ws, tools.Options{ReadOnly: task.Configure == nil})
+	if task.ConfigureRegistry != nil {
+		task.ConfigureRegistry(reg)
+	}
 	cfg := agent.Config{
 		MaxIterations: 8,
 		Window:        8192,

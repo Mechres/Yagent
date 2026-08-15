@@ -16,7 +16,7 @@ type fakePaperSource struct {
 }
 
 func (f *fakePaperSource) Name() string { return "fake" }
-func (f *fakePaperSource) SearchPapers(ctx context.Context, q string, k int) ([]web.Paper, error) {
+func (f *fakePaperSource) SearchPapers(ctx context.Context, q string, k, sinceYear int) ([]web.Paper, error) {
 	if k > 0 && k < len(f.papers) {
 		return f.papers[:k], nil
 	}
@@ -60,6 +60,16 @@ func TestPaperSearchTool(t *testing.T) {
 	}
 	if got := execTool(t, reg, "paper_search", map[string]any{"query": "x", "k": 99}); !strings.Contains(got, "validation-error") {
 		t.Errorf("paper_search k=99 = %q", got)
+	}
+	if got := execTool(t, reg, "paper_search", map[string]any{"query": "x", "since": -1}); !strings.Contains(got, "validation-error") {
+		t.Errorf("paper_search since=-1 = %q", got)
+	}
+	if got := execTool(t, reg, "paper_search", map[string]any{"query": "x", "since": 9999}); !strings.Contains(got, "validation-error") {
+		t.Errorf("paper_search since=9999 = %q", got)
+	}
+	// since is passed through to the sources
+	if got := execTool(t, reg, "paper_search", map[string]any{"query": "x", "since": 2024}); !strings.Contains(got, "[papers since 2024]") {
+		t.Errorf("paper_search since=2024 = %q", got)
 	}
 	// not registered without Papers
 	reg2 := NewRegistry(t.TempDir(), Options{Web: c})
