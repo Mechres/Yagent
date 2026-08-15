@@ -326,6 +326,28 @@ type MessageHit struct {
 	Snippet   string
 }
 
+// CountMessages reports how many messages a session has.
+func (s *Store) CountMessages(ctx context.Context, sessionID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM messages WHERE session_id = ?`, sessionID).Scan(&n)
+	return n, err
+}
+
+// DeleteIfEmpty removes a session (and its messages) when it has no messages —
+// used at chat teardown so opening and closing the TUI/REPL without talking
+// doesn't leave an empty session row.
+func (s *Store) DeleteIfEmpty(ctx context.Context, sessionID string) error {
+	n, err := s.CountMessages(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	return s.DeleteSession(ctx, sessionID)
+}
+
 // DeleteSession removes a session and all its messages/summary (used by the
 // TUI session browser).
 func (s *Store) DeleteSession(ctx context.Context, sessionID string) error {

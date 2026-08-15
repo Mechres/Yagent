@@ -120,6 +120,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 				if err := memory.SummarizeSession(wrapCtx, m.currentClient(), env.st, env.vs, env.sessionID); err != nil {
 					slog.Warn("session summary", "error", err)
 				}
+				m.sessionDeleted = env.maybeDeleteEmptySession(wrapCtx)
 				cancel()
 				return
 			case req := <-inputCh:
@@ -155,6 +156,10 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	runnerCancel()
 	<-runnerDone
 	// Leave the alt-screen, then print the session so the user can resume.
+	if m.sessionDeleted {
+		fmt.Fprintln(os.Stdout, "\n(no messages — empty session not saved)")
+		return m.err
+	}
 	if env.forkSource != "" {
 		fmt.Fprintf(os.Stdout, "\nsession: %s (forked from %s; resume with: yagent chat --continue %s)\n",
 			env.sessionID, env.forkSource, env.sessionID)
@@ -358,6 +363,9 @@ type tuiModel struct {
 	diffText   string
 	diffScroll int
 	diffStat   string
+	// sessionDeleted is set when an empty new session was cleaned up at
+	// teardown (opened the TUI without chatting).
+	sessionDeleted bool
 
 	sessionsOpen    bool
 	sessionsIdx     int

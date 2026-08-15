@@ -2,6 +2,16 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.76 — 2026-08-15
+
+### Fixed
+- **Empty sessions are no longer saved** — opening the TUI or REPL and closing
+  it without sending a message used to leave an empty session row. At teardown
+  a brand-new session that received no messages is deleted
+  (`Store.DeleteIfEmpty` + `chatEnv.maybeDeleteEmptySession`, both UIs). Resumed
+  (`--continue`) and forked sessions are never touched. Live-verified: an
+  open-and-exit leaves "no sessions yet"; a real chat still saves.
+
 ## v0.1.75 — 2026-08-15
 
 ### Added

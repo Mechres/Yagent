@@ -454,3 +454,41 @@ func TestDeleteSession(t *testing.T) {
 		t.Errorf("sessions after delete = %+v", sessions)
 	}
 }
+
+func TestDeleteIfEmpty(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	// an empty session is deleted
+	empty, err := st.NewSession(ctx, "/tmp/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteIfEmpty(ctx, empty.ID); err != nil {
+		t.Fatal(err)
+	}
+	sessions, _ := st.ListSessions(ctx)
+	if len(sessions) != 0 {
+		t.Fatalf("empty session not deleted: %+v", sessions)
+	}
+
+	// a session with messages is kept
+	used, err := st.NewSession(ctx, "/tmp/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, used.ID, Message{Role: "user", Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteIfEmpty(ctx, used.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.History(ctx, used.ID); err != nil {
+		t.Fatalf("session with messages was deleted: %v", err)
+	}
+}

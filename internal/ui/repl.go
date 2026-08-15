@@ -424,6 +424,10 @@ done:
 	if err := memory.SummarizeSession(ctx, client, env.st, env.vs, env.sessionID); err != nil {
 		fmt.Fprintf(w, "\nwarning: session summary: %v\n", err)
 	}
+	if env.maybeDeleteEmptySession(ctx) {
+		fmt.Fprintf(w, "\n(no messages — empty session not saved)\n")
+		return nil
+	}
 	fmt.Fprintf(w, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
 	return nil
 }
@@ -632,11 +636,29 @@ type chatEnv struct {
 	// /undo becomes a git revert (durable, crash-safe). When false, the
 	// in-memory undo buffer is the fallback.
 	gitEnabled bool
+	// isNewSession is true when this is a brand-new session (not --continue or
+	// --fork). At teardown, a new session that never received a message is
+	// deleted so opening/closing the TUI without chatting leaves nothing behind.
+	isNewSession bool
 	// gitBaseline is HEAD after the startup dirty-commit snapshot — the point
 	// the session started from. /diff shows the agent's cumulative changes
 	// against it (the plandex-style review sandbox).
 	gitBaseline string
 	turnSeq     int
+}
+
+// maybeDeleteEmptySession removes a brand-new session that never received a
+// message (opened the TUI/REPL and closed it without chatting). Resumed and
+// forked sessions are never touched. Returns true when deleted.
+func (env *chatEnv) maybeDeleteEmptySession(ctx context.Context) bool {
+	if !env.isNewSession {
+		return false
+	}
+	if err := env.st.DeleteIfEmpty(ctx, env.sessionID); err != nil {
+		slog.Warn("delete empty session", "error", err)
+		return false
+	}
+	return true
 }
 
 // commitDirtyStart commits any pre-existing uncommitted changes up front (aider
@@ -960,6 +982,9 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		summ:       summClient,
 		mcpClients: connectMCP(ctx, cfg),
 	}
+	// A fresh session (no --continue / --fork) that never receives a message is
+	// deleted at teardown; resumed sessions are never touched.
+	env.isNewSession = continueID == "" && forkID == ""
 	env.gitEnabled = cfg.AutoCommitGit && gitops.IsRepo(ws)
 	env.registry = tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
