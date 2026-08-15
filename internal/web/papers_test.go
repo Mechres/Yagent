@@ -70,6 +70,52 @@ func TestArxivHTTPError(t *testing.T) {
 	}
 }
 
+func TestArxivUserAgent(t *testing.T) {
+	var gotUA string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`))
+	}))
+	defer ts.Close()
+	a := &arXiv{http: ts.Client(), endpoint: ts.URL + "/api/query"}
+	if _, err := a.SearchPapers(context.Background(), "x", 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	if gotUA != paperUserAgent {
+		t.Errorf("arxiv User-Agent = %q, want %q", gotUA, paperUserAgent)
+	}
+}
+
+func TestArxivRateLimited(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+	a := &arXiv{http: ts.Client(), endpoint: ts.URL + "/api/query"}
+	_, err := a.SearchPapers(context.Background(), "x", 5, 0)
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Errorf("arxiv 429 should surface a rate-limit error, got %v", err)
+	}
+}
+
+func TestPubMedUserAgent(t *testing.T) {
+	var gotUA string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"esearchresult": map[string]any{"idlist": []string{}}})
+	}))
+	defer ts.Close()
+	p := &PubMed{http: ts.Client(), base: ts.URL}
+	if _, err := p.SearchPapers(context.Background(), "x", 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	if gotUA != paperUserAgent {
+		t.Errorf("pubmed User-Agent = %q, want %q", gotUA, paperUserAgent)
+	}
+}
+
 func TestArxivRecencyFilter(t *testing.T) {
 	var gotQuery string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

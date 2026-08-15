@@ -80,7 +80,7 @@ func (r *Report) Render(w io.Writer) error {
 	return nil
 }
 
-const timeout = 5 * time.Second
+const timeout = 25 * time.Second
 
 // addProjectToolchain inspects the current working directory's project marker
 // files and verifies the matching toolchain binary is on PATH, so
@@ -280,6 +280,30 @@ func Run(cfg *config.Config) Report {
 		rep.add("consult", StatusInfo, "advisor disabled (set consult.* or consult.cmd)")
 	}
 
+	// --- web_search config (a misconfigured provider bricks `yagent chat`
+	// at startup — newChatEnv fails hard, so doctor must catch it here) ---
+	switch cfg.Web.Provider {
+	case "", "duckduckgo", "mojeek":
+		rep.add("web_search", StatusPass, "provider "+orDefault(cfg.Web.Provider, "duckduckgo"))
+	case "searxng":
+		if cfg.Web.SearxngURL == "" {
+			rep.add("web_search", StatusFail, "provider searxng requires web_search.searxng_url — `yagent chat` will not start until it is set")
+		} else {
+			rep.add("web_search", StatusPass, "provider searxng @ "+cfg.Web.SearxngURL)
+		}
+	case "langsearch":
+		if cfg.Web.LangSearchKey == "" {
+			rep.add("web_search", StatusFail, "provider langsearch requires web_search.langsearch_api_key — `yagent chat` will not start until it is set")
+		} else {
+			rep.add("web_search", StatusPass, "provider langsearch (key set)")
+		}
+	default:
+		rep.add("web_search", StatusFail, fmt.Sprintf("unknown provider %q (duckduckgo | mojeek | searxng | langsearch) — `yagent chat` will not start", cfg.Web.Provider))
+	}
+	if cfg.Web.Papers && cfg.Web.SemanticScholarKey == "" {
+		rep.add("web_search", StatusInfo, "papers enabled without a semantic scholar key — the Semantic Scholar index is rate-limited to ~1 req/s without one")
+	}
+
 	// --- bench regression gate (T1-2) ---
 	if cfg.Model != "" {
 		base := bench.LoadBaseline(cfg.DataDir)
@@ -300,7 +324,7 @@ func Run(cfg *config.Config) Report {
 	client := &http.Client{Timeout: timeout}
 
 	// --- server reachable + model list ---
-	models, errText := fetchModels(client, cfg.ServerURL)
+	models, errText := fetchModels(client, cfg.ServerURL, cfg.APIKey)
 	if errText != "" {
 		rep.add("server", StatusFail, errText)
 		return rep
@@ -309,7 +333,10 @@ func Run(cfg *config.Config) Report {
 
 	modelFound := false
 	for _, m := range models {
-		if m == cfg.Model {
+		// Substring match: llama.cpp lists the full model path
+		// (/home/.../Qwen3VL-8B-Instruct-Q4_K_M.gguf) and Ollama lists
+		// "name:tag" — an exact match would false-warn on both.
+		if strings.Contains(m, cfg.Model) || strings.Contains(cfg.Model, m) {
 			modelFound = true
 			break
 		}
@@ -324,9 +351,16 @@ func Run(cfg *config.Config) Report {
 	}
 
 	// --- embeddings endpoint ---
-	switch dim, err := probeEmbeddings(client, cfg.ServerURL, cfg.EmbeddingModel); {
+	// Probe the embedding server (a dedicated embedding_server_url when set,
+	// else the main server) — this is the endpoint L3 memory/index actually
+	// uses, so a green check here means memory really works.
+	embedBase := cfg.EmbeddingServerURL
+	if embedBase == "" {
+		embedBase = cfg.ServerURL
+	}
+	switch dim, err := probeEmbeddings(client, embedBase, cfg.EmbeddingModel, cfg.APIKey); {
 	case err == nil:
-		rep.add("embeddings", StatusPass, fmt.Sprintf("/v1/embeddings OK (%d-dim)", dim))
+		rep.add("embeddings", StatusPass, fmt.Sprintf("/v1/embeddings OK (%d-dim) @ %s", dim, embedBase))
 	case strings.Contains(err.Error(), "501") || strings.Contains(err.Error(), "not support embeddings"):
 		rep.add("embeddings", StatusWarn, "server does not serve embeddings (start llama-server with --embeddings --pooling mean, or use Ollama nomic-embed-text)")
 	default:
@@ -334,7 +368,7 @@ func Run(cfg *config.Config) Report {
 	}
 
 	// --- chat sanity ---
-	if err := probeChat(client, cfg.ServerURL, cfg.Model); err != nil {
+	if err := probeChat(client, cfg.ServerURL, cfg.Model, cfg.APIKey); err != nil {
 		rep.add("chat", StatusFail, fmt.Sprintf("model did not answer: %v", err))
 	} else {
 		rep.add("chat", StatusPass, "model answered a ping")
@@ -346,11 +380,35 @@ func Run(cfg *config.Config) Report {
 	return rep
 }
 
-func fetchModels(client *http.Client, base string) ([]string, string) {
+// baseURL normalizes a configured server URL for the /v1/* suffixes: it strips
+// a trailing "/v1" so /v1/models, /v1/embeddings and /v1/chat/completions
+// resolve to <base>/v1/<endpoint>. Without this, a provider whose documented
+// base already ends in /v1 (NVIDIA NIM, Together, Mistral) produces
+// /v1/v1/... -> 404 — the same bug llm.baseURL fixed for the agent loop.
+func baseURL(serverURL string) string {
+	u := strings.TrimRight(serverURL, "/")
+	if strings.HasSuffix(u, "/v1") {
+		u = strings.TrimSuffix(u, "/v1")
+	}
+	return u
+}
+
+// orDefault returns value, or def when value is empty.
+func orDefault(value, def string) string {
+	if value == "" {
+		return def
+	}
+	return value
+}
+
+func fetchModels(client *http.Client, base, apiKey string) ([]string, string) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
-		strings.TrimRight(base, "/")+"/v1/models", nil)
+		baseURL(base)+"/v1/models", nil)
 	if err != nil {
 		return nil, err.Error()
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -389,10 +447,18 @@ func fetchModels(client *http.Client, base string) ([]string, string) {
 	return out, ""
 }
 
-func probeEmbeddings(client *http.Client, base, model string) (int, error) {
+func probeEmbeddings(client *http.Client, base, model, apiKey string) (int, error) {
 	body, _ := json.Marshal(map[string]any{"model": model, "input": "doctor probe"})
-	resp, err := client.Post(strings.TrimRight(base, "/")+"/v1/embeddings",
-		"application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		baseURL(base)+"/v1/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
 	}
@@ -415,14 +481,22 @@ func probeEmbeddings(client *http.Client, base, model string) (int, error) {
 	return len(out.Data[0].Embedding), nil
 }
 
-func probeChat(client *http.Client, base, model string) error {
+func probeChat(client *http.Client, base, model, apiKey string) error {
 	body, _ := json.Marshal(map[string]any{
 		"model":    model,
 		"messages": []map[string]string{{"role": "user", "content": "ping"}},
 		"stream":   false,
 	})
-	resp, err := client.Post(strings.TrimRight(base, "/")+"/v1/chat/completions",
-		"application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		baseURL(base)+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

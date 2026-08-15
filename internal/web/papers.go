@@ -25,6 +25,11 @@ type Paper struct {
 	DOI      string
 }
 
+// paperUserAgent identifies yagent to the scholarly APIs. arXiv's export API
+// requires a descriptive User-Agent and throttles by IP; Go's default
+// "Go-http-client/1.1" is the classic trigger for 429s.
+const paperUserAgent = "Mozilla/5.0 (X11; Linux x86_64) Yagent"
+
 // PaperSource is a scholarly index the paper search queries.
 type PaperSource interface {
 	Name() string
@@ -80,11 +85,15 @@ func (a *arXiv) SearchPapers(ctx context.Context, query string, k, sinceYear int
 	if err != nil {
 		return nil, fmt.Errorf("build arxiv request: %w", err)
 	}
+	req.Header.Set("User-Agent", paperUserAgent)
 	resp, err := a.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("arxiv request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, fmt.Errorf("arxiv rate-limited (429) — wait a few seconds and retry")
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("arxiv returned %s", resp.Status)
 	}
@@ -224,11 +233,15 @@ func (p *PubMed) getJSON(ctx context.Context, u string, v any) error {
 	if err != nil {
 		return fmt.Errorf("build pubmed request: %w", err)
 	}
+	req.Header.Set("User-Agent", paperUserAgent)
 	resp, err := p.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("pubmed request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("pubmed rate-limited (429) — wait a few seconds and retry")
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("pubmed returned %s", resp.Status)
 	}
@@ -270,6 +283,7 @@ func (s *SemanticScholar) SearchPapers(ctx context.Context, query string, k, sin
 	if err != nil {
 		return nil, fmt.Errorf("build semanticscholar request: %w", err)
 	}
+	req.Header.Set("User-Agent", paperUserAgent)
 	if s.key != "" {
 		req.Header.Set("x-api-key", s.key)
 	}

@@ -1405,3 +1405,54 @@ The four items the user picked after v0.1.81, live-verified on **Qwen3VL-8B** :8
   (MCP included), proactive tool-output pruning, `Window/8` auto-reserve, and
   the `reasoning_max_tokens` knob.
 
+## Doctor/cloud-fix batch 2026-08-15 (all tested, found via `yagent doctor`)
+
+A gap-survey + live-verification pass (installing v0.1.82 surfaced a broken
+doctor against the real NVIDIA NIM cloud config). All shipped:
+
+- ✅ **Doctor `/v1`-suffix bug** — `fetchModels`/`probeEmbeddings`/`probeChat`
+  built `base + "/v1/..."`; a base already ending in `/v1` (NVIDIA NIM,
+  Together, Mistral) hit `/v1/v1/...` → 404. Doctor now shares the same
+  `baseURL` normalization the LLM client has used since v0.1.70. Covered by
+  `TestDoctorV1SuffixedBase`.
+- ✅ **Doctor API-key on probes** — cloud endpoints 401'd the doctor's
+  models/embeddings/chat probes because no `Authorization: Bearer` was sent
+  (the agent loop sends it). Covered by `TestDoctorAPIKeyAuth`.
+- ✅ **Doctor probes `embedding_server_url`** — the embeddings probe targeted
+  the chat server, so doctor could be green while L3 memory/index embedding
+  was actually down. Now probes the dedicated embedding server when set.
+  Covered by `TestDoctorEmbeddingServerURL`.
+- ✅ **Doctor validates `web_search` config** — searxng-without-url,
+  langsearch-without-key and unknown providers are doctor FAILs (they used to
+  pass doctor and then brick `yagent chat` at startup). Also INFOs when
+  `papers: true` without a Semantic Scholar key. Covered by
+  `TestDoctorWebSearchConfig`.
+- ✅ **`/set` cross-field validation** — `config.Set` parses the updated tree
+  and rejects a provider/key combo that would brick the next session. Covered
+  by `TestSetCrossFieldValidation`.
+- ✅ **`RunResearch` unverified-DONE fix** — an interrupted DONE-check now
+  returns an error instead of reporting an unverified run as success.
+  Covered by `TestRunResearchUnverifiedDoneErrors`.
+- ✅ **Typed-nil summarizer panic** (found live) — an unconfigured `env.summ`
+  (typed-nil `*llm.Client`) is non-nil to `== nil`, so the budget summarizer
+  panicked on it; the UI only sets it when configured and the agent guards
+  typed-nil interfaces (`isNilInterface`). Covered by
+  `TestTypedNilSummarizerDoesNotPanic`.
+- ✅ **Doctor model-name substring matching + 25s probe timeout** — llama.cpp
+  lists full model paths and Ollama `name:tag`, so exact match false-warned;
+  a thinking model exceeds the old 5s timeout for a ping. Both fixed.
+- ✅ **Research gate requires a real `## Sources` section** — any 2 URLs
+  anywhere in the report no longer pass; the URLs must sit under a
+  Sources/References heading (`countSourcesSection`). Covered by
+  `TestCountSourcesSection`.
+- ✅ **`/set` bool keys written as YAML bools** — `codegen`/`git_auto_commit`
+  fell through to `!!str`; now tagged bool like the others. Covered by
+  `TestSetBoolKeysWrittenAsYAMLBools`.
+- ✅ **paper_search UA + 429s** — arXiv/PubMed/Semantic Scholar now send the
+  project `Mozilla/5.0 ... Yagent` UA (they used Go's default, which arXiv
+  throttles by IP) and arXiv/PubMed surface 429 rate-limits readably. Covered
+  by `TestArxivUserAgent`/`TestArxivRateLimited`/`TestPubMedUserAgent`.
+- Live-verified on Qwen3VL-8B :8089: doctor all-pass, searxng-no-url doctor-
+  FAIL, `/research` ran the full flow and passed the stricter Sources-section
+  gate.
+

@@ -1131,7 +1131,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		}
 		return fmt.Sprintf("%s\n\n(subagent used ~%d tokens)", answer, tokens), nil
 	})
-	return agent.New(client, env.registry, approver, agent.Config{
+	acfg := agent.Config{
 		OnToken:          onToken,
 		OnReasoning:      onReasoning,
 		OnTool:           onTool,
@@ -1156,8 +1156,14 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		Codegen:          cfg.Codegen,
 		Research:         true, // research_note tool + SOURCES/RESEARCH NOTES ledger
 		VramThresholdTPS: cfg.VramThresholdTPS,
-		Summarizer:       env.summ,
-	}, ws)
+	}
+	if env.summ != nil {
+		// Only set the offloaded summarizer when actually configured: passing a
+		// typed-nil *llm.Client makes the interface non-nil and defeats the
+		// agent's nil-default, panicking the budget summarizer.
+		acfg.Summarizer = env.summ
+	}
+	return agent.New(client, env.registry, approver, acfg, ws)
 }
 
 // lastUserMessage returns the goal text of a goal-mode session (goal mode

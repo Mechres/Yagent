@@ -944,7 +944,42 @@ func Set(path, key, value string) error {
 		node = child
 	}
 	setMappingKey(node, parts[len(parts)-1], typedScalar(parts[len(parts)-1], value))
+	// Cross-field validation: a provider/key combination that would make the
+	// next `yagent chat` fail to start must be rejected here, not written to
+	// disk (newChatEnv fails hard on searxng-without-url / langsearch-without-
+	// key / unknown provider). Parse the updated tree and check.
+	if err := validateCrossField(doc); err != nil {
+		return err
+	}
 	return saveConfigNode(doc, path)
+}
+
+// validateCrossField rejects config files whose web_search provider/key
+// combination would brick `yagent chat` at startup (newChatEnv fails hard on
+// these, so /set must not persist them).
+func validateCrossField(doc *yaml.Node) error {
+	var c Config
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil // can't render; let the caller see the real error
+	}
+	if err := yaml.Unmarshal(data, &c); err != nil {
+		return nil
+	}
+	switch c.Web.Provider {
+	case "searxng":
+		if c.Web.SearxngURL == "" {
+			return &ValidationError{msg: "web_search.provider searxng requires web_search.searxng_url (or `yagent chat` will fail to start)"}
+		}
+	case "langsearch":
+		if c.Web.LangSearchKey == "" {
+			return &ValidationError{msg: "web_search.provider langsearch requires web_search.langsearch_api_key (or `yagent chat` will fail to start)"}
+		}
+	case "", "duckduckgo", "mojeek":
+	default:
+		return &ValidationError{msg: fmt.Sprintf("unknown web_search.provider %q (duckduckgo | mojeek | searxng | langsearch)", c.Web.Provider)}
+	}
+	return nil
 }
 
 // loadConfigNode reads the config file into yaml nodes (creating an empty one
@@ -1088,7 +1123,7 @@ func validateKey(parts []string, value string) error {
 // existing write_approval/context_window convention.
 func typedScalar(key, value string) *yaml.Node {
 	switch key {
-	case "write_approval", "show_reasoning", "loop_guard", "papers":
+	case "write_approval", "show_reasoning", "loop_guard", "papers", "codegen", "git_auto_commit":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
 	case "context_window", "top_k", "reasoning_max_tokens", "max_fetch_kib":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}

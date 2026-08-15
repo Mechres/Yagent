@@ -113,6 +113,21 @@ func (f *fixedSummaryLLM) ChatStream(ctx context.Context, msgs []llm.Message, to
 	return &llm.Response{Message: llm.Message{Role: "assistant", Content: f.summary}}, nil
 }
 
+// TestTypedNilSummarizerDoesNotPanic: a *llm.Client(nil) stored in the
+// Summarizer interface is non-nil to == nil but panics on method call. New
+// must fall back to the main model (regression: the budget summarizer panicked
+// on a typed-nil env.summ from the UI).
+func TestTypedNilSummarizerDoesNotPanic(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{})
+	main := &fixedSummaryLLM{summary: "unused"}
+	var typedNil *llm.Client // nil *llm.Client in the interface
+	a := New(main, reg, &stubApprover{allow: true}, Config{MaxIterations: 5, Summarizer: typedNil}, ws)
+	if a.summ != main {
+		t.Errorf("summ = %T, want the main model (typed-nil must fall back)", a.summ)
+	}
+}
+
 // failingSummLLM is a summarizer that always errors (a dead offload server).
 type failingSummLLM struct{ calls int }
 
@@ -127,6 +142,27 @@ type truncatingLLM struct {
 	mu   sync.Mutex
 	n    int
 	body string
+}
+
+// failAfterNLLM succeeds for the first n requests, then errors — used to force
+// the research DONE-check (a separate request) to fail so the unverified-run
+// path can be asserted.
+type failAfterNLLM struct {
+	mu   sync.Mutex
+	n    int
+	max  int
+	body string
+}
+
+func (f *failAfterNLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
+	f.mu.Lock()
+	f.n++
+	n := f.n
+	f.mu.Unlock()
+	if n > f.max {
+		return nil, errors.New("server hiccup")
+	}
+	return &llm.Response{Message: llm.Message{Role: "assistant", Content: f.body}}, nil
 }
 
 func (t *truncatingLLM) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolSchema, onDelta, onReasoning func(string)) (*llm.Response, error) {
@@ -3227,6 +3263,21 @@ func TestRunResearchGateRequiresReport(t *testing.T) {
 	}
 }
 
+func TestRunResearchUnverifiedDoneErrors(t *testing.T) {
+	// The research turn completes, but the DONE-check request fails (server
+	// hiccup): the run must return an error, not report an unverified success.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{})
+	// request 1 = Run (answer), request 2 = goalDone DONE-check -> fails
+	llm := &failAfterNLLM{max: 1, body: "research findings here"}
+	a := New(llm, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	if _, err := a.RunResearch(context.Background(), "topic", 2, nil); err == nil {
+		t.Fatal("RunResearch must return an error when the DONE check fails")
+	} else if !strings.Contains(err.Error(), "DONE check") {
+		t.Errorf("error should mention the unverified DONE check: %v", err)
+	}
+}
+
 func TestResearchGateRefusesWithoutSources(t *testing.T) {
 	// No pages fetched at all: even with a report claim, DONE is refused.
 	ws := t.TempDir()
@@ -3251,9 +3302,24 @@ func TestResearchGateRefusesWithoutSources(t *testing.T) {
 	}
 }
 
-func TestCountCitedURLs(t *testing.T) {
-	body := "see https://example.com/a and [https://example.com/b](x) plus https://example.com/a again and ftp://nope"
-	if got := countCitedURLs(body); got != 2 {
-		t.Errorf("countCitedURLs = %d, want 2", got)
+func TestCountSourcesSection(t *testing.T) {
+	// URLs outside a Sources section must not count
+	body := "see https://example.com/a and https://example.com/b in the body\n\n## Sources\n- https://example.com/a\n- https://example.com/c\n"
+	cited, found := countSourcesSection(body)
+	if !found {
+		t.Error("Sources section not found")
+	}
+	if cited != 2 {
+		t.Errorf("countSourcesSection = %d, want 2 (only the Sources section URLs count)", cited)
+	}
+	// no Sources heading -> found=false even with URLs present
+	if _, found := countSourcesSection("body with https://example.com/x and https://example.com/y only"); found {
+		t.Error("no Sources heading should report found=false")
+	}
+	// References heading also recognized, next heading terminates the section
+	body2 := "intro https://example.com/a\n\n## References\n- https://example.com/r1\n- https://example.com/r2\n\n## More\n- https://example.com/ignored\n"
+	cited2, found2 := countSourcesSection(body2)
+	if !found2 || cited2 != 2 {
+		t.Errorf("references section = %d found=%v, want 2 found=true", cited2, found2)
 	}
 }

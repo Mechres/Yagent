@@ -7,6 +7,28 @@ import (
 	"testing"
 )
 
+func TestSetBoolKeysWrittenAsYAMLBools(t *testing.T) {
+	// codegen and git_auto_commit are single-segment bool keys; /set must write
+	// them as unquoted YAML bools (like every other bool key), not strings.
+	path := writeConfig(t, "server_url: http://x\nmodel: m\n")
+	if err := Set(path, "codegen", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Set(path, "git_auto_commit", "false"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "codegen: true") {
+		t.Errorf("codegen not written as a bool:\n%s", data)
+	}
+	if !strings.Contains(string(data), "git_auto_commit: false") {
+		t.Errorf("git_auto_commit not written as a bool:\n%s", data)
+	}
+	if strings.Contains(string(data), `codegen: "true"`) {
+		t.Errorf("codegen written as a quoted string:\n%s", data)
+	}
+}
+
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -484,6 +506,34 @@ func TestSetGeneralAndValidation(t *testing.T) {
 	}
 	if err := Set(path, "skills.write_approval", "true"); err != nil {
 		t.Errorf("write_approval set: %v", err)
+	}
+}
+
+// TestSetCrossFieldValidation: /set must not persist a web_search provider/key
+// combination that would brick the next `yagent chat` (newChatEnv fails hard on
+// searxng-without-url / langsearch-without-key / unknown provider).
+func TestSetCrossFieldValidation(t *testing.T) {
+	path := writeConfig(t, "server_url: http://example.test\nmodel: m\n")
+	// searxng without a URL -> rejected
+	if err := Set(path, "web_search.provider", "searxng"); err == nil {
+		t.Error("searxng without a URL should be rejected")
+	}
+	// searxng WITH a URL -> accepted, persists
+	if err := Set(path, "web_search.searxng_url", "http://searx:8080"); err != nil {
+		t.Fatalf("set searxng_url: %v", err)
+	}
+	if err := Set(path, "web_search.provider", "searxng"); err != nil {
+		t.Errorf("searxng with a URL should be accepted: %v", err)
+	}
+	// langsearch without a key -> rejected
+	if err := Set(path, "web_search.provider", "langsearch"); err == nil {
+		t.Error("langsearch without a key should be rejected")
+	}
+	if err := Set(path, "web_search.langsearch_api_key", "k"); err != nil {
+		t.Fatalf("set langsearch key: %v", err)
+	}
+	if err := Set(path, "web_search.provider", "langsearch"); err != nil {
+		t.Errorf("langsearch with a key should be accepted: %v", err)
 	}
 }
 

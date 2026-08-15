@@ -318,7 +318,7 @@ esac
 `
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--check \"<file> contains <text>\"|!contains|exists]... [--research <topic>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] [--codegen] | yagent sessions [search <q>|export <id>] | yagent memory [list|count|search <q>|delete <id|--all>|export <file>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
+	fmt.Fprintln(os.Stderr, "usage: yagent chat [--continue <id>] [--fork <id>] [--goal <g>] [--rounds <n>] [--check \"<file> contains <text>\"|!contains|exists]... [--research <topic>] [--resume-goal <id>] [--playbook <name>] [--trace <file>] [--plain] [--yolo] [--codegen] | yagent sessions [search <q>|export <id>] | yagent memory [list|count|search <q>|delete <id|--all>|export <file>] | yagent export-dataset [--output file] [--format openai|sharegpt|dpo] [--session <id>] [--min-messages <n>] | yagent playbook list | yagent calibrate [--write] | yagent bench [--json] [--repeat <n>] | yagent completion bash|zsh | yagent init | yagent backup [--output dir] | yagent skills list|import <file> [--scope global|project] | yagent doctor | yagent --version")
 	os.Exit(2)
 }
 

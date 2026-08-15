@@ -2,6 +2,48 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.83 — 2026-08-15
+
+### Fixed
+- **Doctor cloud-endpoint diagnostics** (found via `yagent doctor` against NVIDIA
+  NIM): doctor now strips a trailing `/v1` from the base URL (NVIDIA
+  NIM/Together/Mistral-style configs previously hit `/v1/v1/models` → 404), and
+  sends the configured API key on its models/embeddings/chat probes (previously
+  cloud endpoints 401'd). The embeddings probe now targets
+  `embedding_server_url` when set, not the chat server — so a green doctor
+  really means L3 memory works.
+- **Doctor validates `web_search` config** — searxng-without-url,
+  langsearch-without-key and unknown providers are now doctor FAILs (they
+  previously passed doctor but bricked `yagent chat` at startup).
+- **`/set` cross-field validation** — `config.Set` rejects a provider/key
+  combination that would make the next chat session fail to start.
+- **`RunResearch` no longer reports unverified runs as success** — an
+  interrupted DONE-check returns an error instead of exit 0 without a
+  deliverable.
+- **Typed-nil summarizer panic** (found live) — an unconfigured `env.summ`
+  (typed-nil `*llm.Client`) defeated the agent's nil-default and panicked the
+  budget summarizer; the UI now only sets it when configured and the agent
+  guards against typed-nil interfaces.
+- **Doctor model-name matching** — substring match (llama.cpp lists full model
+  paths, Ollama `name:tag`); raised the probe timeout 5s → 25s (thinking models
+  exceed 5s for a ping).
+- **Research gate requires a real `## Sources` section** — any 2 URLs anywhere
+  in the report no longer pass; the URLs must be under a Sources/References
+  heading.
+- **`/set codegen`/`git_auto_commit` written as YAML bools**, not strings.
+- **arXiv/PubMed/Semantic Scholar send the project User-Agent** and arXiv/PubMed
+  surface 429 rate-limits readably.
+
+### Tests
+- `TestDoctorV1SuffixedBase`, `TestDoctorAPIKeyAuth`, `TestDoctorEmbeddingServerURL`,
+  `TestDoctorWebSearchConfig`, `TestSetCrossFieldValidation`,
+  `TestSetBoolKeysWrittenAsYAMLBools`, `TestRunResearchUnverifiedDoneErrors`,
+  `TestTypedNilSummarizerDoesNotPanic`, `TestCountSourcesSection`,
+  `TestArxivUserAgent`, `TestArxivRateLimited`, `TestPubMedUserAgent`.
+  Live-verified on Qwen3VL-8B (:8089): doctor all-pass, misconfig doctor-FAIL,
+  `/research` ran the full flow (search → fetch ×2 → notes → report with a
+  `## Sources` section) and passed the gate.
+
 ## v0.1.82 — 2026-08-15
 
 ### Added

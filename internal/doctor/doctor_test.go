@@ -13,9 +13,15 @@ import (
 )
 
 // fakeServer answers /v1/models, /v1/embeddings and /v1/chat/completions.
-func fakeServer(t *testing.T, embedOK bool) *httptest.Server {
+// When requireKey is set, a missing Authorization header is a 401 (like a
+// cloud OpenAI-compatible endpoint).
+func fakeServer(t *testing.T, embedOK, requireKey bool) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requireKey && r.Header.Get("Authorization") != "Bearer test-key" {
+			http.Error(w, `{"error":"authorization header missing"}`, http.StatusUnauthorized)
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/models":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -41,7 +47,7 @@ func fakeServer(t *testing.T, embedOK bool) *httptest.Server {
 }
 
 func TestDoctorHealthy(t *testing.T) {
-	ts := fakeServer(t, true)
+	ts := fakeServer(t, true, false)
 	defer ts.Close()
 	cfg := &config.Config{ServerURL: ts.URL, Model: "test-model", EmbeddingModel: "test-embed", DataDir: t.TempDir()}
 	rep := Run(cfg)
@@ -50,6 +56,49 @@ func TestDoctorHealthy(t *testing.T) {
 			t.Logf("%s %s: %s", c.Status, c.Name, c.Detail)
 		}
 		t.Fatalf("failures = %d, want 0", rep.Failures)
+	}
+}
+
+// TestDoctorAPIKeyAuth: a cloud endpoint (NVIDIA NIM style) that requires
+// Authorization: Bearer must pass doctor when cfg.APIKey is set — the probes
+// must send the key just like the agent loop does.
+func TestDoctorAPIKeyAuth(t *testing.T) {
+	ts := fakeServer(t, true, true)
+	defer ts.Close()
+	cfg := &config.Config{ServerURL: ts.URL + "/v1", Model: "test-model", EmbeddingModel: "test-embed", DataDir: t.TempDir(), APIKey: "test-key"}
+	rep := Run(cfg)
+	if rep.Failures != 0 {
+		for _, c := range rep.Checks {
+			if c.Status == StatusFail {
+				t.Errorf("FAIL %s: %s", c.Name, c.Detail)
+			}
+		}
+		t.Fatalf("failures = %d, want 0 (doctor must send the API key)", rep.Failures)
+	}
+}
+
+// TestDoctorV1SuffixedBase covers the NVIDIA-NIM-style config where the
+// documented base URL already ends in /v1 (https://…/v1): the doctor must
+// strip it before appending /v1/models, or it hits /v1/v1/models -> 404.
+func TestDoctorV1SuffixedBase(t *testing.T) {
+	ts := fakeServer(t, true, false)
+	defer ts.Close()
+	cfg := &config.Config{ServerURL: ts.URL + "/v1", Model: "test-model", EmbeddingModel: "test-embed", DataDir: t.TempDir()}
+	rep := Run(cfg)
+	if rep.Failures != 0 {
+		for _, c := range rep.Checks {
+			if c.Status == StatusFail {
+				t.Errorf("FAIL %s: %s", c.Name, c.Detail)
+			}
+		}
+		t.Fatalf("failures = %d, want 0 (server_url with /v1 suffix)", rep.Failures)
+	}
+	// unit-level: baseURL strips the suffix
+	if got := baseURL("https://integrate.api.nvidia.com/v1"); got != "https://integrate.api.nvidia.com" {
+		t.Errorf("baseURL(/v1) = %q", got)
+	}
+	if got := baseURL("http://localhost:8089/"); got != "http://localhost:8089" {
+		t.Errorf("baseURL(trailing slash) = %q", got)
 	}
 }
 
@@ -68,7 +117,7 @@ func TestDoctorServerDown(t *testing.T) {
 }
 
 func TestDoctorModelMissing(t *testing.T) {
-	ts := fakeServer(t, true)
+	ts := fakeServer(t, true, false)
 	defer ts.Close()
 	cfg := &config.Config{ServerURL: ts.URL, Model: "nope-model", EmbeddingModel: "e", DataDir: t.TempDir()}
 	rep := Run(cfg)
@@ -84,7 +133,7 @@ func TestDoctorModelMissing(t *testing.T) {
 }
 
 func TestDoctorEmbeddingsWarn(t *testing.T) {
-	ts := fakeServer(t, false)
+	ts := fakeServer(t, false, false)
 	defer ts.Close()
 	cfg := &config.Config{ServerURL: ts.URL, Model: "test-model", EmbeddingModel: "e", DataDir: t.TempDir()}
 	rep := Run(cfg)
@@ -94,6 +143,74 @@ func TestDoctorEmbeddingsWarn(t *testing.T) {
 		}
 	}
 	t.Fatalf("embeddings 501 not warned: %+v", rep.Checks)
+}
+
+// TestDoctorEmbeddingServerURL: the embeddings probe must hit the dedicated
+// embedding server when one is configured, not the chat server.
+func TestDoctorEmbeddingServerURL(t *testing.T) {
+	chat := fakeServer(t, false, false) // chat server: no embeddings
+	embed := fakeServer(t, true, false) // embedding server: works
+	defer chat.Close()
+	defer embed.Close()
+	cfg := &config.Config{
+		ServerURL:          chat.URL,
+		EmbeddingServerURL: embed.URL,
+		Model:              "test-model",
+		EmbeddingModel:     "test-embed",
+		DataDir:            t.TempDir(),
+	}
+	rep := Run(cfg)
+	passed := false
+	for _, c := range rep.Checks {
+		if c.Name == "embeddings" && c.Status == StatusPass {
+			passed = true
+		}
+	}
+	if !passed {
+		t.Fatalf("embeddings should pass against the dedicated embedding server: %+v", rep.Checks)
+	}
+}
+
+// TestDoctorWebSearchConfig: a misconfigured web_search provider (searxng
+// without a URL, langsearch without a key, unknown provider) must be a doctor
+// FAIL, because `yagent chat` would refuse to start.
+func TestDoctorWebSearchConfig(t *testing.T) {
+	ts := fakeServer(t, true, false)
+	defer ts.Close()
+	for _, tc := range []struct {
+		provider string
+		searxng  string
+		lang     string
+	}{
+		{"searxng", "", ""},
+		{"langsearch", "", ""},
+		{"bogus", "", ""},
+	} {
+		cfg := &config.Config{ServerURL: ts.URL, Model: "test-model", EmbeddingModel: "test-embed", DataDir: t.TempDir()}
+		cfg.Web.Provider = tc.provider
+		cfg.Web.SearxngURL = tc.searxng
+		cfg.Web.LangSearchKey = tc.lang
+		rep := Run(cfg)
+		failed := false
+		for _, c := range rep.Checks {
+			if c.Name == "web_search" && c.Status == StatusFail {
+				failed = true
+			}
+		}
+		if !failed {
+			t.Errorf("provider %q should be a doctor FAIL: %+v", tc.provider, rep.Checks)
+		}
+	}
+	// valid providers pass
+	cfg := &config.Config{ServerURL: ts.URL, Model: "test-model", EmbeddingModel: "test-embed", DataDir: t.TempDir()}
+	cfg.Web.Provider = "searxng"
+	cfg.Web.SearxngURL = "http://searx:8080"
+	rep := Run(cfg)
+	for _, c := range rep.Checks {
+		if c.Name == "web_search" && c.Status == StatusFail {
+			t.Errorf("searxng with URL should pass, got: %+v", rep.Checks)
+		}
+	}
 }
 
 func TestDoctorBadConfig(t *testing.T) {
