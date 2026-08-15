@@ -1541,3 +1541,26 @@ items. All deterministic; `go test -race` clean.
   distillation happens once at session end (`Finish`) or via the goal-mode
   playbook distillation. Interactive chat unchanged (eval 04 still passes).
   Covered by `TestSkillCreationSuppressedInGoalMode`.
+
+## Planning-loop fix 2026-08-16 (all tested)
+
+- ✅ **Goal mode no longer burns its iteration budget on plan-only reads** —
+  observed live on Nemotron-3-Nano (NVIDIA API): heavy reasoning, few tool
+  calls, re-reading the same files (`main.cpp`, `Tetris.hpp`, `Tetris.cpp`),
+  each re-read returning the `[cached] unchanged` marker so nothing new was
+  gathered, and never writing to disk. Two code gaps fixed:
+  - **Re-read loop nudge** — a new per-file `fs_read` counter (`readSig`)
+    fires after `maxReReadLoops` (4) reads of the same file in a turn:
+    "unchanged files return a '[cached] unchanged' marker — stop re-reading;
+    make the edit or give your final answer." Gated on `!hadFailedWrite` so a
+    failed-edit recovery loop (which legitimately re-reads the exact text) is
+    not interrupted.
+  - **Near-cap nudge fires for read-only planning loops too** — the old
+    `i >= MaxIterations-2 && wrote` branch only fired after a write; the
+    plan-only pattern hit max-iterations silently. It now fires near the cap
+    regardless, with a tailored message when nothing was written.
+  Covered by `TestReReadLoopNudge` + `TestNearCapReadOnlyNudge`; the existing
+  failed-write/convergence nudge tests still pass. `go test -race` clean.
+- Note: the model's heavy *thinking* itself (Nemotron-3-Nano reasons a lot) is
+  a separate knob — set `sampling.reasoning_max_tokens` for the cloud model if
+  the API accepts it. These nudges stop the *loop* regardless.

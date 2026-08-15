@@ -1670,6 +1670,78 @@ func TestNearCapConvergenceNudge(t *testing.T) {
 	}
 }
 
+// TestReReadLoopNudge: a heavy-reasoning model re-reads the SAME file 4+ times
+// (each re-read returns the "[cached] unchanged" marker, so it gathers nothing
+// new) and never writes — the re-read loop nudge must fire and steer it to act.
+func TestReReadLoopNudge(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "main.cpp", "int main() { return 0; }\n")
+	steps := [][]string{
+		toolCall("r1", "fs_read", `{"path":"main.cpp"}`),
+		toolCall("r2", "fs_read", `{"path":"main.cpp"}`),
+		toolCall("r3", "fs_read", `{"path":"main.cpp"}`),
+		toolCall("r4", "fs_read", `{"path":"main.cpp"}`),
+		finalContent("Editing main.cpp now — the nudge worked."),
+	}
+	s := newScriptedLLM(t, steps)
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 12}, ws)
+
+	answer, err := a.Run(context.Background(), "understand main.cpp and then act")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "Editing main.cpp now — the nudge worked." {
+		t.Errorf("final answer = %q", answer)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "re-read") && !strings.Contains(joined, "unchanged files return") {
+		t.Error("re-read loop nudge not injected")
+	}
+}
+
+// TestNearCapReadOnlyNudge: a planning-only loop (reads, no writes) near the
+// iteration cap must still be nudged — the old near-cap branch only fired when
+// a write happened, so this pattern (Nemotron-3-Nano planning) burned the whole
+// budget silently.
+func TestNearCapReadOnlyNudge(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "a.txt", "content\n")
+	steps := [][]string{
+		toolCall("r1", "fs_read", `{"path":"a.txt"}`),
+		toolCall("r2", "grep", `{"pattern":"content"}`),
+		toolCall("r3", "fs_read", `{"path":"a.txt"}`),
+		finalContent("found it"),
+	}
+	s := newScriptedLLM(t, steps)
+	reg := tools.NewRegistry(ws, tools.Options{SkillsWriteApproval: true})
+	client := llm.NewClient(s.ts.URL, "test-model")
+	a := New(client, reg, &stubApprover{allow: true}, Config{MaxIterations: 4}, ws)
+
+	answer, err := a.Run(context.Background(), "check the file")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "found it" {
+		t.Errorf("final answer = %q", answer)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	joined := ""
+	for _, b := range s.requests {
+		joined += string(b)
+	}
+	if !strings.Contains(joined, "only been planning and reading") {
+		t.Error("read-only near-cap nudge not injected")
+	}
+}
+
 func TestFailedWriteLoopNudge(t *testing.T) {
 	// Real-use loop (2026-08-13): the model repeatedly attempts the same
 	// fs_edit with a wrong old_string, interleaving fs_read between attempts

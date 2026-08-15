@@ -56,6 +56,13 @@ const toolLoopThreshold = 6
 // calls in one turn trigger the failed-write loop nudge.
 const maxFailedWriteLoops = 4
 
+// maxReReadLoops is how many successful fs_read calls on the SAME file in one
+// turn trigger the re-read loop nudge. A heavy-reasoning model (e.g.
+// Nemotron-3-Nano) re-reads the same files while planning; each re-read of an
+// unchanged file returns the "[cached] unchanged" marker, so it never gathers
+// anything new and burns the whole iteration budget on exploration.
+const maxReReadLoops = 4
+
 // maxTruncationNudges is how many truncated-response recoveries are attempted
 // per turn before giving up (GPT sol #5). A server that keeps cutting streams
 // off would otherwise loop forever.
@@ -490,6 +497,15 @@ type Agent struct {
 	// arg variations, interleaved re-reads defeating the consecutive dedup)
 	// gets nudged instead of grinding to max-iterations.
 	failedWriteSig map[string]int
+	// readSig counts successful fs_read calls per target FILE per turn, so a
+	// model stuck re-reading the same files (each re-read returning the
+	// "[cached] unchanged" marker, so it never accumulates what it claims to be
+	// looking for) gets nudged to act instead of re-reading forever.
+	readSig map[string]int
+	// hadFailedWrite is true once any write/destructive tool failed this turn.
+	// A failed-edit recovery loop legitimately re-reads the same file (to copy
+	// the exact text), so the re-read nudge only fires when nothing has failed.
+	hadFailedWrite bool
 	// goalMode is set while RunGoal is driving the loop, so the TASK STATE
 	// ledger pins the ROOT GOAL only for autonomous goal runs (not interactive
 	// chat where the "last user message" is just the current prompt).
@@ -870,6 +886,8 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 	a.toolLoopName = ""
 	a.turnReadCalls = 0
 	a.turnWrote = false
+	a.readSig = map[string]int{}
+	a.hadFailedWrite = false
 	a.smokePassed = false
 	a.smokeStepsUsed = false
 	a.failedWriteSig = map[string]int{}
@@ -1137,10 +1155,21 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 			looped, name := a.toolLooped, a.toolLoopName
 			reads, wrote := a.turnReadCalls, a.turnWrote
 			usedNow, limit := a.estTokensLocked(), a.cfg.Window
+			hadFailedWrite := a.hadFailedWrite
 			var failTarget string // the file path (or tool name) that keeps failing
 			for target, n := range a.failedWriteSig {
 				if n >= maxFailedWriteLoops {
 					failTarget = target
+					break
+				}
+			}
+			// Re-read loop: the model re-reads the same file repeatedly (each
+			// re-read returns the "[cached] unchanged" marker), so it never
+			// accumulates the info it keeps claiming it needs.
+			var rereadTarget string
+			for f, n := range a.readSig {
+				if n >= maxReReadLoops {
+					rereadTarget = f
 					break
 				}
 			}
@@ -1158,6 +1187,15 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 				// file (typically old_string not found) — re-reads + retries
 				// with minor variations. Nudge it to read the EXACT text.
 				nudge = fmt.Sprintf("You have failed to edit %s %d times this turn. Stop repeating. Re-read the exact region with fs_read (copy the precise text, including whitespace), then retry ONCE with the corrected old_string — or use fs_write to replace the whole file if the change is large.", failTarget, maxFailedWriteLoops)
+			case rereadTarget != "" && !hadFailedWrite:
+				// Re-read loop (pure read-only exploration, no failed writes):
+				// fs_read of an unchanged file returns a "[cached] unchanged"
+				// marker, so re-reading cannot reveal anything new. A failed-write
+				// recovery loop ALSO re-reads the same file legitimately (to copy
+				// the exact text), so the re-read nudge only fires when there are
+				// no failed writes competing for attention — the actual pattern
+				// is a heavy-reasoning model planning/reading without acting.
+				nudge = fmt.Sprintf("You have read %s %d times this turn, and unchanged files return a '[cached] unchanged' marker, not new content. Stop re-reading. Use what you already have: make the edit (fs_write/fs_edit) or give your final answer now.", rereadTarget, maxReReadLoops)
 			case looped:
 				nudge = fmt.Sprintf("You've called %s many times this turn without converging. Stop exploring — use what you already have and give your final answer now (at most one more targeted call).", name)
 			case reads >= 6 && !wrote && limit > 0 && usedNow*4 > limit*3:
@@ -1169,13 +1207,17 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 				nudge = fmt.Sprintf("Context utilization is high (%d%%). To preserve context quality for resolution, delegate the remaining code exploration to a subagent: subagent(task: '...', tools: ['fs_read', 'grep', 'index_search']) and use its summary instead of reading files directly.", usedNow*100/limit)
 			case reads >= 12 && !wrote:
 				nudge = "You've done extensive exploration this turn without producing a result. Deliver your final answer now based on what you've already gathered."
-			case i >= a.cfg.MaxIterations-2 && wrote:
-				// Residual stress-test failure (2026-08-13): the model does ALL
-				// the work — writes files, updates imports — then keeps
-				// requesting tools (re-reading, narrating "let me update…")
-				// until the iteration cap. It never emits the closing answer.
-				// Nudge it to stop and summarize what it changed.
-				nudge = "You've made the changes and are near the iteration limit. Stop making further tool calls — give your final answer now, summarizing exactly what you changed and that the task is complete."
+			case i >= a.cfg.MaxIterations-2:
+				// Near the iteration cap: whatever the state, stop requesting
+				// tools and close out. The read-only planning loop (heavy
+				// reasoning, few tool calls, no writes) burns the whole budget
+				// without ever converging — this is the one nudge that fires
+				// regardless of whether anything was written.
+				if wrote {
+					nudge = "You've made the changes and are near the iteration limit. Stop making further tool calls — give your final answer now, summarizing exactly what you changed and that the task is complete."
+				} else {
+					nudge = "You are near the iteration limit and have only been planning and reading without producing changes. Stop analyzing — make the actual edit (fs_write/fs_edit) now, or if you cannot, give your best final answer about what you found and what remains."
+				}
 			}
 			if nudge != "" {
 				toolLoopNudged = true
@@ -3650,6 +3692,7 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		}
 		a.failedWriteSig[target]++
 		n := a.failedWriteSig[target]
+		a.hadFailedWrite = true
 		a.mu.Unlock()
 		if n >= maxFailedWriteLoops {
 			slog.Info("failed-write loop detected", "tool", name, "file", target, "attempts", n)
@@ -3760,6 +3803,19 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	}
 	if tool.Risk() == tools.RiskReadOnly {
 		a.turnReadCalls++
+		// Track per-file fs_read count so a re-read loop (each re-read returning
+		// the "[cached] unchanged" marker) is detectable and nudgable.
+		if name == "fs_read" && !strings.HasPrefix(result, "error:") {
+			var ra struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal(call.Function.Arguments, &ra) == nil && ra.Path != "" {
+				if a.readSig == nil {
+					a.readSig = map[string]int{}
+				}
+				a.readSig[ra.Path]++
+			}
+		}
 	} else if !strings.HasPrefix(result, "error:") {
 		// Only a successful write counts as "wrote this turn" (GPT sol #2): a
 		// denied/failed write is not a mutation, so it must not flip the

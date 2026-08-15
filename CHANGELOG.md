@@ -2,6 +2,29 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.88 — 2026-08-16
+
+### Fixed
+- **Goal mode burned its whole iteration budget on planning/reading without
+  writing** (observed on Nemotron-3-Nano via the NVIDIA API: heavy reasoning,
+  few tool calls, re-reading the same files — `main.cpp`, `Tetris.hpp`,
+  `Tetris.cpp` — each re-read returning the `[cached] unchanged` marker, so it
+  never accumulated what it claimed to need, and never wrote code). Two gaps:
+  - **Re-read loop nudge** — a new per-file `fs_read` counter fires after 4
+    reads of the same file in a turn, steering the model to act on what it has
+    instead of re-reading forever. Gated on *no failed writes* this turn (a
+    failed-edit recovery loop legitimately re-reads the same file).
+  - **Near-cap nudge now fires for read-only planning loops too** — the old
+    `i >= MaxIterations-2 && wrote` branch only fired when a write happened, so
+    the plan-only pattern reached the iteration cap silently. It now fires near
+    the cap regardless, with a tailored message ("only been planning and
+    reading — make the actual edit now, or give your best answer").
+
+### Tests
+- `TestReReadLoopNudge`, `TestNearCapReadOnlyNudge`; existing
+  `TestFailedWriteLoopNudge`, `TestConvergenceNudge`, `TestNearCapConvergenceNudge`
+  still pass. `go test -race` clean.
+
 ## v0.1.87 — 2026-08-16
 
 ### Added
