@@ -1771,11 +1771,17 @@ func (h *skillsHandler) showModels(rest string, ag *agent.Agent) (bool, error) {
 		target = h.cfg.ProjectPath
 	}
 	key := h.cfg.KeyFor(prov)
-	if err := config.SetProvider(target, prov, model, key); err != nil {
+	raised, err := config.SetProvider(target, prov, model, key)
+	if err != nil {
 		return true, err
 	}
 	h.cfg.SelectProvider(prov, model)
-	fmt.Fprintf(h.w, "switched to %s / %s (%s) — applies next session\n", prov.Name, model, prov.BaseURL)
+	if raised > 0 {
+		h.cfg.ContextWindow = raised
+		fmt.Fprintf(h.w, "switched to %s / %s (%s) — context window raised to %d (the model's real context) — applies next session\n", prov.Name, model, prov.BaseURL, raised)
+	} else {
+		fmt.Fprintf(h.w, "switched to %s / %s (%s) — applies next session\n", prov.Name, model, prov.BaseURL)
+	}
 	return true, nil
 }
 

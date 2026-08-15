@@ -2,6 +2,24 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.87 — 2026-08-16
+
+### Added
+- **Cloud models use their real context size** — selecting a cloud provider's
+  model via `/model` now reads the model's documented context window from the
+  models.dev index (`limit.context`) and auto-raises `context_window` to it.
+  Cloud APIs aren't GPU-bound, so a leftover local VRAM value (e.g. 32k) no
+  longer caps the budget for a 1M-token model. DeepSeek V4 Flash/Pro → 1M,
+  Nemotron-3-Nano-30B → 131k, OpenRouter DeepSeek V4 Flash → 1M. The raise is
+  persisted and applied live in the TUI (the swapped agent gets the new
+  window); local providers (no ModelsDev key) never raise. `config.ContextLength`
+  + `SetProvider` returns the raised window (0 = unchanged).
+
+### Tests
+- `TestContextLengthFromModelsDev` (stubbed models.dev), `TestSetProviderRaisesWindowForCloudModel`
+  (offline stub + persistence). Live-verified against the real models.dev
+  endpoint (raised 32768 → 1,000,000). `go test -race` clean.
+
 ## v0.1.86 — 2026-08-16
 
 ### Fixed

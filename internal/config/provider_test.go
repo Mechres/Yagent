@@ -64,7 +64,7 @@ func TestSetProviderPersists(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	p := Provider{Name: "DeepSeek", BaseURL: "https://api.deepseek.com", KeyEnv: "DEEPSEEK_API_KEY", Models: []string{"deepseek-chat"}}
-	if err := SetProvider(path, p, "deepseek-chat", "sk-test"); err != nil {
+	if _, err := SetProvider(path, p, "deepseek-chat", "sk-test"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -78,7 +78,7 @@ func TestSetProviderPersists(t *testing.T) {
 	}
 	// a provider with no key must not write an api_key line
 	path2 := filepath.Join(dir, "config2.yaml")
-	if err := SetProvider(path2, Provider{Name: "Local", BaseURL: "http://localhost:8089"}, "Qwen", ""); err != nil {
+	if _, err := SetProvider(path2, Provider{Name: "Local", BaseURL: "http://localhost:8089"}, "Qwen", ""); err != nil {
 		t.Fatal(err)
 	}
 	data2, _ := os.ReadFile(path2)
@@ -267,5 +267,94 @@ func TestFetchModelsDevShape(t *testing.T) {
 	// helper's handling of a minimal fixture via an unreachable URL -> false.
 	if _, ok := FetchModelsDev(context.Background(), "nope"); ok {
 		t.Error("unknown provider key should report ok=false")
+	}
+}
+
+func TestContextLengthFromModelsDev(t *testing.T) {
+	// stub the models.dev index with a local server (no network)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"deepseek": map[string]any{
+				"models": map[string]any{
+					"deepseek-v4-flash": map[string]any{
+						"limit": map[string]any{"context": 1000000, "output": 384000},
+					},
+				},
+			},
+		})
+	}))
+	defer ts.Close()
+	old := modelsDevURL
+	modelsDevURL = ts.URL
+	defer func() { modelsDevURL = old }()
+
+	if got := ContextLength(context.Background(), "deepseek", "deepseek-v4-flash"); got != 1000000 {
+		t.Errorf("ContextLength = %d, want 1000000", got)
+	}
+	if got := ContextLength(context.Background(), "deepseek", "unknown-model"); got != 0 {
+		t.Errorf("ContextLength(unknown model) = %d, want 0", got)
+	}
+	if got := ContextLength(context.Background(), "nope", "deepseek-v4-flash"); got != 0 {
+		t.Errorf("ContextLength(unknown provider) = %d, want 0", got)
+	}
+	// no model entry's limit -> 0
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"deepseek": map[string]any{"models": map[string]any{"deepseek-v4-pro": map[string]any{}}},
+		})
+	}))
+	defer ts2.Close()
+	modelsDevURL = ts2.URL
+	if got := ContextLength(context.Background(), "deepseek", "deepseek-v4-pro"); got != 0 {
+		t.Errorf("ContextLength(no limit) = %d, want 0", got)
+	}
+}
+
+func TestSetProviderRaisesWindowForCloudModel(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"deepseek": map[string]any{
+				"models": map[string]any{
+					"deepseek-v4-flash": map[string]any{
+						"limit": map[string]any{"context": 1000000},
+					},
+				},
+			},
+		})
+	}))
+	defer ts.Close()
+	old := modelsDevURL
+	modelsDevURL = ts.URL
+	defer func() { modelsDevURL = old }()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// start with a small local-ish window
+	if err := Set(path, "context_window", "32768"); err != nil {
+		t.Fatal(err)
+	}
+	raised, err := SetProvider(path, Provider{Name: "DeepSeek", BaseURL: "https://api.deepseek.com", ModelsDev: "deepseek"}, "deepseek-v4-flash", "sk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raised != 1000000 {
+		t.Errorf("raised = %d, want 1000000", raised)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ContextWindow != 1000000 {
+		t.Errorf("ContextWindow = %d, want 1000000 (raised to the model's real context)", cfg.ContextWindow)
+	}
+	// a local provider (no ModelsDev) never raises the window
+	path2 := filepath.Join(dir, "config2.yaml")
+	_ = Set(path2, "context_window", "16384")
+	raised, err = SetProvider(path2, Provider{Name: "Local", BaseURL: "http://localhost:8089"}, "Qwen3VL", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raised != 0 {
+		t.Errorf("local provider raised = %d, want 0", raised)
 	}
 }

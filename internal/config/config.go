@@ -304,7 +304,7 @@ func FetchModelsDev(ctx context.Context, providerKey string) ([]string, bool) {
 		return nil, false
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://models.dev/api.json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsDevURL, nil)
 	if err != nil {
 		return nil, false
 	}
@@ -365,6 +365,62 @@ func ModelWarning(model string) string {
 	}
 	return ""
 }
+
+// modelsDevURL is the models.dev index endpoint (overridable in tests).
+var modelsDevURL = "https://models.dev/api.json"
+
+// ContextLength returns a cloud model's real context window (in tokens) from
+// the models.dev index, or 0 when unknown/unreachable. Cloud APIs are not
+// GPU-bound, so a model like DeepSeek V4 Flash legitimately runs a 1M-token
+// window — the local `context_window` (a GPU-VRAM-bound value) should not cap
+// it. The models.dev entry carries the provider's documented `limit.context`.
+func ContextLength(ctx context.Context, providerKey, model string) int {
+	if providerKey == "" || model == "" {
+		return 0
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsDevURL, nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	var index map[string]struct {
+		Models map[string]struct {
+			Limit *struct {
+				Context int `json:"context"`
+			} `json:"limit"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &index); err != nil {
+		return 0
+	}
+	prov, ok := index[providerKey]
+	if !ok {
+		return 0
+	}
+	m, ok := prov.Models[model]
+	if !ok {
+		return 0
+	}
+	if m.Limit == nil {
+		return 0
+	}
+	return m.Limit.Context
+}
+
+// maxCloudContextWindow bounds the auto-raised window for a cloud model, so the
+// agent's token math (budget, reserve, gauge) never runs into integer/large
+// overflow or absurd reserve sizes. 1M tokens is beyond any current real need
+// and far past any practical summarization budget.
+const maxCloudContextWindow = 1 << 20
 
 // SkillsConfig configures procedural memory (M3.5).
 type SkillsConfig struct {
@@ -765,19 +821,42 @@ func SetWriteApproval(path string, on bool) error {
 // the config file at path, atomically in catalog order. api_key may be empty
 // (local provider, or a cloud key read from the environment rather than
 // stored). Applying three Set calls is fine: each is independent and validated.
-func SetProvider(path string, p Provider, model, apiKey string) error {
+// SetProvider persists a provider selection and, for cloud providers, raises
+// the context_window config to the model's real (models.dev-documented) context
+// length — cloud APIs are not GPU-bound, so a leftover local VRAM value should
+// not cap the budget. Returns the window that was raised to (0 = unchanged).
+func SetProvider(path string, p Provider, model, apiKey string) (int, error) {
 	if err := Set(path, "server_url", p.BaseURL); err != nil {
-		return err
+		return 0, err
 	}
 	if model != "" {
 		if err := Set(path, "model", model); err != nil {
-			return err
+			return 0, err
+		}
+	}
+	// Cloud APIs are not GPU-bound: a model's real context window (from the
+	// models.dev index) can be far larger than the local context_window config
+	// (a VRAM-bound value). Auto-raise the window to the model's documented
+	// context so the agent's budget uses the actual capacity, not a leftover
+	// GPU value. Local providers have no ModelsDev key -> no-op. Runs before
+	// the api_key write (the key path returns early below).
+	var raised int
+	if p.ModelsDev != "" && model != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if n := ContextLength(ctx, p.ModelsDev, model); n > 0 {
+			n = min(n, maxCloudContextWindow)
+			if err := Set(path, "context_window", strconv.Itoa(n)); err == nil {
+				raised = n
+			}
 		}
 	}
 	if apiKey != "" {
-		return Set(path, "api_key", apiKey)
+		if err := Set(path, "api_key", apiKey); err != nil {
+			return 0, err
+		}
 	}
-	return nil
+	return raised, nil
 }
 
 // SelectProvider applies a catalog selection to the config in memory and

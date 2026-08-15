@@ -922,12 +922,18 @@ func (m *tuiModel) applyModelSelection() {
 		model = names[m.modelModelIdx]
 	}
 	key := m.cfg.KeyFor(prov)
-	if err := config.SetProvider(m.cfg.Path, prov, model, key); err != nil {
+	raised, err := config.SetProvider(m.cfg.Path, prov, model, key)
+	if err != nil {
 		m.append("  error: " + err.Error())
 		return
 	}
 	applied := m.cfg.SelectProvider(prov, model)
-	m.append(fmt.Sprintf("  switched to %s / %s (%s)", prov.Name, model, prov.BaseURL))
+	if raised > 0 {
+		m.cfg.ContextWindow = raised
+		m.append(fmt.Sprintf("  switched to %s / %s (%s) — context window raised to %d (the model's real context)", prov.Name, model, prov.BaseURL, raised))
+	} else {
+		m.append(fmt.Sprintf("  switched to %s / %s (%s)", prov.Name, model, prov.BaseURL))
+	}
 
 	// Rebuild the runtime: fresh client + agent over the same session.
 	client := newLLMClient(m.cfg)
