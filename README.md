@@ -1,8 +1,13 @@
+<div align="center">
+<img width="300" height="300" alt="resim" src="https://github.com/user-attachments/assets/1516e379-c7e8-4ef1-b8be-bcd611ca6d01" />
+
+
 # Yagent
+</div>
 
 [![Go](https://img.shields.io/badge/Go-1.25-blue.svg)](https://go.dev/dl/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-<img width="992" height="681" alt="resim" src="https://github.com/user-attachments/assets/d96ec867-b821-4011-ba39-54b3fda60f15" />
+[![CI](https://github.com/Mechres/Yagent/actions/workflows/ci.yml/badge.svg)](https://github.com/Mechres/Yagent/actions/workflows/ci.yml)
 
 A local-first AI agent for **code, audit, review, web search and research** — written in Go, running against OpenAI-compatible inference servers (Ollama, llama.cpp, or any cloud endpoint you opt into). It implements its own agent loop, memory, orchestration and tools — no LLM frameworks.
 
