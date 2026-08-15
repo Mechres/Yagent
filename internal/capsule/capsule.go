@@ -19,13 +19,13 @@ import (
 
 // Capsule is one normalized failure record.
 type Capsule struct {
-	Tool     string    `json:"tool"`
-	ErrClass string    `json:"err_class"`
-	Path     string    `json:"path"`
+	Tool     string `json:"tool"`
+	ErrClass string `json:"err_class"`
+	Path     string `json:"path"`
 	// RecoveredBy is the tool that eventually succeeded on this path after the
 	// failures ("" while still un-recovered).
-	RecoveredBy string `json:"recovered_by,omitempty"`
-	Failures    int    `json:"failures"`
+	RecoveredBy string    `json:"recovered_by,omitempty"`
+	Failures    int       `json:"failures"`
 	LastSeen    time.Time `json:"last_seen"`
 }
 
@@ -37,9 +37,9 @@ func Key(tool, errClass, path string) string {
 // Store is a JSON-backed capsule store. Not thread-safe across processes;
 // within a process it is mutex-guarded.
 type Store struct {
-	mu    sync.Mutex
-	path  string
-	caps  map[string]Capsule
+	mu   sync.Mutex
+	path string
+	caps map[string]Capsule
 }
 
 // Open loads (or creates) the capsule store at path. A missing or corrupt file
