@@ -50,6 +50,10 @@ type Task struct {
 	// Rounds caps it. Takes precedence over Input/Inputs.
 	Goal   string `yaml:"goal"`
 	Rounds int    `yaml:"rounds"`
+	// Research runs the agent as an autonomous research workflow on the topic:
+	// the research gate refuses DONE until a cited report exists under
+	// .yagent/research/. Takes precedence over Input/Inputs and Goal.
+	Research string `yaml:"research"`
 	// Subagent wires the subagent tool to a child agent (M7).
 	Subagent bool `yaml:"subagent"`
 	// Jobs enables the background-process tools (shell_bg / shell_logs /
@@ -250,20 +254,22 @@ func Run(t *testing.T, task Task) {
 		summ = &fixedSummaryLLM{summary: task.Summary}
 	}
 	a := agent.New(client, reg, newTaskApprover(task, ws), agent.Config{
-		MaxIterations:   20,
-		Window:          task.Window,
-		Vectors:         vs,
-		SessionID:       "eval",
-		Skills:          sk,
-		Index:           idx,
-		IndexAutoInject: false,
-		Summarizer:      summ,
-		VerifyWrites:    task.VerifyWrites,
-		GoalGate:        task.GoalGate,
-		TestGate:        task.TestGate,
-		GoalMemorize:    task.GoalMemorize,
-		Codegen:         task.Codegen,
-		SuccessChecks:   parseEvalChecks(task.SuccessChecks),
+		MaxIterations:    20,
+		Window:           task.Window,
+		Vectors:          vs,
+		SessionID:        "eval",
+		Skills:           sk,
+		Index:            idx,
+		IndexAutoInject:  false,
+		Summarizer:       summ,
+		VerifyWrites:     task.VerifyWrites,
+		GoalGate:         task.GoalGate,
+		TestGate:         task.TestGate,
+		GoalMemorize:     task.GoalMemorize,
+		MemorizeResearch: task.Research != "",
+		Codegen:          task.Codegen,
+		Research:         task.Research != "",
+		SuccessChecks:    parseEvalChecks(task.SuccessChecks),
 	}, ws)
 	if task.PlanMode {
 		a.SetPlanMode(true)
@@ -275,7 +281,12 @@ func Run(t *testing.T, task Task) {
 	}
 	var answer string
 	var err error
-	if task.Goal != "" {
+	if task.Research != "" {
+		answer, err = a.RunResearch(context.Background(), task.Research, task.Rounds, nil)
+		if err != nil {
+			t.Fatalf("RunResearch: %v", err)
+		}
+	} else if task.Goal != "" {
 		answer, err = a.RunGoal(context.Background(), task.Goal, task.Rounds, nil)
 		if err != nil {
 			t.Fatalf("RunGoal: %v", err)
@@ -612,6 +623,9 @@ func webServer(t *testing.T) *httptest.Server {
 		case "/rocm":
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte(`<html><body><h1>ROCm</h1><p>gfx1031 is supported by llama.cpp.</p></body></html>`))
+		case "/vulkan":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><body><h1>Vulkan</h1><p>llama.cpp also builds on the Vulkan backend.</p></body></html>`))
 		default:
 			http.NotFound(w, r)
 		}

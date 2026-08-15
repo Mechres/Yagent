@@ -33,6 +33,10 @@ type Client struct {
 	providers    []Provider
 	http         *http.Client
 	fetchTimeout time.Duration
+	// MaxFetchBytes caps the extracted text web_fetch returns to the model
+	// (default maxFetchText). Raised for research-heavy use where a page needs
+	// its full content, not a 32 KiB head. 0 = default.
+	MaxFetchBytes int
 
 	// cache memoizes search results and fetched pages within one client
 	// lifetime (a session), keyed by query / URL, so a repeated identical web
@@ -107,6 +111,9 @@ func (c *Client) ClearCache() {
 type Config struct {
 	Provider   string
 	SearxngURL string
+	// MaxFetchBytes caps web_fetch's extracted-text output (0 = default
+	// maxFetchText).
+	MaxFetchBytes int
 }
 
 // DefaultConfig uses DuckDuckGo.
@@ -128,7 +135,7 @@ func New(cfg Config) (*Client, error) {
 		if cfg.SearxngURL == "" {
 			return nil, fmt.Errorf("web_search.provider searxng requires web_search.searxng_url")
 		}
-		return newClient([]Provider{&SearXNG{baseURL: strings.TrimRight(cfg.SearxngURL, "/"), http: http}}), nil
+		return newClient([]Provider{&SearXNG{baseURL: strings.TrimRight(cfg.SearxngURL, "/"), http: http}}).setMaxFetchBytes(cfg.MaxFetchBytes), nil
 	default:
 		return nil, fmt.Errorf("unknown web_search.provider %q (duckduckgo | mojeek | searxng)", cfg.Provider)
 	}
@@ -143,7 +150,14 @@ func New(cfg Config) (*Client, error) {
 			ordered = append(ordered, f)
 		}
 	}
-	return newClient(ordered), nil
+	return newClient(ordered).setMaxFetchBytes(cfg.MaxFetchBytes), nil
+}
+
+// setMaxFetchBytes sets the extracted-text cap on a fresh client (before any
+// concurrent use, so no lock is needed).
+func (c *Client) setMaxFetchBytes(n int) *Client {
+	c.MaxFetchBytes = n
+	return c
 }
 
 // newClient builds a client around explicit providers (tests + New).

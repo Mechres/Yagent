@@ -1272,3 +1272,68 @@ accurate):
   fine-tune script (plumbing), capability probing, permission policies.
 
 Golden evals 52–54 + unit tests; `go test -race` clean.
+
+## Research-mode overhaul 2026-08-15 (all tested) — fetch quality, research ledger, /research
+
+A research-focused batch closing the weak spots of the M5 web stack (the user's
+priority). All deterministic where it matters; golden eval 59 locks in the gate.
+
+### Fetch quality
+
+- ✅ **HTML → Markdown rendering** (`internal/web/fetch.go`) — `htmlToText` is
+  replaced with `htmlToMarkdown`, preserving headings (`#`), lists (`-`/`1.`),
+  fenced code blocks, blockquotes, images, and **tables** (header + separator),
+  with links as `[text](url)`. A structured page is cheaper for the model to
+  read and keeps citations intact. Covered by `TestFetchMarkdownStructure`.
+- ✅ **Configurable fetch cap** — `web_search.max_fetch_kib` (`/settings` +
+  `/set`, 0 = default 32 KiB; was a hardcoded 16 KiB) lifts web_fetch's
+  extracted-text output for research-heavy sessions where a page must be read
+  whole. Covered by `TestFetchConfigurableCap` + config round-trip tests.
+- ✅ **PDF detection** — `application/pdf` content-type OR `%PDF-` magic bytes
+  return a readable "this is a PDF — find the HTML/abstract version (e.g. an
+  arxiv abs/ page)" error instead of binary garbage, so a research agent stops
+  chasing arXiv/datasheet PDFs and fetches the HTML page. Covered by
+  `TestFetchRejectsPDF`.
+
+### Research ledger in TASK STATE
+
+- ✅ **SOURCES + searched + RESEARCH NOTES blocks** — the agent records which
+  URLs `web_fetch` actually fetched, which queries `web_search` ran, and the
+  notes the model records via the new **`research_note` tool** (fact + source
+  URL). All three render into `TASK STATE` on every request, so **citations
+  survive budget pruning** (the page content is collapsed away; the sources are
+  not) and the final answer cites URLs the model genuinely saw. Covered by
+  `TestResearchLedgerRendersSources` + `TestResearchNoteRecordsFinding`.
+- ✅ **`agent.Config.Research`** (UI-enabled) wires `research_note` and the
+  ledger; `MemorizeResearch` persists sources/findings to L3 memory across
+  sessions. Covered by `TestResearchNoteTool` + agent tests.
+
+### System-prompt research rules
+
+- ✅ Both the full and compact system prompts now demand **search-first,
+  fetch-before-answer** (snippets are not depth), **cross-checking important
+  or contested claims across 2+ independent sources**, PDF→HTML fallback, and
+  `research_note` for verified facts.
+
+### web_search parallel fan-out
+
+- ✅ `web_search` accepts a **`queries` array** (up to 8) run concurrently in
+  one call — the model covers several angles of a topic without serial
+  round-trips. Per-query result blocks, backward compatible with a single
+  `query`. Covered by `TestWebSearchParallelQueries`.
+
+### `/research` autonomous mode
+
+- ✅ `yagent chat --research "<topic>"` and `/research <topic>` (REPL + TUI) —
+  an autonomous research workflow (`agent.RunResearch`, rounds capped by
+  `--rounds`): a research-mode system prompt (parallel queries, fetch-before-
+  answer, cross-source verification, cited report), auto-approved report writes,
+  and the **deterministic research gate** (`researchGateCheck`) that refuses a
+  DONE verdict until ≥ 2 distinct pages were fetched AND a cited report exists
+  under `.yagent/research/*.md` (`countCitedURLs` ≥ 2). A model that "researched
+  from snippets" or ends with prose instead of a deliverable cannot pass.
+  Covered by `TestRunResearchGateRequiresReport` +
+  `TestResearchGateRefusesWithoutSources` + **golden eval 59** (research-gate).
+  The report path and fetched sources are printed at the end of the run; the
+  session id enables `--continue` to pick the conversation back up.
+

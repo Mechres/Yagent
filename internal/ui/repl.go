@@ -54,6 +54,11 @@ type Options struct {
 	// interactive chat; Rounds caps the loop (default 8).
 	Goal   string
 	Rounds int
+	// Research runs the agent as an autonomous research workflow on the topic:
+	// parallel web searches, fetches, cross-checked findings, and a cited
+	// report written to .yagent/research/ (research gate refuses DONE until
+	// the deliverable exists). Rounds caps the loop.
+	Research string
 	// ResumeGoal resumes an interrupted goal run: the goal checkpoint is
 	// restored and the given session is continued in goal mode.
 	ResumeGoal string
@@ -266,6 +271,20 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 		defer env.closeMCP()
 		return runGoalMode(ctx, client, cfg, env, opts.Goal, opts.Rounds, opts.YOLO, opts.Trace, opts.Checks)
 	}
+	// Research mode: autonomous research workflow (parallel searches, fetches,
+	// cross-checked findings, cited report) then exit.
+	if opts.Research != "" {
+		env, err := newChatEnv(ctx, cfg, continueID, opts.Fork)
+		if err != nil {
+			return err
+		}
+		defer env.st.Close()
+		defer env.vs.Close()
+		defer env.projVS.Close()
+		defer env.idx.Close()
+		defer env.closeMCP()
+		return runResearchMode(ctx, client, cfg, env, opts.Research, opts.Rounds, opts.YOLO, opts.Trace)
+	}
 	// TUI by default on a real terminal; --plain (or piped stdin) falls back
 	// to the streaming REPL.
 	if !opts.Plain && isTerminal(os.Stdin) {
@@ -372,7 +391,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			}
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /plan /goal <what> /steer <text> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /plan /goal <what> /research <topic> /steer <text> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		case "/steer":
 			text := strings.TrimSpace(strings.TrimPrefix(line, "/steer"))
@@ -832,6 +851,52 @@ func runGoalMode(ctx context.Context, client *llm.Client, cfg *config.Config, en
 	return nil
 }
 
+// runResearchMode drives the agent as an autonomous research workflow: each
+// round searches in parallel, fetches pages, cross-checks claims and records
+// findings; the research gate refuses a DONE verdict until the cited report
+// exists under .yagent/research/. Writes are auto-approved (the report file is
+// the deliverable) and the session id is printed at the end.
+func runResearchMode(ctx context.Context, client *llm.Client, cfg *config.Config, env *chatEnv, topic string, rounds int, yolo bool, trace io.Writer) error {
+	w := os.Stdout
+	ap := newToggleableApprover(&autoApprover{}) // report write is the deliverable
+	ap.SetYOLO(true)
+	ag := newAgent(client, cfg, env, ap,
+		func(delta string) { _, _ = io.WriteString(w, delta) },
+		func(delta string) {
+			_, _ = fmt.Fprintf(w, "\x1b[2m\x1b[3m%s\x1b[0m", delta)
+		},
+		func(call llm.ToolCall) {
+			fmt.Fprintf(w, "\n→ %s %s\n", call.Function.Name, previewArgs(call.Function.Arguments))
+		},
+		trace)
+	fmt.Printf("research mode — investigating: %s\n", topic)
+	answer, err := ag.RunResearch(ctx, topic, rounds, func(r int, _ string) {
+		fmt.Fprintf(w, "\n—— round %d ——\n", r)
+	})
+	if err != nil {
+		fmt.Fprintf(w, "\nresearch loop: %v\n", err)
+		notifyOS("yagent — research finished", "the research loop ended with an error")
+	} else {
+		notifyOS("yagent — research done", "the research report is ready")
+	}
+	_ = answer
+	// Report the research deliverables the deterministic gate verified.
+	if report := ag.ResearchReport(); report != "" {
+		fmt.Fprintf(w, "\nreport: %s\n", report)
+	}
+	if srcs := ag.ResearchSources(); len(srcs) > 0 {
+		fmt.Fprintf(w, "sources (%d):\n", len(srcs))
+		for _, u := range srcs {
+			fmt.Fprintf(w, "  - %s\n", u)
+		}
+	}
+	if err := ag.Finish(ctx); err != nil {
+		fmt.Fprintf(w, "\nwarning: skill review: %v\n", err)
+	}
+	fmt.Fprintf(w, "\nsession: %s (resume with: yagent chat --continue %s)\n", env.sessionID, env.sessionID)
+	return nil
+}
+
 // offerDistillation asks the model, after a successful autonomous goal run, to
 // save a reusable declarative playbook capturing the workflow (the model writes
 // it with fs_write; it may decline with "no playbook"). Gated on the session
@@ -953,7 +1018,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		return nil, fmt.Errorf("open code index: %w", err)
 	}
 	idx.SetBearerToken(cfg.APIKey)
-	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL})
+	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL, MaxFetchBytes: cfg.Web.MaxFetchKib * 1024})
 	if err != nil {
 		return nil, fmt.Errorf("web search config: %w", err)
 	}
@@ -1086,7 +1151,9 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 		GoalGate:         true, // refuse DONE while the static check fails
 		TestGate:         true, // refuse DONE while the unit tests fail
 		GoalMemorize:     true, // persist round facts to L3 memory (multi-turn recall)
+		MemorizeResearch: true, // persist research sources/findings to L3 memory
 		Codegen:          cfg.Codegen,
+		Research:         true, // research_note tool + SOURCES/RESEARCH NOTES ledger
 		VramThresholdTPS: cfg.VramThresholdTPS,
 		Summarizer:       env.summ,
 	}, ws)
@@ -1161,6 +1228,12 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 			return true, fmt.Errorf("usage: /goal <what to achieve>")
 		}
 		return h.runGoal(ag, strings.TrimSpace(strings.TrimPrefix(rest, "goal")))
+	case rest == "research" || strings.HasPrefix(rest, "research "):
+		parts := strings.Fields(rest)
+		if len(parts) < 2 {
+			return true, fmt.Errorf("usage: /research <topic> — runs an autonomous research workflow (parallel searches, fetches, cross-checked findings) and writes a cited report to .yagent/research/")
+		}
+		return h.runResearch(ag, strings.TrimSpace(strings.TrimPrefix(rest, "research")))
 	case rest == "settings" || strings.HasPrefix(rest, "set "):
 		if rest == "settings" {
 			return h.showSettings()
@@ -1813,6 +1886,12 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 		c.Web.Provider = value
 	case "web_search.searxng_url":
 		c.Web.SearxngURL = value
+	case "web_search.max_fetch_kib":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		c.Web.MaxFetchKib = n
 	case "skills.write_approval":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
@@ -1880,6 +1959,26 @@ func (h *skillsHandler) runGoal(ag *agent.Agent, goal string) (bool, error) {
 	}
 	fmt.Fprintf(h.w, "\ngoal achieved.\n")
 	offerDistillation(h.ctx, ag, h.env, h.w)
+	return true, nil
+}
+
+// runResearch drives the current agent as an autonomous research workflow on
+// the topic: the research gate refuses a DONE verdict until a cited report
+// exists under .yagent/research/.
+func (h *skillsHandler) runResearch(ag *agent.Agent, topic string) (bool, error) {
+	fmt.Fprintf(h.w, "research mode — investigating: %s\n", topic)
+	_, err := ag.RunResearch(h.ctx, topic, agent.DefaultGoalRounds, func(r int, _ string) {
+		fmt.Fprintf(h.w, "\n—— round %d ——\n", r)
+	})
+	if err != nil {
+		fmt.Fprintf(h.w, "\nresearch loop: %v\n", err)
+		return true, nil
+	}
+	if report := ag.ResearchReport(); report != "" {
+		fmt.Fprintf(h.w, "\nresearch complete — report written to %s\n", report)
+	} else {
+		fmt.Fprintf(h.w, "\nresearch complete.\n")
+	}
 	return true, nil
 }
 

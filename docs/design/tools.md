@@ -40,8 +40,9 @@ The ui implements `Approver`; prompts show the tool name, args (command/diff), a
 | `memory_search` | M3 | RO | semantic search over long-term memory |
 | `index_repo` | M4 | Write | (re)index the workspace; runs in background |
 | `index_search` | M4 | RO | semantic code search; returns `path:start-end` + snippet |
-| `web_search` | M5 | RO | DuckDuckGo HTML by default (`html.duckduckgo.com/html/?q=`; no key, unofficial scraping — structure can change, rate-limits); Mojeek (`www.mojeek.com/search?q=`, independent index, may serve a JS challenge from datacenter IPs) or SearXNG JSON (`format: json` in settings.yml) via `web_search.provider`; top-8 results: title, url, snippet |
-| `web_fetch` | M5 | RO | GET url → HTML→text (strip scripts/nav/footer via `x/net/html`) → cap 16 KiB; 15s timeout; redirect limit 5; no POSTs ever |
+| `web_search` | M5 | RO | DuckDuckGo HTML by default (`html.duckduckgo.com/html/?q=`; no key, unofficial scraping — structure can change, rate-limits); Mojeek (`www.mojeek.com/search?q=`, independent index, may serve a JS challenge from datacenter IPs) or SearXNG JSON (`format: json` in settings.yml) via `web_search.provider`; top-8 results: title, url, snippet. A `queries` array (up to 8) runs the searches concurrently in one call (v0.1.80). Results cached per session (10 min TTL, 64 entries) |
+| `web_fetch` | M5 | RO | GET url → HTML→**Markdown** (headings/lists/code/tables/links preserved; scripts/nav/footer stripped via `x/net/html`) → cap `web_search.max_fetch_kib` (default 32 KiB); PDFs rejected with a "find the HTML version" error; 15s timeout; redirect limit 5; no POSTs ever |
+| `research_note` | v0.1.80 | RO | record one verified research finding (fact + source URL) into the TASK STATE ledger, where it survives budget pruning (research mode) |
 | `consult` | M6.13 | RO | ask a configured "advisor" for guidance or a second opinion. Two backends: a remote OpenAI-compatible server (`consult.server_url`/`consult.model`, optional `consult.api_key` for cloud endpoints like Gemini/OpenRouter) or an installed terminal AI app run as a subprocess (`consult.cmd`, e.g. `[claude, -p]`, prompt appended as the final arg); 60s timeout |
 
 ## Execution rules

@@ -71,6 +71,7 @@ context_window: 16384
 web_search:
   provider: duckduckgo        # duckduckgo | mojeek | searxng
   # searxng_url: http://localhost:8080
+  # max_fetch_kib: 96         # web_fetch extracted-text cap in KiB (0 = 32)
 
 skills:
   write_approval: false       # false = skills apply immediately; true = stage for review

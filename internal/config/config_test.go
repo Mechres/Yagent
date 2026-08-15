@@ -276,6 +276,36 @@ func TestLoadConfigWebSearch(t *testing.T) {
 	if cfg.Web.Provider != "duckduckgo" {
 		t.Errorf("env override failed: %+v", cfg.Web)
 	}
+
+	// max_fetch_kib loads and round-trips through Get/Set.
+	path = writeConfig(t, "web_search:\n  max_fetch_kib: 96\n")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Web.MaxFetchKib != 96 {
+		t.Errorf("MaxFetchKib = %d, want 96", cfg.Web.MaxFetchKib)
+	}
+	if got := cfg.Get("web_search.max_fetch_kib"); got != "96" {
+		t.Errorf("Get(max_fetch_kib) = %q", got)
+	}
+	if err := Set(path, "web_search.max_fetch_kib", "128"); err != nil {
+		t.Errorf("Set(max_fetch_kib): %v", err)
+	}
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Web.MaxFetchKib != 128 {
+		t.Errorf("MaxFetchKib after Set = %d, want 128", cfg.Web.MaxFetchKib)
+	}
+	// invalid values rejected
+	if err := Set(path, "web_search.max_fetch_kib", "-1"); err == nil {
+		t.Error("negative max_fetch_kib should be rejected")
+	}
+	if err := Set(path, "web_search.max_fetch_kib", "99999"); err == nil {
+		t.Error("oversized max_fetch_kib should be rejected")
+	}
 }
 
 func TestSetWriteApprovalPersists(t *testing.T) {

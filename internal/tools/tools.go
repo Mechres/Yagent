@@ -119,6 +119,10 @@ type Options struct {
 	// the answer (wired by the UI); enables the clarify and plan tools. Nil
 	// disables both.
 	AskUser askUserFunc
+	// ResearchNote records a research finding (note + source URL) into the
+	// agent's TASK STATE ledger so it survives budget pruning. Wired by the
+	// agent; nil disables the research_note tool.
+	ResearchNote func(note string)
 	// Jobs enables background-process tools (may be nil).
 	Jobs *jobs.Registry
 	// ConsultCmd is an installed terminal AI app used as the advisor, e.g.
@@ -205,6 +209,9 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		reg["clarify"] = &clarifyTool{ask: opts.AskUser}
 		reg["plan"] = &planTool{ask: opts.AskUser}
 	}
+	if opts.ResearchNote != nil {
+		reg["research_note"] = &researchNoteTool{record: opts.ResearchNote}
+	}
 	if opts.Jobs != nil {
 		reg["shell_bg"] = &shellBgTool{jobs: opts.Jobs, sandbox: opts.ShellSandbox, ws: r.workspace}
 		reg["shell_logs"] = &shellLogsTool{jobs: opts.Jobs}
@@ -274,6 +281,20 @@ func (r *Registry) SetSkillsWriteApproval(on bool) {
 func (r *Registry) SetIndexProgress(fn func(string)) {
 	if t, ok := r.tools["index_repo"].(*indexRepoTool); ok {
 		t.onProgress = fn
+	}
+}
+
+// SetResearchNote wires the research_finding recorder into the research_note
+// tool (set by the agent when Config.Research is enabled).
+func (r *Registry) SetResearchNote(fn func(string)) {
+	if fn == nil {
+		delete(r.tools, "research_note")
+		return
+	}
+	if t, ok := r.tools["research_note"].(*researchNoteTool); ok {
+		t.record = fn
+	} else {
+		r.tools["research_note"] = &researchNoteTool{record: fn}
 	}
 }
 

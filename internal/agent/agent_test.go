@@ -3129,3 +3129,116 @@ func TestProactivePruneToolOutputs(t *testing.T) {
 		t.Errorf("current-turn read collapsed: %q", got)
 	}
 }
+
+func TestResearchLedgerRendersSources(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{})
+	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	a.mu.Lock()
+	a.researchSources = []string{"https://example.com/a", "https://example.com/b"}
+	a.researchQueries = []string{"go modules"}
+	a.researchFindings = []string{"llama.cpp supports ROCm [https://example.com/a]"}
+	a.mu.Unlock()
+
+	ledger := a.taskLedger()
+	if !strings.Contains(ledger, "SOURCES (fetched)") || !strings.Contains(ledger, "https://example.com/a") {
+		t.Errorf("ledger missing sources: %q", ledger)
+	}
+	if !strings.Contains(ledger, "searched: go modules") {
+		t.Errorf("ledger missing queries: %q", ledger)
+	}
+	if !strings.Contains(ledger, "RESEARCH NOTES") || !strings.Contains(ledger, "ROCm") {
+		t.Errorf("ledger missing findings: %q", ledger)
+	}
+	joined := ""
+	for _, m := range a.assembleContext("", "") {
+		joined += m.Content
+	}
+	if !strings.Contains(joined, "SOURCES (fetched)") || !strings.Contains(joined, "https://example.com/a") {
+		t.Errorf("sources not injected into context: %q", joined[:min(len(joined), 400)])
+	}
+}
+
+func TestResearchNoteRecordsFinding(t *testing.T) {
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{})
+	a := New(&fixedSummaryLLM{summary: "unused"}, reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	a.recordResearchFinding("fact one [https://example.com/1]")
+	a.recordResearchFinding("fact one [https://example.com/1]") // dedup
+	a.recordResearchFinding("fact two [https://example.com/2]")
+	if got := a.ResearchFindings(); len(got) != 2 {
+		t.Errorf("findings = %v, want 2 deduped", got)
+	}
+	if got := a.ResearchSources(); len(got) != 0 {
+		t.Errorf("sources = %v, want none", got)
+	}
+}
+
+func TestRunResearchGateRequiresReport(t *testing.T) {
+	// The model fetches pages and claims DONE, but writes no report file: the
+	// research gate refuses. Round 2 writes the report with cited URLs and
+	// DONE is accepted.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{})
+	s := newScriptedLLM(t, [][]string{
+		finalContent("research done"),
+		finalContent("DONE research complete"),
+		toolCall("r1", "fs_write", `{"path":".yagent/research/rocm.md","content":"# ROCm\n\nllama.cpp supports ROCm on gfx1031.\n\n## Sources\n- https://example.com/a\n- https://example.com/b\n"}`),
+		finalContent("wrote the report"),
+		finalContent("DONE report written"),
+	})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	// Pre-seed fetched sources so the gate's source floor is already met and
+	// only the report requirement is exercised.
+	a.mu.Lock()
+	a.researchSources = []string{"https://example.com/a", "https://example.com/b"}
+	a.mu.Unlock()
+
+	var rounds []int
+	answer, err := a.RunResearch(context.Background(), "does llama.cpp support ROCm", 3, func(r int, _ string) {
+		rounds = append(rounds, r)
+	})
+	if err != nil {
+		t.Fatalf("RunResearch: %v", err)
+	}
+	if len(rounds) != 2 {
+		t.Errorf("expected 2 rounds (1 refused, 1 accepted), got %v", rounds)
+	}
+	if answer != "wrote the report" {
+		t.Errorf("answer = %q", answer)
+	}
+	if report := a.ResearchReport(); !strings.HasSuffix(report, ".yagent/research/rocm.md") {
+		t.Errorf("report = %q", report)
+	}
+}
+
+func TestResearchGateRefusesWithoutSources(t *testing.T) {
+	// No pages fetched at all: even with a report claim, DONE is refused.
+	ws := t.TempDir()
+	reg := tools.NewRegistry(ws, tools.Options{})
+	s := newScriptedLLM(t, [][]string{
+		finalContent("did nothing but claim done"),
+		finalContent("DONE"),
+		finalContent("actually research"),
+		finalContent("DONE for real"),
+	})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), reg, &stubApprover{allow: true}, Config{MaxIterations: 5}, ws)
+	// no researchSources, no report
+	verify := a.researchGateCheck(context.Background())
+	if verify == "" {
+		t.Fatal("gate should refuse a research DONE with no sources and no report")
+	}
+	if !strings.Contains(verify, "web_fetch at least 2") {
+		t.Errorf("gate message = %q", verify)
+	}
+	if !strings.Contains(verify, "no research report") {
+		t.Errorf("gate message = %q", verify)
+	}
+}
+
+func TestCountCitedURLs(t *testing.T) {
+	body := "see https://example.com/a and [https://example.com/b](x) plus https://example.com/a again and ftp://nope"
+	if got := countCitedURLs(body); got != 2 {
+		t.Errorf("countCitedURLs = %d, want 2", got)
+	}
+}

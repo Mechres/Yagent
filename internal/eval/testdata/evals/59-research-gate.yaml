@@ -1,0 +1,23 @@
+name: research-gate
+description: research mode — DONE refused until a cited report exists under .yagent/research/
+research: does llama.cpp support ROCm on gfx1031?
+web: true
+rounds: 3
+steps:
+  # The model fetches two pages, records a finding, then claims DONE without
+  # writing the report — the research gate must refuse.
+  - tool_call: {name: web_fetch, args: '{"url":"{{WEB_BASE}}/rocm"}'}
+  - tool_call: {name: web_fetch, args: '{"url":"{{WEB_BASE}}/vulkan"}'}
+  - tool_call: {name: research_note, args: '{"note":"gfx1031 is supported by llama.cpp","source":"{{WEB_BASE}}/rocm"}'}
+  - answer: I researched the topic and have the facts.
+  - answer: DONE research complete
+  # The gate refuses (no report file), so round 2 writes the deliverable.
+  - tool_call: {name: fs_write, args: '{"path":".yagent/research/rocm.md","content":"# ROCm support\n\ngfx1031 is supported by llama.cpp.\n\n## Sources\n- {{WEB_BASE}}/rocm\n- {{WEB_BASE}}/vulkan\n"}'}
+  - answer: Wrote the report to .yagent/research/rocm.md
+  - answer: DONE report written
+assert:
+  requests_contain: ["Deterministic research gate: you reported DONE"]
+  file_contains:
+    - path: .yagent/research/rocm.md
+      text: "gfx1031 is supported"
+  final_answer_contains: "report"

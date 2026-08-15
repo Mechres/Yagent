@@ -10,7 +10,9 @@ this file is the canonical status, `improvement.md` is the narrative roadmap.
 
 Status: **all audit items shipped through v0.1.79** (2026-08-15). The only
 remaining entries are deferred-with-rationale below (do not re-open without new
-evidence) plus the two noted live-soak bench sub-tasks.
+evidence) plus the two noted live-soak bench sub-tasks. v0.1.80 shipped a
+research-mode overhaul (fetch quality, research ledger, `/research`); see
+`improvement.md`.
 
 ---
 

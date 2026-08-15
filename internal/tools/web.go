@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/web"
@@ -17,16 +18,18 @@ type webSearchTool struct {
 }
 
 type webSearchArgs struct {
-	Query string `json:"query"`
-	K     int    `json:"k,omitempty"`
+	Query   string   `json:"query"`
+	Queries []string `json:"queries,omitempty"`
+	K       int      `json:"k,omitempty"`
 }
 
-var webSearchSchema = fnSchema("web_search", "search the web for the query and return ranked results (title, url, snippet); use it for questions about things outside the workspace — then web_fetch the most promising pages",
+var webSearchSchema = fnSchema("web_search", "search the web for the query (or multiple queries, run in parallel) and return ranked results (title, url, snippet); use it for questions about things outside the workspace — then web_fetch the most promising pages. Pass multiple distinct queries via 'queries' to cover several angles of a topic in one call",
 	map[string]any{
-		"query": strProp("search query"),
-		"k":     intProp("max results, default 5, max 8 (optional)"),
+		"query":   strProp("search query"),
+		"queries": arrayProp("multiple distinct queries to search in parallel (optional)"),
+		"k":       intProp("max results per query, default 5, max 8 (optional)"),
 	},
-	[]string{"query"})
+	[]string{})
 
 func (t *webSearchTool) Schema() llm.ToolSchema { return webSearchSchema }
 func (t *webSearchTool) Risk() RiskLevel        { return RiskReadOnly }
@@ -36,26 +39,55 @@ func (t *webSearchTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	if err := decodeArgs(raw, &a); err != nil {
 		return "", err
 	}
-	if a.Query == "" {
-		return "", validationErrorf(`argument "query" is required`)
+	queries := a.Queries
+	if strings.TrimSpace(a.Query) != "" {
+		queries = append([]string{a.Query}, queries...)
 	}
-	if a.K <= 0 {
-		a.K = 5
+	if len(queries) == 0 {
+		return "", validationErrorf(`argument "query" (or "queries") is required`)
 	}
-	if a.K > 8 {
+	if len(queries) > 8 {
+		return "", validationErrorf("queries must have at most 8 entries")
+	}
+	k := a.K
+	if k <= 0 {
+		k = 5
+	}
+	if k > 8 {
 		return "", validationErrorf("k must be at most 8")
 	}
 	if t.client == nil {
 		return "error: web search is not configured", nil
 	}
+	if len(queries) == 1 {
+		out := t.searchOne(ctx, queries[0], k, "")
+		return capResult(WrapUntrusted("web_search for "+queries[0], out), maxResultBytes), nil
+	}
+	// Multiple queries: fan out in parallel (each is an independent search, the
+	// cache memoizes repeats) and combine the per-query result lists in order.
+	results := make([]string, len(queries))
+	var wg sync.WaitGroup
+	for i, q := range queries {
+		wg.Add(1)
+		go func(i int, q string) {
+			defer wg.Done()
+			results[i] = t.searchOne(ctx, q, k, fmt.Sprintf("[query %d: %s]", i+1, q))
+		}(i, q)
+	}
+	wg.Wait()
+	return capResult(WrapUntrusted("web_search for "+strings.Join(queries, " | "), strings.Join(results, "\n")), maxResultBytes), nil
+}
+
+// searchOne runs a single query and renders its results with an optional header.
+func (t *webSearchTool) searchOne(ctx context.Context, query string, k int, header string) string {
 	hitsBefore := t.client.CacheHits()
-	results, err := t.client.Search(ctx, a.Query, a.K)
+	results, err := t.client.Search(ctx, query, k)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return fmt.Sprintf("%serror: %v", headerPrefix(header), err)
 	}
 	cached := t.client.CacheHits() > hitsBefore
 	if len(results) == 0 {
-		return "no results found", nil
+		return fmt.Sprintf("%sno results found", headerPrefix(header))
 	}
 	var b strings.Builder
 	if cached {
@@ -64,7 +96,14 @@ func (t *webSearchTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	for i, r := range results {
 		fmt.Fprintf(&b, "%d. %s\n   %s\n   %s\n", i+1, r.Title, r.URL, r.Snippet)
 	}
-	return capResult(WrapUntrusted("web_search for "+a.Query, b.String()), maxResultBytes), nil
+	return headerPrefix(header) + b.String()
+}
+
+func headerPrefix(header string) string {
+	if header == "" {
+		return ""
+	}
+	return header + "\n"
 }
 
 // ---------- web_fetch ----------
@@ -77,7 +116,7 @@ type webFetchArgs struct {
 	URL string `json:"url"`
 }
 
-var webFetchSchema = fnSchema("web_fetch", "fetch a URL and return its readable text (scripts/nav stripped, capped at 16 KiB); use it on promising web_search results to extract the actual content",
+var webFetchSchema = fnSchema("web_fetch", "fetch a URL and return its readable Markdown text (scripts/nav stripped, links preserved as [text](url)); use it on promising web_search results to extract the actual content. PDFs are rejected with a hint to find the HTML/abstract version",
 	map[string]any{"url": strProp("absolute http(s) URL to fetch")},
 	[]string{"url"})
 

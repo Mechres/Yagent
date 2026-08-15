@@ -1573,6 +1573,9 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		if strings.HasPrefix(text, "/goal ") {
 			goal := strings.TrimSpace(strings.TrimPrefix(text, "/goal"))
 			m.activeWorkflow = "goal: " + shorten(goal, 20)
+		} else if strings.HasPrefix(text, "/research ") {
+			topic := strings.TrimSpace(strings.TrimPrefix(text, "/research"))
+			m.activeWorkflow = "research: " + shorten(topic, 20)
 		} else if strings.HasPrefix(text, "/playbook ") {
 			parts := strings.Fields(text)
 			if len(parts) > 1 {
@@ -1978,6 +1981,7 @@ func (m *tuiModel) helpView() string {
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/playbook"), descStyle.Render("Declarative workflows")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/skills"), descStyle.Render("Procedural skills manager")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/goal <desc>"), descStyle.Render("Autonomous goal loop")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/research <topic>"), descStyle.Render("Autonomous research workflow (cited report)")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/steer <text>"), descStyle.Render("Pin a course-correction into TASK STATE")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/undo [list|<N>]"), descStyle.Render("Revert previous file changes")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/retry"), descStyle.Render("Retry with stable sampling")),
@@ -2704,7 +2708,7 @@ func (m *tuiModel) thinkingBlock() string {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/steer <text>", "/settings", "/set <key> <value>", "/model", "/key",
+		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/research <topic>", "/steer <text>", "/settings", "/set <key> <value>", "/model", "/key",
 		"/undo", "/undo list", "/undo <N>", "/diff", "/plan", "/sessions", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
 		"/playbook", "/mouse",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",

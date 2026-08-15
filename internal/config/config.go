@@ -385,6 +385,9 @@ type WebConfig struct {
 	Provider string `yaml:"provider"`
 	// SearxngURL is the base URL of a SearXNG instance with format=json enabled.
 	SearxngURL string `yaml:"searxng_url"`
+	// MaxFetchKib caps web_fetch's extracted-text output in KiB (0 = default
+	// 32 KiB). Raise for research-heavy sessions where pages must be read whole.
+	MaxFetchKib int `yaml:"max_fetch_kib"`
 }
 
 // ShellConfig configures shell_exec.
@@ -805,6 +808,7 @@ func Settings() []SettingKey {
 		{Key: "ui.loop_guard", Label: "Stop repeating-generation loops", Options: []string{"true", "false"}},
 		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng"}},
 		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
+		{Key: "web_search.max_fetch_kib", Label: "web_fetch text cap (KiB, 0 = 32)"},
 		{Key: "skills.write_approval", Label: "Skills write approval", Options: []string{"false", "true"}},
 		{Key: "skills.data_dir", Label: "Skills data dir"},
 		{Key: "skills.project_dir", Label: "Skills project dir"},
@@ -860,6 +864,8 @@ func (c *Config) Get(key string) string {
 		return c.Web.Provider
 	case "web_search.searxng_url":
 		return c.Web.SearxngURL
+	case "web_search.max_fetch_kib":
+		return strconv.Itoa(c.Web.MaxFetchKib)
 	case "skills.write_approval":
 		return strconv.FormatBool(c.Skills.WriteApproval)
 	case "skills.data_dir":
@@ -964,7 +970,8 @@ func validateKey(parts []string, value string) error {
 		"ui.show_reasoning":   true,
 		"ui.loop_guard":       true,
 		"web_search.provider": true, "web_search.searxng_url": true,
-		"skills.write_approval": true, "skills.data_dir": true, "skills.project_dir": true,
+		"web_search.max_fetch_kib": true,
+		"skills.write_approval":    true, "skills.data_dir": true, "skills.project_dir": true,
 		"shell.sandbox":      true,
 		"vram_threshold_tps": true,
 		"codegen":            true,
@@ -992,6 +999,11 @@ func validateKey(parts []string, value string) error {
 		case "duckduckgo", "mojeek", "searxng":
 		default:
 			return &ValidationError{msg: "web_search.provider must be duckduckgo, mojeek or searxng"}
+		}
+	case "web_search.max_fetch_kib":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || n > 512 {
+			return &ValidationError{msg: "web_search.max_fetch_kib must be an integer between 0 and 512"}
 		}
 	case "theme":
 		if !slices.Contains(ThemeOptions, value) {
@@ -1047,7 +1059,7 @@ func typedScalar(key, value string) *yaml.Node {
 	switch key {
 	case "write_approval", "show_reasoning", "loop_guard":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
-	case "context_window", "top_k", "reasoning_max_tokens":
+	case "context_window", "top_k", "reasoning_max_tokens", "max_fetch_kib":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
 	case "temperature", "top_p", "repetition_penalty", "min_p", "vram_threshold_tps":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: value}

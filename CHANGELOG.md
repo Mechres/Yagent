@@ -2,6 +2,39 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.80 — 2026-08-15
+
+### Added
+- **`/research <topic>` + `yagent chat --research <topic>`** — an autonomous
+  research workflow (`agent.RunResearch`): a research-mode system prompt
+  (parallel queries, fetch-before-answer, cross-source verification, cited
+  report) and a **deterministic research gate** that refuses a DONE verdict
+  until ≥2 distinct pages were fetched AND a cited report exists under
+  `.yagent/research/*.md` (`countCitedURLs` ≥2). Report path + sources printed
+  on completion; L3 memory persistence via `MemorizeResearch`.
+- **`web_search` parallel fan-out** — a `queries` array (up to 8) runs the
+  searches concurrently in one call, so the model covers several angles of a
+  topic without serial round-trips. Backward compatible with a single `query`.
+- **HTML → Markdown web_fetch** — `htmlToMarkdown` preserves headings, lists,
+  fenced code blocks, tables, blockquotes and links (`[text](url)`) instead of
+  flattening them to text, so citations survive and pages are cheaper to read.
+- **PDF detection** — `application/pdf` (content-type or `%PDF-` magic) returns
+  a "find the HTML/abstract version" error instead of binary garbage.
+- **`web_search.max_fetch_kib`** config key (`/settings` + `/set`) — raises
+  web_fetch's extracted-text cap from a hardcoded 16 KiB (default 32 KiB).
+- **Research ledger in TASK STATE** — fetched URLs (`SOURCES (fetched)`),
+  search queries (`searched`), and `research_note` findings (`RESEARCH NOTES`)
+  render on every request, so citations survive budget pruning.
+- **`research_note` tool** — records one verified finding + source URL into the
+  persistent ledger (`agent.Config.Research`).
+
+### Tests
+- Golden eval 59 (research gate), `TestRunResearchGateRequiresReport`,
+  `TestResearchGateRefusesWithoutSources`, `TestResearchLedgerRendersSources`,
+  `TestResearchNoteRecordsFinding`, `TestCountCitedURLs`, `TestWebSearchParallelQueries`,
+  `TestResearchNoteTool`, `TestFetchMarkdownStructure`, `TestFetchRejectsPDF`,
+  `TestFetchConfigurableCap`, config round-trips for `max_fetch_kib`.
+
 ## v0.1.79 — 2026-08-15
 
 ### Added

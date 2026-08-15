@@ -377,3 +377,87 @@ func TestFetchRejectsNonHTTPScheme(t *testing.T) {
 		t.Errorf("http fetch failed: %v %q", err, got)
 	}
 }
+
+func TestFetchMarkdownStructure(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>
+<h1>Main heading</h1>
+<p>A <a href="https://example.com/link">linked word</a> in a paragraph.</p>
+<ul><li>first item</li><li>second item</li></ul>
+<ol><li>ordered one</li><li>ordered two</li></ol>
+<pre><code>func main() {}</code></pre>
+<table><tr><th>Col A</th><th>Col B</th></tr><tr><td>1</td><td>2</td></tr></table>
+</body></html>`))
+	}))
+	defer ts.Close()
+	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	got, err := c.Fetch(context.Background(), ts.URL)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	for _, want := range []string{
+		"# Main heading",
+		"[linked word](https://example.com/link)",
+		"- first item",
+		"- second item",
+		"1. ordered one",
+		"2. ordered two",
+		"```",
+		"func main() {}",
+		"| Col A | Col B |",
+		"| 1 | 2 |",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("markdown output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFetchRejectsPDF(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.4\n%fake binary content\n"))
+	}))
+	defer ts.Close()
+	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	_, err := c.Fetch(context.Background(), ts.URL)
+	if err == nil || !strings.Contains(err.Error(), "PDF") {
+		t.Errorf("PDF fetch should error with a PDF hint, got: %v", err)
+	}
+	// a server that omits the Content-Type but serves a PDF magic header
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("%PDF-1.4\n%no content type\n"))
+	}))
+	defer ts2.Close()
+	if _, err := c.Fetch(context.Background(), ts2.URL); err == nil || !strings.Contains(err.Error(), "PDF") {
+		t.Errorf("magic-byte PDF should error, got: %v", err)
+	}
+}
+
+func TestFetchConfigurableCap(t *testing.T) {
+	body := "<p>" + strings.Repeat("lorem ipsum dolor ", 4000) + "</p>"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+	// A small cap truncates early and mentions the marker.
+	c := &Client{http: ts.Client(), fetchTimeout: 0, MaxFetchBytes: 256}
+	got, err := c.Fetch(context.Background(), ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > 300 || !strings.Contains(got, "truncated") {
+		t.Errorf("small cap: len=%d trunc=%v", len(got), strings.Contains(got, "truncated"))
+	}
+	// A large cap returns far more than the default.
+	big := &Client{http: ts.Client(), fetchTimeout: 0, MaxFetchBytes: 96 << 10}
+	gotBig, err := big.Fetch(context.Background(), ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotBig) < len(body)-10 {
+		t.Errorf("large cap returned only %d bytes of %d", len(gotBig), len(body))
+	}
+}

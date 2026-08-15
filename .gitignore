@@ -4,6 +4,7 @@
 /.yagent/checkpoints/
 /.yagent/memory/
 /.yagent/playbooks/
+/.yagent/research/
 /.yagent/scratch/
 /.yagent/skills/
 /.yagent/undo/
