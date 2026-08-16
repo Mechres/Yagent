@@ -247,14 +247,21 @@ func Run(cfg *config.Config) Report {
 	}
 
 	// --- local tooling ---
-	if cfg.Shell.Sandbox == "bwrap" {
+	switch cfg.Shell.Sandbox {
+	case "bwrap":
 		if _, err := exec.LookPath("bwrap"); err != nil {
 			rep.add("sandbox", StatusFail, "shell.sandbox is bwrap but bubblewrap is not installed")
 		} else {
 			rep.add("sandbox", StatusPass, "bubblewrap found for shell.sandbox")
 		}
-	} else {
-		rep.add("sandbox", StatusInfo, "shell sandbox disabled (set shell.sandbox: bwrap to enable)")
+	case "unsafe":
+		rep.add("sandbox", StatusWarn, "shell.sandbox=unsafe — shell_exec runs UNCONFINED (cd /, absolute paths and ../ reach outside the workspace)")
+	default: // "" — fail closed, auto-confines when bwrap is available
+		if _, err := exec.LookPath("bwrap"); err != nil {
+			rep.add("sandbox", StatusWarn, "bubblewrap not installed: shell_exec will refuse to run unconfined (set shell.sandbox: unsafe to allow, or install bubblewrap)")
+		} else {
+			rep.add("sandbox", StatusPass, "shell_exec auto-confined to workspace via bubblewrap (set shell.sandbox: unsafe to disable)")
+		}
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		rep.add("git", StatusWarn, "git not on PATH; the git tools will error")

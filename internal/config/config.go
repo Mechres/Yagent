@@ -945,7 +945,7 @@ func Settings() []SettingKey {
 		{Key: "skills.write_approval", Label: "Skills write approval", Options: []string{"false", "true"}},
 		{Key: "skills.data_dir", Label: "Skills data dir"},
 		{Key: "skills.project_dir", Label: "Skills project dir"},
-		{Key: "shell.sandbox", Label: "Shell sandbox", Options: []string{"", "bwrap"}},
+		{Key: "shell.sandbox", Label: "Shell sandbox", Options: []string{"", "bwrap", "unsafe"}},
 		{Key: "vram_threshold_tps", Label: "VRAM pressure t/s threshold (0 = off; auto-prunes context when streaming slows)"},
 		{Key: "codegen", Label: "Codegen mode (whole-file writes + compile-gated final answers)", Options: []string{"false", "true"}},
 		{Key: "git_auto_commit", Label: "Auto-commit each turn to git (/undo = revert; needs a git repo)", Options: []string{"true", "false"}},
@@ -1235,8 +1235,8 @@ func validateKey(parts []string, value string) error {
 			return &ValidationError{msg: "ui.reduced_motion must be true or false"}
 		}
 	case "shell.sandbox":
-		if value != "" && value != "bwrap" {
-			return &ValidationError{msg: "shell.sandbox must be empty or bwrap"}
+		if value != "" && value != "bwrap" && value != "unsafe" {
+			return &ValidationError{msg: "shell.sandbox must be empty, bwrap, or unsafe"}
 		}
 	case "api_key":
 		// empty value means "clear the stored key" (revert to env-var-only).

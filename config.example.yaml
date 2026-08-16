@@ -85,7 +85,13 @@ skills:
   # project_dir: ...
 
 shell:
-  sandbox: ""                 # "bwrap" wraps shell_exec in bubblewrap (Linux)
+  # Sandbox for shell_exec. Default "" FAILS CLOSED: if bubblewrap is installed
+  # (recommended), shell commands are auto-confined to the workspace; if it is
+  # not installed, shell_exec refuses to run unconfined. "bwrap" forces
+  # bubblewrap (errors if missing). "unsafe" opts out entirely — commands can
+  # cd /, use absolute paths and ../ to reach outside the workspace. Only set
+  # unsafe when you explicitly trust the command source.
+  sandbox: ""
 
 # VRAM pressure detector: when a stream's average t/s drops below this
 # threshold (KV-cache spill signature on a 12 GB card), the next request

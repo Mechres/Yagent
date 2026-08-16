@@ -64,7 +64,9 @@ func (t *shellExecTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	defer cancel()
 
 	var cmd *exec.Cmd
-	if t.sandbox == "bwrap" {
+	var warn string
+	switch t.sandbox {
+	case "bwrap":
 		if !t.bwrapAvailable() {
 			return "error: shell.sandbox is bwrap but bubblewrap is not installed (install it, or set shell.sandbox to empty)", nil
 		}
@@ -74,8 +76,31 @@ func (t *shellExecTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 			return fmt.Sprintf("error: %v", err), nil
 		}
 		cmd = exec.CommandContext(ctx, "bwrap", args...)
-	} else {
+	case "unsafe":
+		// Explicit opt-out of confinement. The command runs with cmd.Dir=ws
+		// only, so `cd /`, absolute paths and `../` can reach outside the
+		// workspace. This is intentionally escape-prone; the user asked for it.
+		warn = "warning: shell.sandbox=unsafe — command is NOT confined to the workspace (cd /, absolute paths and ../ reach outside)."
 		cmd = exec.CommandContext(ctx, "sh", "-c", a.Command)
+	default: // "" — fail closed
+		if t.bwrapAvailable() {
+			// No sandbox requested, but bubblewrap is present: confine by
+			// default rather than trusting the agent's workspace-relative
+			// model. An approved command must not be able to read/alter files
+			// outside the workspace (codex audit #2, 2026-08-16).
+			home, _ := os.UserHomeDir()
+			args, err := bwrapArgs(t.ws, home, a.Command)
+			if err != nil {
+				return fmt.Sprintf("error: %v", err), nil
+			}
+			cmd = exec.CommandContext(ctx, "bwrap", args...)
+			warn = "note: shell commands are auto-confined to the workspace via bubblewrap (set shell.sandbox: unsafe to disable)."
+		} else {
+			// No sandbox available and none requested: refuse to run an
+			// unconfined destructive command. The user must opt in with
+			// shell.sandbox: unsafe (or install bubblewrap).
+			return "error: shell_exec would run UNCONFINED (no bubblewrap). Set shell.sandbox: unsafe to allow running outside a sandbox, or install bubblewrap for workspace confinement.", nil
+		}
 	}
 	cmd.Dir = t.ws
 	cmd.Env = scrubEnv(os.Environ())
@@ -106,6 +131,9 @@ func (t *shellExecTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		return fmt.Sprintf("error: command canceled:\n%s%s", out.String(), errBuf.String()), nil
 	case err := <-done:
 		var b strings.Builder
+		if warn != "" {
+			fmt.Fprintln(&b, warn)
+		}
 		b.WriteString(out.String())
 		if errBuf.Len() > 0 {
 			fmt.Fprintf(&b, "stderr:\n%s", errBuf.String())

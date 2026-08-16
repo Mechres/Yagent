@@ -175,3 +175,52 @@ func TestShellExecSandboxLive(t *testing.T) {
 		t.Errorf("workspace write in sandbox failed: %v", err)
 	}
 }
+
+func TestShellExecDefaultFailsClosedAutoSandbox(t *testing.T) {
+	// codex audit #2 (2026-08-16): sandbox "" must not run an approved command
+	// unconfined. When bubblewrap is available it auto-confines to the
+	// workspace; the result notes the confinement.
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not installed")
+	}
+	tool := &shellExecTool{ws: t.TempDir(), sandbox: ""}
+	res, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"command": "echo confined-ok"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "confined-ok") {
+		t.Errorf("default-sandbox shell = %q", res)
+	}
+	if !strings.Contains(res, "auto-confined") {
+		t.Errorf("default-sandbox result should note auto-confinement: %q", res)
+	}
+}
+
+func TestShellExecDefaultRefusesUnconfinedWithoutBwrap(t *testing.T) {
+	// With no sandbox requested and bubblewrap absent, shell_exec must refuse
+	// to run an unconfined destructive command (the user must opt in).
+	tool := &shellExecTool{ws: t.TempDir(), sandbox: "", hasBwrap: func() bool { return false }}
+	res, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"command": "echo hi"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "UNCONFINED") {
+		t.Errorf("expected refusal to run unconfined, got %q", res)
+	}
+}
+
+func TestShellExecUnsafeOptsOut(t *testing.T) {
+	// shell.sandbox=unsafe intentionally runs unconfined; the result must
+	// surface the warning so the user knows confinement is off.
+	tool := &shellExecTool{ws: t.TempDir(), sandbox: "unsafe", hasBwrap: func() bool { return false }}
+	res, err := tool.Execute(ctx(), argsJSON(t, map[string]any{"command": "echo wide-open"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "wide-open") {
+		t.Errorf("unsafe shell = %q", res)
+	}
+	if !strings.Contains(res, "NOT confined") {
+		t.Errorf("unsafe result should warn it is not confined: %q", res)
+	}
+}
