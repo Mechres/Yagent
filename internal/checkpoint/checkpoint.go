@@ -69,9 +69,11 @@ func Restore(ws, name string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("checkpoint %q is not a directory", name)
 	}
-	// Stage the snapshot first. Staging lives under .yagent, which the live
-	// tree-removal loop below excludes, so it survives the swap.
-	staging := filepath.Join(ws, dirName, ".restore-staging")
+	// Stage the snapshot first. Staging lives at <ws>/.yagent/.restore-staging
+	// (under .yagent but OUTSIDE the checkpoints/ dir), so it is excluded from
+	// List/Prune and never surfaces as a checkpoint, and it survives the live
+	// tree-removal loop below.
+	staging := filepath.Join(ws, ".yagent", ".restore-staging")
 	os.RemoveAll(staging)
 	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
 		return fmt.Errorf("checkpoint dir: %w", err)
@@ -110,7 +112,9 @@ func Restore(ws, name string) error {
 	return os.RemoveAll(staging)
 }
 
-// List returns checkpoint names, newest first.
+// List returns checkpoint names, newest first. Hidden entries (names
+// starting with ".") are skipped — they are internal state (e.g. the
+// .restore-staging dir used by Restore), never user snapshots.
 func List(ws string) []string {
 	dir := filepath.Join(ws, dirName)
 	entries, err := os.ReadDir(dir)
@@ -119,7 +123,7 @@ func List(ws string) []string {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 			names = append(names, e.Name())
 		}
 	}

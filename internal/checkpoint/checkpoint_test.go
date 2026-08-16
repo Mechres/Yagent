@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,7 +159,7 @@ func TestRestoreCleansStagingAndPreservesState(t *testing.T) {
 	if string(data) != "v1" {
 		t.Errorf("a.txt after restore = %q; want v1", data)
 	}
-	if _, err := os.Lstat(filepath.Join(ws, dirName, ".restore-staging")); err == nil {
+	if _, err := os.Lstat(filepath.Join(ws, ".yagent", ".restore-staging")); err == nil {
 		t.Error(".restore-staging was left behind after a successful restore")
 	}
 	if _, err := os.Stat(filepath.Join(ws, ".git", "HEAD")); err != nil {
@@ -181,7 +182,7 @@ func TestRestoreLeavesWorkspaceIntactOnError(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(ws, "important.txt")); err != nil || string(data) != "do-not-lose" {
 		t.Errorf("workspace was modified by a failed restore (data=%q err=%v)", data, err)
 	}
-	if _, err := os.Lstat(filepath.Join(ws, dirName, ".restore-staging")); err == nil {
+	if _, err := os.Lstat(filepath.Join(ws, ".yagent", ".restore-staging")); err == nil {
 		t.Error("staging dir leaked after a failed restore")
 	}
 }
@@ -207,5 +208,45 @@ func TestRestoreDeleteRejectTraversal(t *testing.T) {
 	// The workspace must be untouched after all rejected calls.
 	if _, err := os.Stat(filepath.Join(ws, "important.txt")); err != nil {
 		t.Errorf("workspace file was affected: %v", err)
+	}
+}
+
+func TestListExcludesHiddenState(t *testing.T) {
+	// List/Prune must never surface internal dotfile state (e.g. the
+	// .restore-staging dir used by Restore) as a user checkpoint.
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "f"), "x")
+	if _, err := Save(ws, "goal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Save(ws, "manual"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a leftover staging dir (Restore always cleans it, but List must
+	// be robust to its presence).
+	if err := os.MkdirAll(filepath.Join(ws, dirName, ".restore-staging"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	names := List(ws)
+	for _, n := range names {
+		if strings.HasPrefix(n, ".") {
+			t.Errorf("List returned hidden entry %q", n)
+		}
+	}
+	if len(names) != 2 {
+		t.Errorf("List = %v; want [goal, manual]", names)
+	}
+	// Prune must also ignore hidden entries and keep the goal snapshot.
+	if _, err := Prune(ws, 1); err != nil {
+		t.Fatal(err)
+	}
+	names = List(ws)
+	for _, n := range names {
+		if strings.HasPrefix(n, ".") {
+			t.Errorf("Prune left hidden entry %q", n)
+		}
+	}
+	if len(names) != 1 || names[0] != "goal" {
+		t.Errorf("after prune List = %v; want [goal]", names)
 	}
 }
