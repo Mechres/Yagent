@@ -11,6 +11,10 @@ import (
 
 func TestShellExec(t *testing.T) {
 	ws, reg := fakeWorkspace(t)
+	// Exec mechanics (cwd, exit codes, timeouts), not sandboxing. Run unsandboxed
+	// so it passes whether or not bubblewrap is installed; the fail-closed
+	// default is covered by TestShellExecDefaultFailsClosed*.
+	reg = NewRegistry(ws, Options{SkillsWriteApproval: true, ShellSandbox: "unsafe"})
 	writeFile(t, ws, "data.txt", "payload")
 
 	// runs in the workspace dir
@@ -33,7 +37,8 @@ func TestShellExec(t *testing.T) {
 }
 
 func TestShellExecTimeout(t *testing.T) {
-	_, reg := fakeWorkspace(t)
+	ws, reg := fakeWorkspace(t)
+	reg = NewRegistry(ws, Options{SkillsWriteApproval: true, ShellSandbox: "unsafe"})
 	start := time.Now()
 	// "& wait" forces sh to fork the sleeper as a child: a plain `sleep 5`
 	// may be exec-optimized by /bin/sh, masking the need to kill the whole
