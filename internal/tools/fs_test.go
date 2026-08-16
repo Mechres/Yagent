@@ -65,6 +65,16 @@ func TestFSRead(t *testing.T) {
 	if got := execTool(t, reg, "fs_read", map[string]any{"path": "missing.txt"}); !strings.Contains(got, "error:") {
 		t.Errorf("fs_read missing = %q", got)
 	}
+	// Invalid paging must be rejected, not silently ignored (returns whole file).
+	if got := execTool(t, reg, "fs_read", map[string]any{"path": "hello.txt", "offset": -1}); !strings.Contains(got, "offset must be") {
+		t.Errorf("fs_read negative offset should error, got %q", got)
+	}
+	if got := execTool(t, reg, "fs_read", map[string]any{"path": "hello.txt", "limit": -5}); !strings.Contains(got, "limit must be") {
+		t.Errorf("fs_read negative limit should error, got %q", got)
+	}
+	if got := execTool(t, reg, "fs_read", map[string]any{"path": "hello.txt", "limit": 999999}); !strings.Contains(got, "exceeds max") {
+		t.Errorf("fs_read over-max limit should error, got %q", got)
+	}
 }
 
 func TestFSReadBinaryDetection(t *testing.T) {

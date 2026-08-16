@@ -62,6 +62,18 @@ func (t *fsReadTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	if err := decodeArgs(raw, &a); err != nil {
 		return "", err
 	}
+	// Validate paging up front: negative offset/limit would be silently ignored
+	// and return the whole file, so the model could believe it inspected a
+	// requested region when it did not (codex audit IT9, 2026-08-16).
+	if a.Offset < 0 {
+		return "", validationErrorf("fs_read offset must be >= 0, got %d", a.Offset)
+	}
+	if a.Limit < 0 {
+		return "", validationErrorf("fs_read limit must be >= 0, got %d", a.Limit)
+	}
+	if a.Limit > fsReadMaxLines {
+		return "", validationErrorf("fs_read limit %d exceeds max %d", a.Limit, fsReadMaxLines)
+	}
 	path, err := resolvePath(t.ws, a.Path)
 	if err != nil {
 		return "", err
