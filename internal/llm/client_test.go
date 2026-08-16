@@ -317,6 +317,23 @@ func TestChatStreamAccumulatesFragmentedToolCalls(t *testing.T) {
 	}
 }
 
+func TestChatStreamRejectsOutOfRangeToolIndex(t *testing.T) {
+	// codex audit (2026-08-16): a malformed stream with an absurd tool_call
+	// index must not grow the accumulation slice to that size. The stream
+	// parser must reject it as a protocol error.
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":1000000000,"type":"function","function":{"name":"fs_read","arguments":"{}"}}]}}]}`,
+		"[DONE]",
+	)
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {}, nil)
+	if err == nil {
+		t.Fatal("ChatStream accepted an out-of-range tool_call index; want a protocol error")
+	}
+}
+
 func TestChatStreamHTTPErrorNotRetried(t *testing.T) {
 	t.Parallel()
 	var hits atomic.Int32

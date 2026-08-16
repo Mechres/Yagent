@@ -13,6 +13,13 @@ import (
 	"time"
 )
 
+// maxStreamToolCalls bounds how many parallel tool calls a single streamed
+// assistant message may carry. OpenAI-compatible streams index tool_calls
+// across chunks; a malformed stream with an absurd index (e.g. 1e9) would
+// otherwise grow the accumulation slice to that size. 32 is far beyond any
+// realistic single-message tool batch for a local agent.
+const maxStreamToolCalls = 32
+
 // Message is one chat message in the OpenAI-compatible format.
 type Message struct {
 	Role       string     `json:"role"` // "system" | "user" | "assistant" | "tool"
@@ -277,6 +284,13 @@ func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta, onRea
 		}
 		for _, tc := range delta.ToolCalls {
 			// Tool calls arrive fragmented across chunks; accumulate by index.
+			// Guard the index: a malformed/partial OpenAI-compatible stream
+			// (e.g. {"index": 1000000000}) would otherwise grow the slice to
+			// that size before the agent's iteration cap could ever fire
+			// (codex audit, 2026-08-16). Reject negative or absurd indices.
+			if tc.Index < 0 || tc.Index >= maxStreamToolCalls {
+				return fmt.Errorf("stream tool_call index %d out of range (max %d)", tc.Index, maxStreamToolCalls)
+			}
 			for len(respMessage.ToolCalls) <= tc.Index {
 				respMessage.ToolCalls = append(respMessage.ToolCalls, ToolCall{Type: "function"})
 			}

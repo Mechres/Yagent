@@ -10,6 +10,16 @@ import (
 	"github.com/Mechres/Yagent/internal/llm"
 )
 
+// maxParallelSubagents bounds how many subtasks a single subagent call may fan
+// out to at once. A weak model emitting a huge tasks[] array would otherwise
+// queue hundreds of child agent loops that serialize behind SlotLock on the
+// single GPU (codex audit, 2026-08-16). The cap also bounds concurrency.
+const maxParallelSubagents = 8
+
+// maxSubagentTaskBytes caps the length of a single subtask string so a
+// malformed/oversized task cannot blow up the child's context.
+const maxSubagentTaskBytes = 4096
+
 // SubagentRole is a preset child-agent profile: a specialized system-prompt
 // suffix, a default read-only tool subset, and an optional temperature. Zero
 // value means no role.
@@ -115,15 +125,38 @@ func (t *subagentTool) Execute(ctx context.Context, raw json.RawMessage) (string
 	return capResult(answer, maxResultBytes), nil
 }
 
-// runParallel runs multiple subtasks in isolated subagents concurrently and
-// combines the summaries in order.
-func (t *subagentTool) runParallel(ctx context.Context, tasks, tools []string, role SubagentRole) (string, error) {
-	results := make([]string, len(tasks))
+// runParallel runs multiple subtasks in isolated subagents and combines the
+// summaries in order. It drops blank tasks, caps how many run at once (a weak
+// model emitting a huge array would otherwise queue hundreds of child loops
+// that serialize behind SlotLock on the single GPU — codex audit, 2026-08-16),
+// and rejects an over-large batch with guidance to prioritize.
+func (t *subagentTool) runParallel(ctx context.Context, rawTasks, tools []string, role SubagentRole) (string, error) {
+	// Drop blank tasks.
+	clean := make([]string, 0, len(rawTasks))
+	for i, tk := range rawTasks {
+		if strings.TrimSpace(tk) == "" {
+			continue
+		}
+		if len(tk) > maxSubagentTaskBytes {
+			return "", validationErrorf("subagent task %d is too long (%d bytes; max %d) — keep each task concise", i+1, len(tk), maxSubagentTaskBytes)
+		}
+		clean = append(clean, tk)
+	}
+	if len(clean) == 0 {
+		return "", validationErrorf(`"tasks" contained no non-empty subtask`)
+	}
+	if len(clean) > maxParallelSubagents {
+		return "", validationErrorf("subagent tasks capped at %d (got %d) — run the highest-priority ones first, then call subagent again for the rest", maxParallelSubagents, len(clean))
+	}
+	results := make([]string, len(clean))
+	sem := make(chan struct{}, maxParallelSubagents) // bounded concurrency
 	var wg sync.WaitGroup
-	for i, tk := range tasks {
+	for i, tk := range clean {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(i int, tk string) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			r, err := t.run(ctx, tk, t.ws, tools, role)
 			if err != nil {
 				r = "error: " + err.Error()
@@ -133,7 +166,7 @@ func (t *subagentTool) runParallel(ctx context.Context, tasks, tools []string, r
 	}
 	wg.Wait()
 	var b strings.Builder
-	for i, tk := range tasks {
+	for i, tk := range clean {
 		fmt.Fprintf(&b, "### %s\n%s\n\n", tk, results[i])
 	}
 	return capResult(b.String(), maxResultBytes), nil
