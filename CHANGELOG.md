@@ -2,6 +2,33 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.96 — 2026-08-16
+
+Round 2 of hardening (10-iteration improvement loop, audited via codex,
+each fix verified against the current source and covered by a permanent
+regression test):
+
+### Safety / correctness
+- **fs_write / fs_edit atomic write** — writes go to a same-dir temp file,
+  fsync, preserve the original mode, then rename over the destination. A
+  disk-full / I/O error / crash no longer leaves a truncated or empty file.
+- **shell_exec fails closed by default** — `sandbox: ""` now auto-confines to
+  the workspace via bubblewrap when it is installed; with no bubblewrap it
+  refuses to run unconfined (opt in with `unsafe`). Previously `""` ran
+  approved commands unconfined (`cd /`, absolute paths, `../` escaped). New
+  `unsafe` mode is an explicit opt-out and warns in the result.
+- **fs_read paging validation** — negative `offset`/`limit` are rejected
+  (they were silently ignored and returned the whole file); `limit` is capped
+  at 2000 lines.
+- **config vram_threshold_tps bounds** — NaN / Inf / negative / absurd values
+  are rejected in the env var, `/set`, and YAML paths (they silently disabled
+  or misfired VRAM pressure detection).
+
+### Robustness (weak local model)
+- **Retryable HTTP statuses** — 429/500/502/503/504 are now retried with
+  bounded backoff and honor `Retry-After` (capped 60s); 4xx stay fatal.
+  A briefly overloaded inference server no longer aborts the run.
+
 ## v0.1.95 — 2026-08-16
 
 Security and local-model robustness hardening (audited via codex, each fix
