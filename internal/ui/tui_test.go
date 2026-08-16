@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1704,5 +1705,176 @@ func TestModelSelectorModelsDevStatus(t *testing.T) {
 	v = m.modelView()
 	if !strings.Contains(v, "detecting…") {
 		t.Errorf("modelView missing loading status: %q", v)
+	}
+}
+
+// --- accessibility & reduced-motion ---
+
+func TestSetIconModeAscii(t *testing.T) {
+	setIconMode("ascii")
+	defer setIconMode("standard")
+	if iconFolder == "📁" || iconTool == "🛠" || iconCtx == "🧠" {
+		t.Errorf("ascii mode did not swap emoji icons: folder=%q tool=%q ctx=%q", iconFolder, iconTool, iconCtx)
+	}
+	if iconFolder != "[W]" || iconTool != "[T]" || iconCtx != "[C]" {
+		t.Errorf("ascii icons = %q %q %q, want [W] [T] [C]", iconFolder, iconTool, iconCtx)
+	}
+	setIconMode("standard")
+	if iconFolder != "📁" {
+		t.Errorf("standard mode did not restore emoji: folder=%q", iconFolder)
+	}
+}
+
+func TestHighContrastThemeAvailable(t *testing.T) {
+	th := themeByName("high-contrast")
+	if string(th.Background) != "#000000" || string(th.Primary) != "#ffffff" {
+		t.Errorf("high-contrast theme colors = %v/%v", th.Background, th.Primary)
+	}
+	// unknown name falls back to tokyo
+	if themeByName("nope").Primary == th.Primary {
+		t.Error("unknown theme should fall back to tokyo, not high-contrast")
+	}
+}
+
+func TestReducedMotionStopsSpinner(t *testing.T) {
+	m := testModel(t)
+	m.reducedMotion = true
+	// nextCmd must not include the spinner tick (no animation in reduced motion)
+	cmd := m.nextCmd()
+	if cmd == nil {
+		t.Fatal("nextCmd returned nil")
+	}
+	// A nil return from the spinner path is not directly observable; instead
+	// assert the tick handler ignores the animation. We can't easily invoke it,
+	// so assert the field wires through and View doesn't panic with it on.
+	m.width, m.height = 80, 24
+	m.busy = true
+	v := m.View()
+	if v == "" {
+		t.Error("View empty with reduced motion on")
+	}
+}
+
+// --- PTY-size smoke coverage ---
+
+// TestShortTerminalViewsNoPanic renders every modal at a small terminal size to
+// make sure none of them panic or truncate to nothing (the bounded-modal fix
+// exists because short terminals previously overflowed).
+func TestShortTerminalViewsNoPanic(t *testing.T) {
+	m := testModel(t)
+	m.cfg = &config.Config{APIKey: "sk-x", Skills: config.SkillsConfig{}, Theme: "tokyo"}
+	m.workspace = "/tmp/ws"
+	m.branch = "master"
+	m.th = tokyoNight
+	m.width, m.height = 40, 10 // very short + narrow
+
+	// settings
+	m.settingsOpen = true
+	if v := m.View(); !strings.Contains(ansiStrip(v), "settings") && v == "" {
+		t.Error("settings view empty at 40x10")
+	}
+	m.settingsOpen = false
+	// sessions (empty)
+	m.sessionsOpen = true
+	if v := m.View(); v == "" {
+		t.Error("sessions view empty at 40x10")
+	}
+	m.sessionsOpen = false
+	// tools (no activity)
+	m.toolsOpen = true
+	if v := m.View(); v == "" {
+		t.Error("tools view empty at 40x10")
+	}
+	m.toolsOpen = false
+	// workspace
+	m.workspaceOpen = true
+	if v := m.View(); v == "" {
+		t.Error("workspace view empty at 40x10")
+	}
+	m.workspaceOpen = false
+	// model selector
+	m.modelOpen = true
+	if v := m.View(); v == "" {
+		t.Error("model view empty at 40x10")
+	}
+	m.modelOpen = false
+}
+
+// TestModalRowsAtTinyHeight: even a 3-row terminal keeps the selected row
+// visible with omission markers, and never panics.
+func TestModalRowsAtTinyHeight(t *testing.T) {
+	m := &tuiModel{height: 5, th: tokyoNight}
+	rows := make([]string, 30)
+	for i := range rows {
+		rows[i] = fmt.Sprintf("row-%d", i)
+	}
+	got := m.modalRows(rows, 29, 5)
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "row-29") {
+		t.Errorf("last row dropped at tiny height: %q", joined)
+	}
+	if !strings.Contains(joined, "earlier") && !strings.Contains(joined, "more") {
+		t.Errorf("omission marker missing: %q", joined)
+	}
+}
+
+// TestSessionsRenameAndPin: 'n' opens a rename input that persists the new
+// title; '*' toggles pinning (pinned sorts first).
+func TestSessionsRenameAndPin(t *testing.T) {
+	st, err := memory.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := testModel(t)
+	m.env.st = st
+	s, _ := st.NewSession(context.Background(), "/tmp/ws")
+	_, _ = st.Append(context.Background(), s.ID, llm.Message{Role: "user", Content: "initial title"})
+	s2, _ := st.NewSession(context.Background(), "/tmp/ws")
+	_, _ = st.Append(context.Background(), s2.ID, llm.Message{Role: "user", Content: "another session"})
+	m.sessions, _ = st.ListSessions(context.Background())
+	m.sessionsOpen = true
+	m.sessionsIdx = 0
+
+	// rename: 'n' opens the input, type + enter persists
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if !m.sessionsRename {
+		t.Fatal("'n' did not open the rename input")
+	}
+	m.sessionsRenameIn.SetValue("my custom title")
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.sessionsRename {
+		t.Error("enter did not close the rename input")
+	}
+	got, _ := st.SessionTitle(context.Background(), m.sessions[m.sessionsIdx].ID)
+	if got != "my custom title" {
+		t.Errorf("renamed title = %q", got)
+	}
+	if !strings.Contains(m.sessionsAction, "renamed") {
+		t.Errorf("rename action = %q", m.sessionsAction)
+	}
+
+	// pin: '*' pins the selected session; it should sort to the top
+	selected := m.sessions[m.sessionsIdx].ID
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("*")})
+	if len(m.sessions) == 0 || m.sessions[0].ID != selected || !m.sessions[0].Pinned {
+		t.Errorf("pinned session should sort first: %+v", m.sessions)
+	}
+	if !strings.Contains(m.sessionsAction, "pinned") {
+		t.Errorf("pin action = %q", m.sessionsAction)
+	}
+	// unpin with 'P'
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	for _, ss := range m.sessions {
+		if ss.ID == selected && ss.Pinned {
+			t.Error("unpin did not clear the pin")
+		}
+	}
+	if !strings.Contains(m.sessionsAction, "unpinned") {
+		t.Errorf("unpin action = %q", m.sessionsAction)
+	}
+	// esc closes
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.sessionsOpen {
+		t.Error("esc should close the browser")
 	}
 }

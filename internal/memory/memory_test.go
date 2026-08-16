@@ -492,3 +492,56 @@ func TestDeleteIfEmpty(t *testing.T) {
 		t.Fatalf("session with messages was deleted: %v", err)
 	}
 }
+
+func TestRenameAndPinSession(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	sess, _ := st.NewSession(ctx, "/tmp/repo")
+	_, _ = st.Append(ctx, sess.ID, Message{Role: "user", Content: "auto title"})
+	if title, _ := st.SessionTitle(ctx, sess.ID); title != "auto title" {
+		t.Fatalf("initial title = %q", title)
+	}
+	// rename to a custom title
+	if err := st.SetTitle(ctx, sess.ID, "my custom session"); err != nil {
+		t.Fatal(err)
+	}
+	if title, _ := st.SessionTitle(ctx, sess.ID); title != "my custom session" {
+		t.Errorf("renamed title = %q", title)
+	}
+	// clear back to empty (auto-title mode)
+	if err := st.SetTitle(ctx, sess.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if title, _ := st.SessionTitle(ctx, sess.ID); title != "" {
+		t.Errorf("cleared title = %q", title)
+	}
+	// pin then unpin; pinned sessions list first
+	s2, _ := st.NewSession(ctx, "/tmp/repo")
+	_, _ = st.Append(ctx, s2.ID, Message{Role: "user", Content: "second"})
+	if err := st.SetPinned(ctx, sess.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := st.ListSessions(ctx)
+	if len(list) < 2 || list[0].ID != sess.ID || !list[0].Pinned {
+		t.Errorf("pinned session should sort first: %+v", list)
+	}
+	if err := st.SetPinned(ctx, sess.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = st.ListSessions(ctx)
+	for _, s := range list {
+		if s.ID == sess.ID && s.Pinned {
+			t.Error("unpin did not clear the pin")
+		}
+	}
+	// migration: a store opened on a pre-existing DB without the column works
+	// (Open runs the ALTER). Opening again is idempotent.
+	if _, err := Open(dir); err != nil {
+		t.Errorf("reopen with pinned migration: %v", err)
+	}
+}

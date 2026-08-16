@@ -5,6 +5,24 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased
 
 ### Added
+- **Persistent session rename & pin** — `n` in the `/sessions` browser renames
+  a session (persisted; empty clears back to auto-title), `*`/`P` toggles
+  pinning so pinned sessions sort first; pinned sessions show a 📌 marker.
+  CLI: `yagent sessions rename <id> <title>` and `pin`/`unpin`. Store gained
+  `SetTitle`/`SetPinned` + a `pinned` column (auto-migrated on existing DBs).
+- **Reduced-motion accessibility** — `ui.reduced_motion: true` (or
+  `/set ui.reduced_motion true`) replaces the animated spinner with a static
+  indicator and stops spinner ticks; live-applied.
+- **PTY-size smoke coverage** — tests render every TUI modal at a 40×10
+  terminal and assert no panic; `modalRows` at tiny heights keeps the selection
+  visible with omission markers. Fixes a latent nil-`cfg` panic in `headerView`
+  and a nil-`ag` panic in `statusView` that the smoke tests exposed.
+- **Accessibility tests** — `setIconMode` (ascii), high-contrast theme lookup,
+  and `ui.accessibility`/`ui.reduced_motion` config round-trip + validation.
+
+## v0.1.92 — 2026-08-16
+
+### Added
 - **Tool inspector filters** — `/tools` now cycles All → Failures → Writes →
   Running with `f`, keeping keyboard selection within the filtered activity.
 - **Tool-to-transcript navigation** — press `g` in `/tools` to close the

@@ -1919,6 +1919,12 @@ func applySetting(c *config.Config, reg *tools.Registry, key, value string) erro
 		c.UI.LoopGuard = b
 	case "ui.accessibility":
 		c.UI.Accessibility = value
+	case "ui.reduced_motion":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		c.UI.ReducedMotion = b
 	case "context_window":
 		n, err := strconv.Atoi(value)
 		if err != nil {

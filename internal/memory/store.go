@@ -39,6 +39,7 @@ type Session struct {
 type SessionSummary struct {
 	ID        string
 	Title     string
+	Pinned    bool
 	CreatedAt int64
 	UpdatedAt int64
 	Messages  int
@@ -50,7 +51,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     repo_path   TEXT NOT NULL,
     title       TEXT,
     created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
+    updated_at  INTEGER NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +92,10 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	// Migration: older databases lack the pinned column (added v0.1.93).
+	// SQLite supports ADD COLUMN idempotently-ish; ignore the error when it
+	// already exists.
+	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`)
 	st := &Store{db: db, dir: dir}
 	if err := st.backfillFTS(); err != nil {
 		db.Close()
@@ -103,6 +109,13 @@ func (s *Store) CountSessions() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n)
 	return n, err
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // backfillFTS indexes messages written before the FTS table existed. It reads
@@ -257,9 +270,9 @@ func (s *Store) historyAfter(ctx context.Context, sessionID string, minID int64)
 // ListSessions returns all sessions, newest first, with message counts.
 func (s *Store) ListSessions(ctx context.Context) ([]SessionSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT sess.id, sess.title, sess.created_at, sess.updated_at,
+		`SELECT sess.id, sess.title, sess.pinned, sess.created_at, sess.updated_at,
 		        (SELECT COUNT(*) FROM messages m WHERE m.session_id = sess.id)
-		 FROM sessions sess ORDER BY sess.updated_at DESC`)
+		 FROM sessions sess ORDER BY sess.pinned DESC, sess.updated_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -267,12 +280,27 @@ func (s *Store) ListSessions(ctx context.Context) ([]SessionSummary, error) {
 	var out []SessionSummary
 	for rows.Next() {
 		var ss SessionSummary
-		if err := rows.Scan(&ss.ID, &ss.Title, &ss.CreatedAt, &ss.UpdatedAt, &ss.Messages); err != nil {
+		if err := rows.Scan(&ss.ID, &ss.Title, &ss.Pinned, &ss.CreatedAt, &ss.UpdatedAt, &ss.Messages); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		out = append(out, ss)
 	}
 	return out, rows.Err()
+}
+
+// SetTitle renames a session (persistent, user-facing). The empty title clears
+// the custom name back to the auto-generated one.
+func (s *Store) SetTitle(ctx context.Context, sessionID, title string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`,
+		title, time.Now().Unix(), sessionID)
+	return err
+}
+
+// SetPinned pins or unpins a session so it sorts to the top of the browser.
+func (s *Store) SetPinned(ctx context.Context, sessionID string, pinned bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET pinned = ?, updated_at = ? WHERE id = ?`,
+		b2i(pinned), time.Now().Unix(), sessionID)
+	return err
 }
 
 // Summary returns the running summary and the last message id it covers.

@@ -869,3 +869,51 @@ func TestSetAPIKeyClearRemovesKey(t *testing.T) {
 		t.Errorf("api_key not cleared from config:\n%s", data)
 	}
 }
+
+func TestUIAccessibilityAndReducedMotionConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(EnvVarServerURL, "")
+	t.Setenv(EnvVarModel, "")
+	t.Setenv(EnvVarEmbeddingModel, "")
+	t.Setenv(EnvVarDataDir, "")
+
+	// default accessibility = standard, reduced_motion = false
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UI.Accessibility != "standard" || cfg.UI.ReducedMotion {
+		t.Errorf("default UI = %+v", cfg.UI)
+	}
+
+	path := writeConfig(t, "ui:\n  accessibility: high-contrast\n  reduced_motion: true\n")
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UI.Accessibility != "high-contrast" || !cfg.UI.ReducedMotion {
+		t.Errorf("loaded UI = %+v", cfg.UI)
+	}
+	if cfg.Get("ui.accessibility") != "high-contrast" || cfg.Get("ui.reduced_motion") != "true" {
+		t.Errorf("Get: %q / %q", cfg.Get("ui.accessibility"), cfg.Get("ui.reduced_motion"))
+	}
+
+	// /set validation
+	if err := Set(path, "ui.accessibility", "bogus"); err == nil {
+		t.Error("invalid ui.accessibility should be rejected")
+	}
+	if err := Set(path, "ui.reduced_motion", "notabool"); err == nil {
+		t.Error("invalid ui.reduced_motion should be rejected")
+	}
+	if err := Set(path, "ui.accessibility", "ascii"); err != nil {
+		t.Errorf("set ascii: %v", err)
+	}
+	if err := Set(path, "ui.reduced_motion", "false"); err != nil {
+		t.Errorf("set reduced_motion false: %v", err)
+	}
+	// round-trip as a bool (not a quoted string)
+	re, _ := LoadConfig(path)
+	if re.UI.ReducedMotion {
+		t.Error("reduced_motion should round-trip false")
+	}
+}

@@ -180,8 +180,15 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 	if cfg.UI.Accessibility == "high-contrast" {
 		m.th = highContrast
 	}
-	m.spinner = spinner.New(spinner.WithSpinner(spinner.MiniDot),
+	// Reduced-motion: a static dot instead of an animated spinner (the tick
+	// messages are also suppressed below).
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(m.th.Primary)))
+	if cfg.UI.ReducedMotion {
+		sp.Spinner = spinner.Spinner{Frames: []string{"●"}}
+	}
+	m.spinner = sp
+	m.reducedMotion = cfg.UI.ReducedMotion
 	m.viewport = viewport.New(80, 20)
 	m.viewport.KeyMap.Up.SetEnabled(false) // avoid clashing with the text input
 	m.viewport.KeyMap.Down.SetEnabled(false)
@@ -361,6 +368,9 @@ type tuiModel struct {
 	msgInput textarea.Model
 	viewport viewport.Model
 	spinner  spinner.Model
+	// reducedMotion disables the animated spinner (a static ● instead) for
+	// vestibular-sensitivity / log contexts.
+	reducedMotion bool
 
 	width  int
 	height int
@@ -444,6 +454,8 @@ type tuiModel struct {
 	sessions          []memory.SessionSummary
 	sessionsFilter    string
 	sessionsTitleSort bool
+	sessionsRename    bool // rename input is open
+	sessionsRenameIn  textinput.Model
 
 	workspaceOpen bool
 
@@ -756,6 +768,9 @@ func (m *tuiModel) applyThemeLive(key, value string) {
 	}
 	if key == "ui.accessibility" {
 		setIconMode(value)
+	}
+	if key == "ui.reduced_motion" {
+		m.reducedMotion = value == "true"
 	}
 }
 
@@ -1245,6 +1260,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
+		if m.reducedMotion {
+			return m, waitIncoming(m.incoming)
+		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, tea.Batch(cmd, waitIncoming(m.incoming))
@@ -2403,8 +2421,28 @@ func (m *tuiModel) checkpointsView() string {
 }
 
 // handleSessionsKey drives the session browser: up/down pick a session,
-// enter shows actions, r resume, f fork, e export, d delete (twice), esc closes.
+// enter shows actions, r resume, f fork, e export, n rename, * pin, d delete
+// (twice), esc closes.
 func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.sessionsRename {
+		switch msg.String() {
+		case "enter":
+			title := strings.TrimSpace(m.sessionsRenameIn.Value())
+			if len(m.sessions) > 0 {
+				_ = m.env.st.SetTitle(context.Background(), m.sessions[m.sessionsIdx].ID, title)
+				m.sessions, _ = m.env.st.ListSessions(context.Background())
+				m.sessionsAction = "renamed session" + titleSuffix(title)
+			}
+			m.sessionsRename = false
+			return m, nil
+		case "esc", "q":
+			m.sessionsRename = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.sessionsRenameIn, cmd = m.sessionsRenameIn.Update(msg)
+		return m, cmd
+	}
 	if m.sessionsIdx < 0 || (len(m.sessions) > 0 && m.sessionsIdx >= len(m.sessions)) {
 		m.sessionsIdx = 0
 	}
@@ -2420,6 +2458,24 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.sessionsIdx < len(m.sessions)-1 {
 			m.sessionsIdx++
 		}
+	case "n":
+		if len(m.sessions) > 0 {
+			m.sessionsRename = true
+			m.sessionsRenameIn = textinput.New()
+			m.sessionsRenameIn.Placeholder = "new title (enter to save, esc cancel)"
+			m.sessionsRenameIn.Focus()
+			m.sessionsRenameIn.SetValue(m.sessions[m.sessionsIdx].Title)
+		}
+		return m, nil
+	case "*", "P":
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.sessionsIdx]
+			_ = m.env.st.SetPinned(context.Background(), s.ID, !s.Pinned)
+			m.sessions, _ = m.env.st.ListSessions(context.Background())
+			m.sessionsAction = fmt.Sprintf("%s session %s", pinVerb(!s.Pinned), s.ID[:8])
+			m.sessionsIdx = 0 // re-pin sorts to the top
+		}
+		return m, nil
 	case "s":
 		m.sessionsTitleSort = !m.sessionsTitleSort
 		if m.sessionsTitleSort {
@@ -2527,6 +2583,22 @@ func filterSessions(in []memory.SessionSummary, query string) []memory.SessionSu
 		}
 	}
 	return out
+}
+
+// titleSuffix renders a rename confirmation suffix: a non-empty custom title
+// gets " to <title>", an empty one gets " back to auto-title".
+func titleSuffix(title string) string {
+	if title == "" {
+		return " back to the auto-title"
+	}
+	return " to \"" + title + "\""
+}
+
+func pinVerb(pin bool) string {
+	if pin {
+		return "pinned"
+	}
+	return "unpinned"
 }
 
 func (m *tuiModel) handleToolsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -3060,6 +3132,9 @@ func (m *tuiModel) sessionsView() string {
 			titleTxt = titleTxt[:39] + "…"
 		}
 		line := fmt.Sprintf("%s  %4d msgs  %s", s.ID[:8], s.Messages, titleTxt)
+		if s.Pinned {
+			line = "📌 " + line
+		}
 		if i == m.sessionsIdx {
 			rows = append(rows, marker+" "+lipgloss.NewStyle().Background(m.th.Surface).
 				Bold(true).Render(line))
@@ -3072,11 +3147,14 @@ func (m *tuiModel) sessionsView() string {
 	}
 	rows = m.modalRows(rows, m.sessionsIdx, 9)
 	body := strings.Join(rows, "\n")
+	if m.sessionsRename {
+		body += "\n\n" + m.sessionsRenameIn.View()
+	}
 	sortHint := "recent"
 	if m.sessionsTitleSort {
 		sortHint = "title"
 	}
-	hint := dim.Render("↑/↓ pick · p preview · s sort " + sortHint + " · enter commands · r resume · f fork · e export · d delete (twice) · esc close")
+	hint := dim.Render("↑/↓ pick · p preview · s sort " + sortHint + " · n rename · * pin · enter commands · r resume · f fork · e export · d delete (twice) · esc close")
 	if m.sessionsConfirm {
 		hint = lipgloss.NewStyle().Foreground(m.th.Error).Render("  delete this session? press d again to confirm, any key to cancel")
 	}
@@ -3436,7 +3514,11 @@ func (m *tuiModel) headerView() string {
 	if m.workspace != "" {
 		parts = append(parts, th.pill(th.Surface, th.Foreground, false).Render(shorten(m.workspace, 40)))
 	}
-	parts = append(parts, th.pill(th.Surface, th.Foreground, false).Render(iconAgent+" "+shorten(m.cfg.Model, 28)))
+	modelName := ""
+	if m.cfg != nil {
+		modelName = m.cfg.Model
+	}
+	parts = append(parts, th.pill(th.Surface, th.Foreground, false).Render(iconAgent+" "+shorten(modelName, 28)))
 	if m.env != nil && m.env.sessionID != "" {
 		parts = append(parts, th.pill(th.Surface, th.Accent, false).Render(iconSession+" "+shorten(m.env.sessionID, 8)))
 	}
@@ -3452,6 +3534,9 @@ func (m *tuiModel) statusView() string {
 	state, color := m.statusText()
 	var parts []string
 	parts = append(parts, th.pill(th.Surface, color, true).Render(state))
+	if m.ag == nil {
+		return fitPills(m.width, parts)
+	}
 	used, limit := m.ag.ContextUsage()
 	parts = append(parts, th.pill(th.Surface, color, false).Render(iconCtx+" "+m.ctxGauge(used, limit)))
 	// Context-growth forecast: ~N turns until the window would be exhausted,
@@ -3672,6 +3757,9 @@ func waitIncoming(ch chan tea.Msg) tea.Cmd {
 // next incoming message, and keeps the spinner ticking while a turn runs.
 func (m *tuiModel) nextCmd() tea.Cmd {
 	if m.busy {
+		if m.reducedMotion {
+			return waitIncoming(m.incoming) // no animated spinner
+		}
 		return tea.Batch(waitIncoming(m.incoming), m.spinner.Tick)
 	}
 	return waitIncoming(m.incoming)

@@ -739,8 +739,61 @@ func runSessionsCmd(cfg *config.Config, args []string) error {
 			}
 		}
 		return runSessionExport(cfg, args[1], output, format)
+	case "rename":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: yagent sessions rename <id> <title>")
+		}
+		return runSessionRename(cfg, args[1], strings.Join(args[2:], " "))
+	case "pin":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: yagent sessions pin <id>")
+		}
+		return runSessionPin(cfg, args[1], true)
+	case "unpin":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: yagent sessions unpin <id>")
+		}
+		return runSessionPin(cfg, args[1], false)
 	}
-	return fmt.Errorf("unknown sessions command %q (search | export)", args[0])
+	return fmt.Errorf("unknown sessions command %q (search | export | rename | pin | unpin)", args[0])
+}
+
+// runSessionRename persists a custom session title via the CLI.
+func runSessionRename(cfg *config.Config, id, title string) error {
+	st, err := memory.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := st.SetTitle(context.Background(), id, title); err != nil {
+		return err
+	}
+	fmt.Printf("renamed session %s", id)
+	if title != "" {
+		fmt.Printf(" to %q", title)
+	} else {
+		fmt.Print(" (back to auto-title)")
+	}
+	fmt.Println()
+	return nil
+}
+
+// runSessionPin pins or unpins a session via the CLI.
+func runSessionPin(cfg *config.Config, id string, pin bool) error {
+	st, err := memory.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := st.SetPinned(context.Background(), id, pin); err != nil {
+		return err
+	}
+	verb := "pinned"
+	if !pin {
+		verb = "unpinned"
+	}
+	fmt.Printf("%s session %s\n", verb, id)
+	return nil
 }
 
 // runSessionSearch full-text searches across all sessions' messages.

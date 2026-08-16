@@ -64,6 +64,7 @@ theme: tokyo
 ui:
   show_reasoning: true   # dimmed "thinking" block for reasoning models
   accessibility: standard # standard | high-contrast | ascii
+  reduced_motion: false  # true = static spinner (no animation) for vestibular sensitivity
 
 # Context window in tokens (also YAGENT_CONTEXT_WINDOW).
 context_window: 16384

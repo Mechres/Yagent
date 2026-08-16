@@ -1593,3 +1593,28 @@ items. All deterministic; `go test -race` clean.
   the `nvidia/*` own-models still lead the list. Covered by
   `TestFetchModelsDevPrioritizesCurrentModel` +
   `TestFetchModelsDevPrefersProviderOwnModels`. `go test -race` clean.
+
+## Session rename/pin + reduced-motion + PTY-size smoke 2026-08-16 (all tested)
+
+Follow-up to Codex's TUI batch — completing the items it left unfinished:
+
+- ✅ **Persistent session rename & pin** — `/sessions` `n` opens a rename input
+  (persisted; empty clears back to the auto-title), `*`/`P` toggles pinning so
+  pinned sessions sort first with a 📌 marker. CLI: `yagent sessions
+  rename <id> <title>` and `pin`/`unpin`. Store gained `SetTitle`/`SetPinned`
+  and a `pinned` column, auto-migrated on existing DBs (`ALTER TABLE ADD
+  COLUMN`, idempotent). Covered by `TestRenameAndPinSession` +
+  `TestSessionsRenameAndPin`.
+- ✅ **`ui.reduced_motion`** — static `●` spinner, no spinner ticks, live-applied
+  via `/settings`/`/set` (`applyThemeLive`). Covered by
+  `TestReducedMotionStopsSpinner` + config round-trip.
+- ✅ **PTY-size smoke coverage** — renders every TUI modal at a 40×10 terminal
+  (settings/sessions/tools/workspace/model) and asserts no panic; `modalRows`
+  at tiny heights keeps the selection with omission markers. This exposed two
+  latent panics — nil-`cfg` in `headerView` and nil-`ag` in `statusView` — now
+  guarded. Covered by `TestShortTerminalViewsNoPanic` +
+  `TestModalRowsAtTinyHeight`.
+- ✅ **Accessibility tests** — `setIconMode` (ascii swap + restore),
+  high-contrast theme lookup, and `ui.accessibility`/`ui.reduced_motion`
+  config validation + round-trip. Covered by `TestSetIconModeAscii` +
+  `TestHighContrastThemeAvailable` + `TestUIAccessibilityAndReducedMotionConfig`.

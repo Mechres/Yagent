@@ -613,6 +613,9 @@ type UIConfig struct {
 	// Accessibility controls terminal presentation: standard, high-contrast,
 	// or ascii (emoji-free labels for limited terminal fonts).
 	Accessibility string `yaml:"accessibility"`
+	// ReducedMotion stops the spinner animation (a static indicator instead),
+	// for users with vestibular sensitivity or in log-scroll contexts.
+	ReducedMotion bool `yaml:"reduced_motion"`
 }
 
 // Defaults applied when no config file and no env override is present.
@@ -686,13 +689,12 @@ func DefaultDataDir() (string, error) {
 // default path silently falls back to built-in defaults.
 func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
-		ServerURL:        DefaultServerURL,
-		Model:            DefaultModel,
-		EmbeddingModel:   DefaultEmbeddingModel,
-		ContextWindow:    DefaultContextWindow,
-		Theme:            DefaultTheme,
-		UI:               UIConfig{ShowReasoning: true, LoopGuard: true, Accessibility: "standard"},
-		Sampling:         SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
+		ServerURL:      DefaultServerURL,
+		Model:          DefaultModel,
+		EmbeddingModel: DefaultEmbeddingModel,
+		ContextWindow:  DefaultContextWindow,
+		Theme:          DefaultTheme,
+		UI:             UIConfig{ShowReasoning: true, LoopGuard: true, Accessibility: "standard"}, Sampling: SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
 		Skills:           SkillsConfig{WriteApproval: false},
 		VramThresholdTPS: DefaultVramThresholdTPS,
 		AutoCommitGit:    true,
@@ -927,6 +929,7 @@ func Settings() []SettingKey {
 		{Key: "ui.show_reasoning", Label: "Show thinking block", Options: []string{"true", "false"}},
 		{Key: "ui.loop_guard", Label: "Stop repeating-generation loops", Options: []string{"true", "false"}},
 		{Key: "ui.accessibility", Label: "TUI accessibility", Options: []string{"standard", "high-contrast", "ascii"}},
+		{Key: "ui.reduced_motion", Label: "Reduce animation (static spinner)", Options: []string{"false", "true"}},
 		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng", "langsearch"}},
 		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
 		{Key: "web_search.max_fetch_kib", Label: "web_fetch text cap (KiB, 0 = 32)"},
@@ -986,6 +989,8 @@ func (c *Config) Get(key string) string {
 		return strconv.FormatBool(c.UI.LoopGuard)
 	case "ui.accessibility":
 		return c.UI.Accessibility
+	case "ui.reduced_motion":
+		return strconv.FormatBool(c.UI.ReducedMotion)
 	case "web_search.provider":
 		return c.Web.Provider
 	case "web_search.searxng_url":
@@ -1137,6 +1142,7 @@ func validateKey(parts []string, value string) error {
 		"ui.show_reasoning":   true,
 		"ui.loop_guard":       true,
 		"ui.accessibility":    true,
+		"ui.reduced_motion":   true,
 		"web_search.provider": true, "web_search.searxng_url": true,
 		"web_search.max_fetch_kib":      true,
 		"web_search.langsearch_api_key": true, "web_search.papers": true,
@@ -1218,6 +1224,10 @@ func validateKey(parts []string, value string) error {
 		if !slices.Contains([]string{"standard", "high-contrast", "ascii"}, value) {
 			return &ValidationError{msg: "ui.accessibility must be standard, high-contrast or ascii"}
 		}
+	case "ui.reduced_motion":
+		if value != "true" && value != "false" {
+			return &ValidationError{msg: "ui.reduced_motion must be true or false"}
+		}
 	case "shell.sandbox":
 		if value != "" && value != "bwrap" {
 			return &ValidationError{msg: "shell.sandbox must be empty or bwrap"}
@@ -1237,7 +1247,7 @@ func validateKey(parts []string, value string) error {
 // existing write_approval/context_window convention.
 func typedScalar(key, value string) *yaml.Node {
 	switch key {
-	case "write_approval", "show_reasoning", "loop_guard", "papers", "codegen", "git_auto_commit":
+	case "write_approval", "show_reasoning", "loop_guard", "papers", "codegen", "git_auto_commit", "reduced_motion":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value}
 	case "context_window", "top_k", "reasoning_max_tokens", "max_fetch_kib":
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: value}
