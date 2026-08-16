@@ -762,6 +762,42 @@ func TestLoadConfigSampling(t *testing.T) {
 	if err := Set(path, "vram_threshold_tps", "-1"); err == nil {
 		t.Error("negative vram_threshold_tps should be rejected")
 	}
+	if err := Set(path, "vram_threshold_tps", "NaN"); err == nil {
+		t.Error("NaN vram_threshold_tps should be rejected")
+	}
+	if err := Set(path, "vram_threshold_tps", "Inf"); err == nil {
+		t.Error("Inf vram_threshold_tps should be rejected")
+	}
+	if err := Set(path, "vram_threshold_tps", "99999"); err == nil {
+		t.Error("implausibly large vram_threshold_tps should be rejected")
+	}
+	// valid finite values still round-trip
+	if err := Set(path, "vram_threshold_tps", "12.5"); err != nil {
+		t.Fatalf("set vram 12.5: %v", err)
+	}
+	if re, _ := LoadConfig(path); re.VramThresholdTPS != 12.5 {
+		t.Errorf("VramThresholdTPS after Set = %v, want 12.5", re.VramThresholdTPS)
+	}
+}
+
+func TestLoadConfigVramThresholdRejectsNaNInf(t *testing.T) {
+	// codex audit IT10 (2026-08-16): a NaN/Inf threshold disables or
+	// misfires VRAM pressure detection. Both the config file and the env var
+	// must reject non-finite values.
+	for _, bad := range []string{"NaN", "Inf", "-Inf", "1e999", "-1"} {
+		path := writeConfig(t, "server_url: x\nmodel: y\nvram_threshold_tps: "+bad+"\n")
+		if _, err := LoadConfig(path); err == nil {
+			t.Errorf("config with vram_threshold_tps=%s should fail to load", bad)
+		}
+	}
+	// env var overrides must also reject non-finite values
+	t.Setenv(EnvVarVramThreshold, "NaN")
+	// a config that would otherwise be valid
+	t.Setenv(EnvVarServerURL, "http://x.test")
+	t.Setenv(EnvVarModel, "y")
+	if _, err := LoadConfig(""); err == nil {
+		t.Error("YAGENT_VRAM_THRESHOLD_TPS=NaN should fail to load")
+	}
 }
 
 func TestSettingsCatalogAndGet(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -635,12 +636,32 @@ const (
 	// this t/s (0 = off). A 12 GB card normally streams 30–50 t/s; a collapse
 	// to 1–2 t/s means the KV cache spilled into system RAM.
 	DefaultVramThresholdTPS = 5.0
+	// maxVramThresholdTPS is the sane finite upper bound for the threshold.
+	// A value above this would mark every normal stream as "pressure" and
+	// force needless context pruning; NaN would disable detection, +Inf would
+	// trip it on every qualifying stream (codex audit IT10, 2026-08-16).
+	maxVramThresholdTPS = 1000.0
 	// DefaultTemperature / DefaultTopP follow the Qwythos-9B recipe (0.6 /
 	// 0.95). TopK (20) and RepetitionPenalty (1.05) are documented but not
 	// defaulted, since some OpenAI-compatible endpoints reject them.
 	DefaultTemperature = 0.6
 	DefaultTopP        = 0.95
 )
+
+// validateVramThreshold rejects NaN / Inf / negative / absurdly large values.
+// A finite, non-negative threshold is required or detection misbehaves.
+func validateVramThreshold(n float64) error {
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return fmt.Errorf("vram_threshold_tps must be a finite number (NaN/Inf not allowed)")
+	}
+	if n < 0 {
+		return fmt.Errorf("vram_threshold_tps must be >= 0")
+	}
+	if n > maxVramThresholdTPS {
+		return fmt.Errorf("vram_threshold_tps must be <= %g", maxVramThresholdTPS)
+	}
+	return nil
+}
 
 // ThemeOptions are the selectable TUI palette names.
 var ThemeOptions = []string{"tokyo", "catppuccin", "nord"}
@@ -797,8 +818,11 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if v := os.Getenv(EnvVarVramThreshold); v != "" {
 		n, err := strconv.ParseFloat(v, 64)
-		if err != nil || n < 0 {
+		if err != nil {
 			return nil, fmt.Errorf("%s must be a number >= 0, got %q", EnvVarVramThreshold, v)
+		}
+		if err := validateVramThreshold(n); err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvVarVramThreshold, err)
 		}
 		cfg.VramThresholdTPS = n
 	}
@@ -831,6 +855,9 @@ func LoadConfig(path string) (*Config, error) {
 	// Per-model sampling profiles override the base recipe for the resolved
 	// model (P1) — last, so they apply on top of file + env sampling.
 	cfg.applyModels()
+	if err := validateVramThreshold(cfg.VramThresholdTPS); err != nil {
+		return nil, fmt.Errorf("config vram_threshold_tps invalid: %w", err)
+	}
 	return cfg, nil
 }
 
@@ -1204,8 +1231,8 @@ func validateKey(parts []string, value string) error {
 		}
 	case "vram_threshold_tps":
 		f, err := strconv.ParseFloat(value, 64)
-		if err != nil || f < 0 {
-			return &ValidationError{msg: "vram_threshold_tps must be a non-negative number (0 = off)"}
+		if err != nil || validateVramThreshold(f) != nil {
+			return &ValidationError{msg: "vram_threshold_tps must be a finite number >= 0 (0 = off)"}
 		}
 	case "sampling.top_k":
 		n, err := strconv.Atoi(value)
