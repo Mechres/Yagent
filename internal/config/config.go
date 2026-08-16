@@ -478,6 +478,12 @@ type WebConfig struct {
 	// SemanticScholarKey enables the Semantic Scholar paper index (keyless use
 	// is rate-limited).
 	SemanticScholarKey string `yaml:"semanticscholar_api_key"`
+	// AllowLocalFetch opts web_fetch's SSRF guard OUT of the internal-host
+	// (loopback/private/link-local) check. OFF by default. Set it only when the
+	// agent must read a local dev server (e.g. one started via shell_bg on
+	// 127.0.0.1). Enabling it lets a model fetch internal hosts, so leave it
+	// disabled unless you trust the workspace.
+	AllowLocalFetch bool `yaml:"allow_local_fetch"`
 }
 
 // ShellConfig configures shell_exec.

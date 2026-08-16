@@ -38,6 +38,14 @@ type Client struct {
 	// its full content, not a 32 KiB head. 0 = default.
 	MaxFetchBytes int
 
+	// AllowLocalFetch opts the SSRF guard OUT of the loopback/private/link-local
+	// host check. It is OFF by default: web_fetch refuses internal hosts so a
+	// model cannot pivot into the local network or the cloud metadata service.
+	// Set it (via config) only when the agent legitimately needs to read a
+	// local dev server (e.g. a `shell_bg` server on 127.0.0.1). Tests set it
+	// to exercise the fetch path against a loopback httptest server.
+	AllowLocalFetch bool
+
 	// cache memoizes search results and fetched pages within one client
 	// lifetime (a session), keyed by query / URL, so a repeated identical web
 	// query doesn't re-hit the (slow, rate-limited) network. Bounded + TTL'd.
@@ -127,6 +135,9 @@ type Config struct {
 	// SemanticScholarKey enables the Semantic Scholar paper index (keyless use
 	// is rate-limited to 1 req/sec without a key).
 	SemanticScholarKey string
+	// AllowLocalFetch opts the SSRF guard out of the internal-host check (see
+	// Client.AllowLocalFetch).
+	AllowLocalFetch bool
 }
 
 // DefaultConfig uses DuckDuckGo.
@@ -148,12 +159,12 @@ func New(cfg Config) (*Client, error) {
 		if cfg.SearxngURL == "" {
 			return nil, fmt.Errorf("web_search.provider searxng requires web_search.searxng_url")
 		}
-		return newClient([]Provider{&SearXNG{baseURL: strings.TrimRight(cfg.SearxngURL, "/"), http: http}}).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg), nil
+		return newClient([]Provider{&SearXNG{baseURL: strings.TrimRight(cfg.SearxngURL, "/"), http: http}}).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg).setAllowLocal(cfg.AllowLocalFetch), nil
 	case "langsearch":
 		if cfg.LangSearchKey == "" {
 			return nil, fmt.Errorf("web_search.provider langsearch requires web_search.langsearch_api_key")
 		}
-		return newClient([]Provider{&LangSearch{http: http, key: cfg.LangSearchKey}}).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg), nil
+		return newClient([]Provider{&LangSearch{http: http, key: cfg.LangSearchKey}}).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg).setAllowLocal(cfg.AllowLocalFetch), nil
 	default:
 		return nil, fmt.Errorf("unknown web_search.provider %q (duckduckgo | mojeek | searxng | langsearch)", cfg.Provider)
 	}
@@ -172,7 +183,14 @@ func New(cfg Config) (*Client, error) {
 			ordered = append(ordered, f)
 		}
 	}
-	return newClient(ordered).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg), nil
+	return newClient(ordered).setMaxFetchBytes(cfg.MaxFetchBytes).setPaperSrcs(cfg).setAllowLocal(cfg.AllowLocalFetch), nil
+}
+
+// setAllowLocal opts the SSRF guard out of the internal-host check (see
+// Client.AllowLocalFetch). Set from config; defaults to false.
+func (c *Client) setAllowLocal(v bool) *Client {
+	c.AllowLocalFetch = v
+	return c
 }
 
 // setMaxFetchBytes sets the extracted-text cap on a fresh client (before any

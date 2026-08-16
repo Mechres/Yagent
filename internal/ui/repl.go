@@ -1035,7 +1035,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 		return nil, fmt.Errorf("open code index: %w", err)
 	}
 	idx.SetBearerToken(cfg.APIKey)
-	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL, MaxFetchBytes: cfg.Web.MaxFetchKib * 1024, LangSearchKey: cfg.Web.LangSearchKey, Papers: cfg.Web.Papers, SemanticScholarKey: cfg.Web.SemanticScholarKey})
+	webClient, err := web.New(web.Config{Provider: cfg.Web.Provider, SearxngURL: cfg.Web.SearxngURL, MaxFetchBytes: cfg.Web.MaxFetchKib * 1024, LangSearchKey: cfg.Web.LangSearchKey, Papers: cfg.Web.Papers, SemanticScholarKey: cfg.Web.SemanticScholarKey, AllowLocalFetch: cfg.Web.AllowLocalFetch})
 	if err != nil {
 		return nil, fmt.Errorf("web search config: %w", err)
 	}

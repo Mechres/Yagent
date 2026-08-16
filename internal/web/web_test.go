@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/net/html"
 )
@@ -146,7 +147,7 @@ func TestFetchStripsChrome(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	c := &Client{http: ts.Client(), fetchTimeout: 0, AllowLocalFetch: true}
 	got, err := c.Fetch(context.Background(), ts.URL)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -169,7 +170,7 @@ func TestFetchTruncates(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	}))
 	defer ts.Close()
-	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	c := &Client{http: ts.Client(), fetchTimeout: 0, AllowLocalFetch: true}
 	got, err := c.Fetch(context.Background(), ts.URL)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -187,7 +188,7 @@ func TestFetchHTTPError(t *testing.T) {
 		http.Error(w, "nope", http.StatusNotFound)
 	}))
 	defer ts.Close()
-	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	c := &Client{http: ts.Client(), fetchTimeout: 0, AllowLocalFetch: true}
 	if _, err := c.Fetch(context.Background(), ts.URL); err == nil {
 		t.Error("404 should error")
 	}
@@ -332,7 +333,7 @@ func TestWebFetchCache(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	c := &Client{http: ts.Client(), fetchTimeout: 0, AllowLocalFetch: true}
 	for i := 0; i < 3; i++ {
 		got, err := c.Fetch(context.Background(), ts.URL)
 		if err != nil || !strings.Contains(got, "page body") {
@@ -353,7 +354,7 @@ func TestWebFetchCache(t *testing.T) {
 }
 
 func TestFetchRejectsNonHTTPScheme(t *testing.T) {
-	c := &Client{http: defaultHTTP(), fetchTimeout: 0}
+	c := &Client{http: defaultHTTP(), fetchTimeout: 0, AllowLocalFetch: true}
 	// file://, gopher://, and a URL with no host must be rejected before any
 	// request touches the network/filesystem (adversarial-QA finding #2).
 	for _, bad := range []string{"file:///etc/passwd", "gopher://example.com/x", "http:///nohost"} {
@@ -371,7 +372,7 @@ func TestFetchRejectsNonHTTPScheme(t *testing.T) {
 		_, _ = w.Write([]byte("<html><body><p>ok body</p></body></html>"))
 	}))
 	defer ts.Close()
-	c2 := &Client{http: ts.Client(), fetchTimeout: 0}
+	c2 := &Client{http: ts.Client(), fetchTimeout: 0, AllowLocalFetch: true}
 	got, err := c2.Fetch(context.Background(), ts.URL)
 	if err != nil || !strings.Contains(got, "ok body") {
 		t.Errorf("http fetch failed: %v %q", err, got)
@@ -391,7 +392,7 @@ func TestFetchMarkdownStructure(t *testing.T) {
 </body></html>`))
 	}))
 	defer ts.Close()
-	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	c := &Client{http: ts.Client(), fetchTimeout: 0, AllowLocalFetch: true}
 	got, err := c.Fetch(context.Background(), ts.URL)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -420,7 +421,7 @@ func TestFetchRejectsPDF(t *testing.T) {
 		_, _ = w.Write([]byte("%PDF-1.4\n%fake binary content\n"))
 	}))
 	defer ts.Close()
-	c := &Client{http: ts.Client(), fetchTimeout: 0}
+	c := &Client{http: ts.Client(), fetchTimeout: 0, AllowLocalFetch: true}
 	_, err := c.Fetch(context.Background(), ts.URL)
 	if err == nil || !strings.Contains(err.Error(), "PDF") {
 		t.Errorf("PDF fetch should error with a PDF hint, got: %v", err)
@@ -443,7 +444,7 @@ func TestFetchConfigurableCap(t *testing.T) {
 	}))
 	defer ts.Close()
 	// A small cap truncates early and mentions the marker.
-	c := &Client{http: ts.Client(), fetchTimeout: 0, MaxFetchBytes: 256}
+	c := &Client{http: ts.Client(), fetchTimeout: 0, MaxFetchBytes: 256, AllowLocalFetch: true}
 	got, err := c.Fetch(context.Background(), ts.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -452,12 +453,46 @@ func TestFetchConfigurableCap(t *testing.T) {
 		t.Errorf("small cap: len=%d trunc=%v", len(got), strings.Contains(got, "truncated"))
 	}
 	// A large cap returns far more than the default.
-	big := &Client{http: ts.Client(), fetchTimeout: 0, MaxFetchBytes: 96 << 10}
+	big := &Client{http: ts.Client(), fetchTimeout: 0, MaxFetchBytes: 96 << 10, AllowLocalFetch: true}
 	gotBig, err := big.Fetch(context.Background(), ts.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(gotBig) < len(body)-10 {
 		t.Errorf("large cap returned only %d bytes of %d", len(gotBig), len(body))
+	}
+}
+
+func TestFetchRejectsInternalHosts(t *testing.T) {
+	// SSRF hardening (2026-08-16): web_fetch must refuse loopback, private,
+	// link-local and unspecified hosts — a model must not be able to pivot the
+	// agent into the local network or the cloud metadata service.
+	c := &Client{http: &http.Client{}, fetchTimeout: 2 * time.Second}
+	for _, url := range []string{
+		"http://127.0.0.1/",
+		"http://[::1]/",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://10.0.0.1/",
+		"http://192.168.1.1/",
+		"http://0.0.0.0/",
+		"file:///etc/passwd",
+		"gopher://127.0.0.1:70/",
+	} {
+		if _, err := c.Fetch(context.Background(), url); err == nil {
+			t.Errorf("Fetch(%q) should have been refused by the SSRF guard", url)
+		}
+	}
+}
+
+func TestFetchRejectsRedirectToInternal(t *testing.T) {
+	// A server that 302-redirects a public URL to an internal one must be
+	// stopped on the redirect hop (DNS-rebinding / redirect SSRF bypass).
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:9/", http.StatusFound)
+	}))
+	defer target.Close()
+	c := &Client{http: target.Client(), fetchTimeout: 2 * time.Second}
+	if _, err := c.Fetch(context.Background(), target.URL); err == nil {
+		t.Error("redirect to 127.0.0.1 should have been refused by the SSRF guard")
 	}
 }

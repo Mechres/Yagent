@@ -35,7 +35,7 @@ func TestWebTools(t *testing.T) {
 	ts := fakeWebServer(t)
 	defer ts.Close()
 
-	client, err := web.New(web.Config{Provider: "searxng", SearxngURL: ts.URL})
+	client, err := web.New(web.Config{Provider: "searxng", SearxngURL: ts.URL, AllowLocalFetch: true})
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestWebTools(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
 	}))
 	defer empty.Close()
-	client2, _ := web.New(web.Config{Provider: "searxng", SearxngURL: empty.URL})
+	client2, _ := web.New(web.Config{Provider: "searxng", SearxngURL: empty.URL, AllowLocalFetch: true})
 	reg2 := NewRegistry(t.TempDir(), Options{Web: client2})
 	if got := execTool(t, reg2, "web_search", map[string]any{"query": "x"}); !strings.Contains(got, "no results found") {
 		t.Errorf("web_search empty result = %q", got)
@@ -95,7 +95,7 @@ func TestWebSearchParallelQueries(t *testing.T) {
 		})
 	}))
 	defer ts.Close()
-	client, err := web.New(web.Config{Provider: "searxng", SearxngURL: ts.URL})
+	client, err := web.New(web.Config{Provider: "searxng", SearxngURL: ts.URL, AllowLocalFetch: true})
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}

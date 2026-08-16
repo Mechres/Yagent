@@ -222,7 +222,7 @@ func Run(t *testing.T, task Task) {
 		opts.Index = idx
 	}
 	if task.Web {
-		wc, _ = web.New(web.Config{Provider: "searxng", SearxngURL: webTS.URL})
+		wc, _ = web.New(web.Config{Provider: "searxng", SearxngURL: webTS.URL, AllowLocalFetch: true})
 		opts.Web = wc
 		if task.Papers {
 			wc.SetPaperSources([]web.PaperSource{web.NewArxivSource(webTS.Client(), webTS.URL+"/arxiv")})

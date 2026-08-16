@@ -53,7 +53,10 @@ func (c *Client) maxOut() int {
 // fetchNetwork performs the actual HTTP GET + extraction. Only http(s) URLs
 // are fetched — other schemes (file://, gopher://, ...) are rejected before
 // any request so a model-provided URL can never touch the local filesystem or
-// a non-HTTP service (adversarial-QA finding #2, 2026-08-13).
+// a non-HTTP service (adversarial-QA finding #2, 2026-08-13). Internal/loopback/
+// link-local/metadata hosts are also refused so a model cannot pivot the agent
+// into the local network or the cloud metadata service (SSRF hardening,
+// 2026-08-16) — including via redirect (a custom transport re-checks every hop).
 func (c *Client) fetchNetwork(ctx context.Context, rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -64,6 +67,9 @@ func (c *Client) fetchNetwork(ctx context.Context, rawURL string) (string, error
 	}
 	if u.Host == "" {
 		return "", fmt.Errorf("fetch %s: missing host", rawURL)
+	}
+	if err := assertPublicHost(u, c.AllowLocalFetch); err != nil {
+		return "", err
 	}
 	timeout := c.fetchTimeout
 	if timeout <= 0 {
@@ -76,7 +82,11 @@ func (c *Client) fetchNetwork(ctx context.Context, rawURL string) (string, error
 		return "", fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Yagent")
-	resp, err := c.http.Do(req)
+	// Re-validate the resolved host on every redirect hop so a server cannot
+	// bounce us to 127.0.0.1 / 169.254.169.254 / an internal IP after the
+	// initial URL passed (DNS-rebinding / redirect SSRF bypass).
+	client := safeFetchClient(c.http, c.AllowLocalFetch)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
