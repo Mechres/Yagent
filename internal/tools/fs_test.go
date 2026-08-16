@@ -421,3 +421,65 @@ func TestRegistrySchemas(t *testing.T) {
 		t.Error("unknown tool should not be found")
 	}
 }
+
+func TestAtomicWriteFilePreservesModeAndIsCrashSafe(t *testing.T) {
+	// codex audit (2026-08-16): fs_write/fs_edit must not truncate-then-write
+	// (a disk-full / I/O error / crash would leave a truncated or empty file).
+	// atomicWriteFile writes to a temp file, fsyncs, preserves the original
+	// mode, then renames over the destination.
+	ws := t.TempDir()
+	path := filepath.Join(ws, "config.yaml")
+
+	// First write (new file) — default mode 0644.
+	if err := atomicWriteFile(path, []byte("a: 1\n")); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "a: 1\n" {
+		t.Fatalf("read after first write = %q (err %v)", b, err)
+	}
+
+	// Set an unusual mode, then overwrite. The mode must be preserved.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(path, []byte("a: 2\nb: 3\n")); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode after overwrite = %v, want 0600 (original preserved)", fi.Mode().Perm())
+	}
+	if b, _ := os.ReadFile(path); string(b) != "a: 2\nb: 3\n" {
+		t.Errorf("content after overwrite = %q", b)
+	}
+
+	// Crash-safety: a failed write (unwritable target dir) must leave the
+	// existing content untouched — the temp file is never renamed over it.
+	ro := filepath.Join(ws, "ro")
+	if err := os.MkdirAll(ro, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(ro, "frozen.txt")
+	if err := os.WriteFile(locked, []byte("KEEP-ME"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Now make the dir read-only so the temp file cannot be created inside it.
+	if err := os.Chmod(ro, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(locked, []byte("truncated")); err == nil {
+		t.Error("atomicWriteFile should have failed on an unwritable dir")
+	}
+	// Restore dir writability before reading back (the 0o500 mode also blocks
+	// the test process from reading the file). The point is that the failed
+	// write must not have renamed a partial temp over the existing content.
+	if err := os.Chmod(ro, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(locked); string(b) != "KEEP-ME" {
+		t.Errorf("failed write clobbered existing content: %q", b)
+	}
+}

@@ -228,6 +228,50 @@ func isBinary(data []byte) bool {
 	return strings.IndexByte(string(probe), 0) >= 0
 }
 
+// atomicWriteFile writes data to path without clobbering the existing file on
+// partial failure. It writes to a temp file in the same directory, fsyncs it,
+// preserves the original file's mode (or 0644 for a new file), then renames it
+// over the destination — so a disk-full / I/O error / crash leaves the prior
+// content intact instead of a truncated or empty file (codex audit, 2026-08-16).
+func atomicWriteFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // best-effort; no-op once renamed away
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Preserve the existing file's mode; default to 0644 for new files.
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode()
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	// fsync the directory so the rename is durable.
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
+}
+
 // ---------- fs_write ----------
 
 type fsWriteTool struct {
@@ -285,7 +329,7 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Sprintf("error: create parent dirs: %v", err), nil
 	}
-	if err := os.WriteFile(path, []byte(a.Content), 0o644); err != nil {
+	if err := atomicWriteFile(path, []byte(a.Content)); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	if oldErr == nil {
@@ -372,7 +416,7 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 			if t.undo != nil {
 				t.undo.Record(path, data)
 			}
-			if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+			if err := atomicWriteFile(path, []byte(newContent)); err != nil {
 				return fmt.Sprintf("error: %v", err), nil
 			}
 			return fmt.Sprintf("[auto-aligned whitespace indentation]\nedited %s:\n%s", a.Path, simpleDiff(aligned, reindented, 100)), nil
@@ -396,7 +440,7 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	if t.undo != nil {
 		t.undo.Record(path, data)
 	}
-	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+	if err := atomicWriteFile(path, []byte(newContent)); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	if resolved != "" {
