@@ -48,6 +48,13 @@ func Save(ws, name string) (string, error) {
 
 // Restore reverts the workspace to a snapshot: the current tree (minus .git
 // and .yagent) is removed and replaced with the snapshot's contents.
+//
+// Crash-safety: the snapshot is copied into a staging area (under the
+// excluded .yagent dir) *before* any live entry is removed. The live tree is
+// only cleared once a complete copy of the snapshot exists in staging, so a
+// failed or interrupted restore (disk full, permission error, snapshot
+// corruption) can never leave the workspace wiped. On any error the staging
+// area is removed and the live tree is returned untouched.
 func Restore(ws, name string) error {
 	if err := validateName(name); err != nil {
 		return err
@@ -62,9 +69,21 @@ func Restore(ws, name string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("checkpoint %q is not a directory", name)
 	}
+	// Stage the snapshot first. Staging lives under .yagent, which the live
+	// tree-removal loop below excludes, so it survives the swap.
+	staging := filepath.Join(ws, dirName, ".restore-staging")
+	os.RemoveAll(staging)
+	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
+		return fmt.Errorf("checkpoint dir: %w", err)
+	}
+	if err := copyTree(snap, staging); err != nil {
+		os.RemoveAll(staging)
+		return fmt.Errorf("stage checkpoint %q: %w", name, err)
+	}
 	// Remove everything except .git and .yagent.
 	entries, err := os.ReadDir(ws)
 	if err != nil {
+		os.RemoveAll(staging)
 		return err
 	}
 	for _, e := range entries {
@@ -72,10 +91,23 @@ func Restore(ws, name string) error {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(ws, e.Name())); err != nil {
+			os.RemoveAll(staging)
 			return fmt.Errorf("remove %s: %w", e.Name(), err)
 		}
 	}
-	return copyTree(snap, ws)
+	// Move the staged snapshot into the workspace root.
+	staged, err := os.ReadDir(staging)
+	if err != nil {
+		os.RemoveAll(staging)
+		return err
+	}
+	for _, e := range staged {
+		if err := os.Rename(filepath.Join(staging, e.Name()), filepath.Join(ws, e.Name())); err != nil {
+			os.RemoveAll(staging)
+			return fmt.Errorf("restore %s: %w", e.Name(), err)
+		}
+	}
+	return os.RemoveAll(staging)
 }
 
 // List returns checkpoint names, newest first.

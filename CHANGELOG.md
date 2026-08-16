@@ -2,7 +2,23 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
-## Unreleased
+## v0.1.94 — 2026-08-16
+
+### Added
+- **Crash-safe checkpoint restore** — `checkpoint.Restore` now stages the
+  snapshot into `.yagent/.restore-staging` *before* clearing the live tree, so a
+  failed or interrupted restore (disk full, permission error, snapshot
+  corruption) can never leave the workspace wiped. The live tree is only removed
+  once a full copy of the snapshot exists in staging; on any error the staging
+  area is cleared and the live tree is returned untouched. Deepens the
+  2026-08-13 adversarial-QA workspace-wipe fix. Two regression tests lock this
+  in (`TestRestoreCleansStagingAndPreservesState`,
+  `TestRestoreLeavesWorkspaceIntactOnError`).
+- **`make install`** — builds and installs the `yagent` binary into
+  `~/.local/bin` (or `$(DESTDIR)$(PREFIX)/bin`), making releases runnable from
+  anywhere on the PATH.
+
+## v0.1.93 — 2026-08-16
 
 ### Added
 - **Persistent session rename & pin** — `n` in the `/sessions` browser renames

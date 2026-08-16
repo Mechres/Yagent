@@ -138,6 +138,54 @@ func TestPruneNoCheckpoints(t *testing.T) {
 	}
 }
 
+func TestRestoreCleansStagingAndPreservesState(t *testing.T) {
+	// Crash-safe Restore (2026-08-16): a successful restore must leave no
+	// leftover staging dir and must preserve .git/.yagent (agent state).
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "a.txt"), "v1")
+	write(t, filepath.Join(ws, ".git", "HEAD"), "ref")
+	write(t, filepath.Join(ws, ".yagent", "config.yaml"), "keep")
+
+	if _, err := Save(ws, "goal"); err != nil {
+		t.Fatal(err)
+	}
+	// mutate, then restore back to the "goal" snapshot
+	write(t, filepath.Join(ws, "a.txt"), "changed")
+	if err := Restore(ws, "goal"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(ws, "a.txt"))
+	if string(data) != "v1" {
+		t.Errorf("a.txt after restore = %q; want v1", data)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, dirName, ".restore-staging")); err == nil {
+		t.Error(".restore-staging was left behind after a successful restore")
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git", "HEAD")); err != nil {
+		t.Error(".git must survive restore")
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".yagent", "config.yaml")); err != nil {
+		t.Error(".yagent must survive restore")
+	}
+}
+
+func TestRestoreLeavesWorkspaceIntactOnError(t *testing.T) {
+	// A restore that cannot proceed (missing snapshot) must not touch the
+	// live tree. This guards the crash-safety property: live entries are only
+	// removed after a full copy of the snapshot is staged.
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "important.txt"), "do-not-lose")
+	if err := Restore(ws, "ghost"); err == nil {
+		t.Fatal("restore of a missing snapshot should error")
+	}
+	if data, err := os.ReadFile(filepath.Join(ws, "important.txt")); err != nil || string(data) != "do-not-lose" {
+		t.Errorf("workspace was modified by a failed restore (data=%q err=%v)", data, err)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, dirName, ".restore-staging")); err == nil {
+		t.Error("staging dir leaked after a failed restore")
+	}
+}
+
 func TestRestoreDeleteRejectTraversal(t *testing.T) {
 	// Adversarial-QA findings #13/#14 (2026-08-13): a checkpoint name with
 	// path separators/traversal must be rejected before any filesystem action.
