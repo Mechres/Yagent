@@ -2,6 +2,39 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.95 — 2026-08-16
+
+Security and local-model robustness hardening (audited via codex, each fix
+verified against the current source and covered by a permanent regression
+test):
+
+### Security
+- **web_fetch SSRF hardening** — the previous guard only checked the URL
+  scheme. `web_fetch` now rejects loopback, private (RFC1918), link-local
+  (incl. `169.254.169.254` cloud-metadata), and unspecified hosts; it resolves
+  named hosts and rejects every answer they return (DNS-rebind safe), and it
+  re-validates on every redirect hop. A new config key
+  `web.allow_local_fetch` (default off) opts the guard out for local dev
+  servers you explicitly trust.
+- **MCP tools default to RiskWrite** — every MCP-advertised tool was previously
+  forced `RiskReadOnly`, so a `delete`/`deploy`/`send` MCP tool bypassed the
+  approval gate. Tools now default to write (approval required); only names on
+  a server's `mcp.read_only_tools` allowlist are downgraded to read-only.
+- **shell_bg scrubs secrets from the child environment** — background (and
+  bwrap) jobs previously inherited the full agent env including API keys /
+  tokens. They now use the same scrubbed environment as `shell_exec`.
+
+### Robustness (weak local model)
+- **Streamed tool_call index bound** — a malformed OpenAI-compatible stream
+  with an absurd tool_call index can no longer grow the accumulation slice to
+  that size; out-of-range indices are rejected as a protocol error.
+- **subagent fan-out cap** — `runParallel` drops blank tasks, caps the batch at
+  8 (bounded worker pool), caps each task at 4 KiB, and rejects over-large
+  batches with guidance to prioritize, so a weak model's huge `tasks[]` array
+  can't queue hundreds of serialized child loops behind the single GPU.
+- **checkpoint List/Prune exclude hidden state** — the restore staging dir no
+  longer surfaces as a checkpoint (regression from the v0.1.94 restore fix).
+
 ## v0.1.94 — 2026-08-16
 
 ### Added
