@@ -14,8 +14,9 @@ import (
 // interface: its schema is the server's inputSchema converted to our shape,
 // and Execute forwards arguments to the server's tools/call.
 type mcpTool struct {
-	client *mcp.Client
-	tool   mcp.Tool
+	client  *mcp.Client
+	tool    mcp.Tool
+	readOnly bool // true only when the server config allowlists this tool name
 }
 
 func (t *mcpTool) Schema() llm.ToolSchema {
@@ -37,7 +38,16 @@ func (t *mcpTool) Schema() llm.ToolSchema {
 	return s
 }
 
-func (t *mcpTool) Risk() RiskLevel { return RiskReadOnly }
+func (t *mcpTool) Risk() RiskLevel {
+	// Default to RiskWrite: an MCP server's schema does not establish
+	// side-effect safety, so a "delete"/"deploy"/"send" tool must not bypass
+	// the approval gate. Only tool names on the server's read_only_tools
+	// allowlist are downgraded to read-only (codex audit, 2026-08-16).
+	if t.readOnly {
+		return RiskReadOnly
+	}
+	return RiskWrite
+}
 
 func (t *mcpTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var args map[string]any

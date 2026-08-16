@@ -222,13 +222,17 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		reg["shell_logs"] = &shellLogsTool{jobs: opts.Jobs}
 		reg["shell_kill"] = &shellKillTool{jobs: opts.Jobs}
 	}
-	// MCP servers: each advertised tool is registered as <server>_<tool>. MCP
-	// tools are treated as read-only for the approval gate (their own server
-	// enforces its policy; blocking every call would defeat the point), but a
-	// server's destructiveHint could later gate it.
+	// MCP servers: each advertised tool is registered as <server>_<tool>.
+	// MCP schemas do not establish side-effect safety, so every tool defaults
+	// to RiskWrite (approval required). A server's read_only_tools allowlist
+	// downgrades named tools to read-only (codex audit, 2026-08-16).
 	for _, client := range opts.MCP {
 		for _, t := range client.Tools() {
-			reg[mcpToolName(client.Name(), t.Name)] = &mcpTool{client: client, tool: t}
+			reg[mcpToolName(client.Name(), t.Name)] = &mcpTool{
+				client:   client,
+				tool:     t,
+				readOnly: client.IsReadOnlyTool(t.Name),
+			}
 		}
 	}
 	// Scratchpad: available to everyone, including read-only subagents (its

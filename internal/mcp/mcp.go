@@ -44,6 +44,9 @@ type Client struct {
 	scan  *bufio.Scanner // stdio response reader
 	next  int64
 	tools []Tool
+	// readOnly is the allowlist of tool names (from config) that are trusted
+	// read-only; used by the tools registry to set each tool's Risk level.
+	readOnly map[string]bool
 }
 
 // Config configures one MCP server.
@@ -54,6 +57,12 @@ type Config struct {
 	Headers map[string]string `yaml:"headers"` // HTTP: extra headers (auth etc.)
 	// Enabled gates the server; disabled servers are skipped at startup.
 	Enabled bool `yaml:"enabled"`
+	// ReadOnlyTools is an explicit allowlist of tool names on this server that
+	// are trusted read-only. By default every MCP tool is treated as RiskWrite
+	// (approval required), because an MCP server's schema does not establish
+	// side-effect safety — a "delete"/"deploy"/"send" tool must not bypass the
+	// approval gate. List the read-only tool names you actually trust here.
+	ReadOnlyTools []string `yaml:"read_only_tools"`
 }
 
 // Connect opens a connection to an MCP server and runs the initialize
@@ -65,6 +74,12 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 		command: cfg.Command,
 		url:     cfg.URL,
 		headers: cfg.Headers,
+	}
+	if len(cfg.ReadOnlyTools) > 0 {
+		c.readOnly = make(map[string]bool, len(cfg.ReadOnlyTools))
+		for _, n := range cfg.ReadOnlyTools {
+			c.readOnly[n] = true
+		}
 	}
 	if err := c.initialize(ctx); err != nil {
 		return nil, err
@@ -141,6 +156,16 @@ func (c *Client) Tools() []Tool {
 
 // Name returns the configured server name.
 func (c *Client) Name() string { return c.name }
+
+// IsReadOnlyTool reports whether a tool name is on this server's trusted
+// read-only allowlist (config mcp.read_only_tools). A false result means the
+// tool is treated as RiskWrite by the registry — MCP schemas do not establish
+// side-effect safety, so unlisted tools require approval.
+func (c *Client) IsReadOnlyTool(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.readOnly[name]
+}
 
 // Call invokes a tool and returns the combined text of the result content.
 func (c *Client) Call(ctx context.Context, name string, args map[string]any) (string, error) {

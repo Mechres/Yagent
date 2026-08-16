@@ -135,12 +135,17 @@ consult:                      # the `consult` tool (advisor). Disabled until set
 # this file's api_key field; /key clear removes them again.
 
 # MCP servers (Model Context Protocol): attach external tools without forking.
-# Each advertised tool is registered as <server>_<tool> and always offered.
+# Each advertised tool is registered as <server>_<tool>. By default EVERY MCP
+# tool is treated as a write (approval required) because an MCP server's schema
+# does not prove side-effect safety — a delete/deploy/send tool must not
+# bypass the approval gate. List the specific tool names you trust as read-only
+# in read_only_tools; they are then downgraded so they need no approval.
 # Use a stdio command (spawn a local server) or a remote URL + headers.
 # mcp:
 #   context7:
 #     command: ["npx", "-y", "@modelcontextprotocol/server-everything"]
 #     enabled: true
+#     read_only_tools: ["search", "fetch"]   # only these skip the approval gate
 #   gitlab:
 #     url: "https://gitlab.example.com/mcp"
 #     headers: {"Authorization": "Bearer {env:GITLAB_TOKEN}"}

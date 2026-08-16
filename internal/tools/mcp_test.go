@@ -125,3 +125,43 @@ func TestMCPToolNamesForSignal(t *testing.T) {
 		t.Error("docs_search not in the registry (dispatch would fail)")
 	}
 }
+
+func TestMCPToolRiskDefaultsToWrite(t *testing.T) {
+	// codex audit (2026-08-16): an MCP server's schema does not establish
+	// side-effect safety, so every advertised tool must default to RiskWrite
+	// (approval required). Only names on the server's read_only_tools
+	// allowlist are downgraded to read-only — so a "delete"/"deploy"/"send"
+	// tool cannot bypass the approval gate.
+	ts := newFakeMCPHTTPServer(t)
+	defer ts.Close()
+
+	// No allowlist: the tool is RiskWrite.
+	c1, err := mcp.Connect(context.Background(), mcp.Config{Name: "docs", URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c1.Close()
+	reg1 := NewRegistry(t.TempDir(), Options{MCP: []*mcp.Client{c1}})
+	tool1, ok := reg1.Get("docs_search")
+	if !ok {
+		t.Fatal("docs_search not registered")
+	}
+	if tool1.Risk() != RiskWrite {
+		t.Errorf("unlisted MCP tool Risk = %v, want RiskWrite", tool1.Risk())
+	}
+
+	// Allowlisted: downgraded to RiskReadOnly.
+	c2, err := mcp.Connect(context.Background(), mcp.Config{Name: "docs", URL: ts.URL, ReadOnlyTools: []string{"search"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	reg2 := NewRegistry(t.TempDir(), Options{MCP: []*mcp.Client{c2}})
+	tool2, ok := reg2.Get("docs_search")
+	if !ok {
+		t.Fatal("docs_search not registered (allowlisted)")
+	}
+	if tool2.Risk() != RiskReadOnly {
+		t.Errorf("allowlisted MCP tool Risk = %v, want RiskReadOnly", tool2.Risk())
+	}
+}
