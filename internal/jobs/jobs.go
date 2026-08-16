@@ -9,11 +9,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Mechres/Yagent/internal/scrub"
 )
 
 // Job is one running background process.
@@ -86,6 +89,7 @@ func (r *Registry) StartIn(command, dir string) (*Job, error) {
 	j := &Job{ID: id, Command: command, Start: time.Now(), cancel: cancel, done: make(chan struct{})}
 	j.proc = exec.CommandContext(ctx, "sh", "-c", command)
 	j.proc.Dir = dir
+	j.proc.Env = scrub.Env(os.Environ())
 	j.proc.Stdout = writer(j.write)
 	j.proc.Stderr = writer(j.write)
 	// Own process group so Kill can terminate descendants too (CommandContext

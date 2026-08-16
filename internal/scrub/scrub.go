@@ -60,6 +60,25 @@ func SecretEnv(key, value string) bool {
 	return secretValue(value)
 }
 
+// Env returns the subset of environ that is safe to pass to a child process
+// the agent spawns: any entry whose name or value looks like a secret is
+// dropped (SecretEnv). Both shell_exec and shell_bg use this so background
+// jobs never inherit the agent's API keys / tokens.
+func Env(environ []string) []string {
+	kept := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		if SecretEnv(kv[:eq], kv[eq+1:]) {
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	return kept
+}
+
 // secretValue reports whether a value looks like a secret regardless of the
 // variable name.
 func secretValue(v string) bool {

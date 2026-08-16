@@ -203,19 +203,8 @@ func sensitiveHomePaths(home string) []string {
 
 // scrubEnv drops secret-looking variables (API_TOKEN, GH_PAT, credential
 // URLs, SSH keys, ...) from the child environment. Name checks use the same
-// heuristics as internal/scrub, plus value checks for unconventionally named
-// secrets.
-func scrubEnv(env []string) []string {
-	kept := env[:0]
-	for _, kv := range env {
-		eq := strings.IndexByte(kv, '=')
-		if eq <= 0 {
-			continue
-		}
-		if scrub.SecretEnv(kv[:eq], kv[eq+1:]) {
-			continue
-		}
-		kept = append(kept, kv)
-	}
-	return kept
-}
+// scrubEnv drops secret-looking entries (API keys, bearer tokens, credential
+// URLs) from an environment list before it is handed to a child process. It
+// delegates to the shared scrub package so foreground and background shells
+// use the same policy (codex audit #3, 2026-08-16).
+func scrubEnv(env []string) []string { return scrub.Env(env) }

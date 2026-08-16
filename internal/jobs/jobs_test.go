@@ -98,3 +98,33 @@ func TestStartInSetsWorkingDir(t *testing.T) {
 	}
 	t.Fatalf("job pwd = %q, want workspace %q", job.Logs(1<<20), ws)
 }
+
+func TestStartInScrubsSecretsFromEnv(t *testing.T) {
+	// codex audit #3 (2026-08-16): a background job must not inherit the
+	// agent's secret environment variables. StartIn scrubs them via
+	// scrub.Env before spawning, so a job that echoes its env cannot leak a
+	// token.
+	t.Setenv("YAGENT_TEST_SECRET", "super-secret-token")
+	t.Setenv("YAGENT_TEST_PLAIN", "visible")
+	r := New()
+	job, err := r.StartIn("env", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Kill(job.ID)
+	deadline := time.Now().Add(3 * time.Second)
+	var logs string
+	for time.Now().Before(deadline) {
+		logs = job.Logs(1<<20)
+		if strings.Contains(logs, "YAGENT_TEST_PLAIN=") && !strings.Contains(logs, "super-secret-token") {
+			return // plain var present, secret absent
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if strings.Contains(logs, "super-secret-token") {
+		t.Errorf("background job leaked a secret into its env: %q", logs)
+	}
+	if !strings.Contains(logs, "YAGENT_TEST_PLAIN=visible") {
+		t.Errorf("background job missing a non-secret var: %q", logs)
+	}
+}
