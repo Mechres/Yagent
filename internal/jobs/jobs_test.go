@@ -115,7 +115,7 @@ func TestStartInScrubsSecretsFromEnv(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	var logs string
 	for time.Now().Before(deadline) {
-		logs = job.Logs(1<<20)
+		logs = job.Logs(1 << 20)
 		if strings.Contains(logs, "YAGENT_TEST_PLAIN=") && !strings.Contains(logs, "super-secret-token") {
 			return // plain var present, secret absent
 		}

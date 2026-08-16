@@ -14,8 +14,8 @@ import (
 // interface: its schema is the server's inputSchema converted to our shape,
 // and Execute forwards arguments to the server's tools/call.
 type mcpTool struct {
-	client  *mcp.Client
-	tool    mcp.Tool
+	client   *mcp.Client
+	tool     mcp.Tool
 	readOnly bool // true only when the server config allowlists this tool name
 }
 
