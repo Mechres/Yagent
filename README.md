@@ -64,11 +64,13 @@ By default Yagent talks to `http://localhost:11434` (Ollama). Point it elsewhere
 
 | Command / key | Effect |
 |---|---|
-| `/tools` | Browse tool calls; press Enter to expand arguments and the captured result. |
-| `/workspace` | Show workspace, branch, context use, tool count, undo availability, and queued-work state. |
-| `/sessions <query>` | Filter sessions by ID or generated title. |
+| `/tools` | Browse tool calls; `f` filters, `g` jumps to the transcript activity, Enter expands details, and PgUp/PgDn/Home/End navigate long lists. |
+| `/workspace` | Show workspace, branch, context use, tool count, undo availability, and queued-work state. A compact drawer appears during active turns on wide terminals. |
+| `/sessions <query>` | Filter sessions by ID or generated title. In the browser, `p` previews the selection and `s` toggles recent/title order. |
 | Enter while working | Queue one follow-up message; a later queued message replaces the earlier one. |
 | `a` / `x` during patch review | Accept all remaining hunks / reject all remaining hunks. |
+| `/set ui.accessibility high-contrast` | Persist a high-contrast TUI palette; set `standard` to restore it. |
+| `/set ui.accessibility ascii` | Use ASCII labels instead of emoji for limited terminal fonts. `NO_COLOR=1` suppresses color styling. |
 
 ## Security & privacy
 

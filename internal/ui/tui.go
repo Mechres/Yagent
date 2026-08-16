@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/Mechres/Yagent/internal/agent"
 	"github.com/Mechres/Yagent/internal/checkpoint"
@@ -170,7 +172,14 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 		m.workspace = ws
 	}
 	m.branch = gitBranch(m.workspace)
+	setIconMode(cfg.UI.Accessibility)
+	if os.Getenv("NO_COLOR") != "" {
+		lipgloss.SetColorProfile(termenv.Ascii)
+	}
 	m.th = themeByName(cfg.Theme)
+	if cfg.UI.Accessibility == "high-contrast" {
+		m.th = highContrast
+	}
 	m.spinner = spinner.New(spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(m.th.Primary)))
 	m.viewport = viewport.New(80, 20)
@@ -210,10 +219,11 @@ type toolResultMsg struct {
 	elapsed time.Duration
 }
 type toolActivity struct {
-	call    llm.ToolCall
-	result  string
-	elapsed time.Duration
-	done    bool
+	call          llm.ToolCall
+	result        string
+	elapsed       time.Duration
+	done          bool
+	transcriptIdx int
 }
 type progressMsg struct{ text string }
 
@@ -369,6 +379,7 @@ type tuiModel struct {
 	toolsOpen          bool
 	toolsIdx           int
 	toolsExpanded      bool
+	toolsFilter        int    // all, failures, writes, running
 	queuedInput        string // one message held until the current turn completes
 	pending            chan agent.Approval
 	approveArg         string
@@ -426,12 +437,13 @@ type tuiModel struct {
 	// teardown (opened the TUI without chatting).
 	sessionDeleted bool
 
-	sessionsOpen    bool
-	sessionsIdx     int
-	sessionsConfirm bool
-	sessionsAction  string
-	sessions        []memory.SessionSummary
-	sessionsFilter  string
+	sessionsOpen      bool
+	sessionsIdx       int
+	sessionsConfirm   bool
+	sessionsAction    string
+	sessions          []memory.SessionSummary
+	sessionsFilter    string
+	sessionsTitleSort bool
 
 	workspaceOpen bool
 
@@ -736,6 +748,14 @@ func (m *tuiModel) saveChoice(entry config.SettingKey) {
 func (m *tuiModel) applyThemeLive(key, value string) {
 	if key == "theme" {
 		m.th = themeByName(value)
+	}
+	if key == "ui.accessibility" && value == "high-contrast" {
+		m.th = highContrast
+	} else if key == "ui.accessibility" && m.cfg != nil {
+		m.th = themeByName(m.cfg.Theme)
+	}
+	if key == "ui.accessibility" {
+		setIconMode(value)
 	}
 }
 
@@ -1467,7 +1487,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toolMsg:
 		m.flushStream()
 		m.toolCalls++
-		m.toolActivity = append(m.toolActivity, toolActivity{call: msg.call})
+		m.toolActivity = append(m.toolActivity, toolActivity{call: msg.call, transcriptIdx: len(m.transcript)})
 		m.append("  " + iconTool + " running " + msg.call.Function.Name + " " + previewArgs(msg.call.Function.Arguments))
 		return m, m.nextCmd()
 
@@ -1653,7 +1673,7 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 		return m, nil
 	case "/tools":
 		m.msgInput.Reset()
-		m.toolsOpen, m.toolsIdx, m.toolsExpanded = true, len(m.toolActivity)-1, false
+		m.toolsOpen, m.toolsIdx, m.toolsExpanded, m.toolsFilter = true, len(m.toolActivity)-1, false, 0
 		if m.toolsIdx < 0 {
 			m.toolsIdx = 0
 		}
@@ -2400,6 +2420,21 @@ func (m *tuiModel) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.sessionsIdx < len(m.sessions)-1 {
 			m.sessionsIdx++
 		}
+	case "s":
+		m.sessionsTitleSort = !m.sessionsTitleSort
+		if m.sessionsTitleSort {
+			sort.SliceStable(m.sessions, func(i, j int) bool {
+				return strings.ToLower(m.sessions[i].Title) < strings.ToLower(m.sessions[j].Title)
+			})
+		} else {
+			sort.SliceStable(m.sessions, func(i, j int) bool { return m.sessions[i].UpdatedAt > m.sessions[j].UpdatedAt })
+		}
+	case "p":
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.sessionsIdx]
+			m.sessionsAction = fmt.Sprintf("preview: %s · %d messages · updated %s", s.Title, s.Messages, time.Unix(s.UpdatedAt, 0).Format("2006-01-02 15:04"))
+		}
+		return m, nil
 	case "d", "x":
 		if m.sessionsConfirm {
 			id := m.sessions[m.sessionsIdx].ID
@@ -2504,18 +2539,86 @@ func (m *tuiModel) handleToolsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.toolsOpen = false
-	case "up":
-		if m.toolsIdx > 0 {
-			m.toolsIdx--
+	case "f":
+		m.toolsFilter = (m.toolsFilter + 1) % 4
+		m.toolsExpanded = false
+		if ids := m.toolIndices(); len(ids) > 0 {
+			m.toolsIdx = ids[len(ids)-1]
 		}
-	case "down":
-		if m.toolsIdx < len(m.toolActivity)-1 {
-			m.toolsIdx++
+	case "up", "down":
+		ids := m.toolIndices()
+		for pos, id := range ids {
+			if id != m.toolsIdx {
+				continue
+			}
+			if msg.String() == "up" && pos > 0 {
+				m.toolsIdx = ids[pos-1]
+			}
+			if msg.String() == "down" && pos+1 < len(ids) {
+				m.toolsIdx = ids[pos+1]
+			}
+			break
+		}
+	case "home":
+		if ids := m.toolIndices(); len(ids) > 0 {
+			m.toolsIdx = ids[0]
+		}
+	case "end":
+		if ids := m.toolIndices(); len(ids) > 0 {
+			m.toolsIdx = ids[len(ids)-1]
+		}
+	case "pgup", "pgdown":
+		ids := m.toolIndices()
+		for pos, id := range ids {
+			if id != m.toolsIdx {
+				continue
+			}
+			delta := -5
+			if msg.String() == "pgdown" {
+				delta = 5
+			}
+			m.toolsIdx = ids[min(max(0, pos+delta), len(ids)-1)]
+			break
 		}
 	case "enter", " ":
 		m.toolsExpanded = !m.toolsExpanded
+	case "g":
+		m.jumpToToolActivity()
 	}
 	return m, nil
+}
+
+func (m *tuiModel) jumpToToolActivity() {
+	if m.toolsIdx < 0 || m.toolsIdx >= len(m.toolActivity) {
+		return
+	}
+	target := m.toolActivity[m.toolsIdx].transcriptIdx
+	rows := 0
+	for _, line := range m.transcript[:min(target, len(m.transcript))] {
+		rows += m.renderedRows(line)
+	}
+	m.viewport.YOffset = max(0, rows)
+	m.follow = false
+	m.toolsOpen = false
+}
+
+func (m *tuiModel) toolIndices() []int {
+	out := make([]int, 0, len(m.toolActivity))
+	for i, a := range m.toolActivity {
+		match := m.toolsFilter == 0 || (m.toolsFilter == 1 && strings.HasPrefix(strings.TrimSpace(a.result), "error:")) || (m.toolsFilter == 2 && isWriteTool(a.call.Function.Name)) || (m.toolsFilter == 3 && !a.done)
+		if match {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func isWriteTool(name string) bool {
+	switch name {
+	case "fs_write", "fs_edit", "fs_patch", "fs_refactor", "shell_exec", "shell_bg", "shell_kill":
+		return true
+	}
+	return false
 }
 
 func (m *tuiModel) toolsView() string {
@@ -2524,22 +2627,39 @@ func (m *tuiModel) toolsView() string {
 	if len(m.toolActivity) == 0 {
 		return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(m.th.Primary).Padding(0, 1).Render(title + "\n\n" + dim.Render("no tool calls yet") + "\n\n" + dim.Render("esc close"))
 	}
-	m.toolsIdx = min(max(0, m.toolsIdx), len(m.toolActivity)-1)
-	rows := make([]string, 0, len(m.toolActivity))
-	for i, a := range m.toolActivity {
+	ids := m.toolIndices()
+	filters := []string{"all", "failures", "writes", "running"}
+	if len(ids) == 0 {
+		return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(m.th.Primary).Padding(0, 1).Render(title + " · " + filters[m.toolsFilter] + "\n\n" + dim.Render("no calls match this filter") + "\n\n" + dim.Render("f change filter · esc close"))
+	}
+	found := false
+	for _, id := range ids {
+		if id == m.toolsIdx {
+			found = true
+			break
+		}
+	}
+	if !found {
+		m.toolsIdx = ids[len(ids)-1]
+	}
+	rows := make([]string, 0, len(ids))
+	selected := 0
+	for pos, i := range ids {
+		a := m.toolActivity[i]
 		status := "running"
 		if a.done {
 			status = strings.TrimSpace(toolActivityLine(a.call.Function.Name, a.result, a.elapsed))
 		}
 		line := a.call.Function.Name + "  " + status
 		if i == m.toolsIdx {
+			selected = pos
 			line = lipgloss.NewStyle().Background(m.th.Surface).Bold(true).Render("▸ " + line)
 		} else {
 			line = "  " + dim.Render(line)
 		}
 		rows = append(rows, line)
 	}
-	body := strings.Join(m.modalRows(rows, m.toolsIdx, 12), "\n")
+	body := strings.Join(m.modalRows(rows, selected, 12), "\n")
 	if m.toolsExpanded {
 		a := m.toolActivity[m.toolsIdx]
 		detail := "arguments: " + previewArgs(a.call.Function.Arguments)
@@ -2548,7 +2668,7 @@ func (m *tuiModel) toolsView() string {
 		}
 		body += "\n\n" + detail
 	}
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(m.th.Primary).Padding(0, 1).Render(title + "\n\n" + body + "\n\n" + dim.Render("↑/↓ select · enter expand details · esc close"))
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(m.th.Primary).Padding(0, 1).Render(title + " · " + filters[m.toolsFilter] + "\n\n" + body + "\n\n" + dim.Render("↑/↓/PgUp/PgDn select · Home/End · f filter · g jump · enter expand · esc close"))
 }
 
 func (m *tuiModel) workspaceView() string {
@@ -2952,7 +3072,11 @@ func (m *tuiModel) sessionsView() string {
 	}
 	rows = m.modalRows(rows, m.sessionsIdx, 9)
 	body := strings.Join(rows, "\n")
-	hint := dim.Render("↑/↓ pick · enter commands · r resume · f fork · e export · d delete (twice) · esc close")
+	sortHint := "recent"
+	if m.sessionsTitleSort {
+		sortHint = "title"
+	}
+	hint := dim.Render("↑/↓ pick · p preview · s sort " + sortHint + " · enter commands · r resume · f fork · e export · d delete (twice) · esc close")
 	if m.sessionsConfirm {
 		hint = lipgloss.NewStyle().Foreground(m.th.Error).Render("  delete this session? press d again to confirm, any key to cancel")
 	}
@@ -3157,6 +3281,9 @@ func (m *tuiModel) View() string {
 		m.viewport.Width = m.width // wrap the transcript at the window width
 	}
 	out := m.headerView() + "\n"
+	if m.busy && m.width >= 96 {
+		out += m.workspaceDrawer() + "\n"
+	}
 	out += m.viewport.View() + "\n"
 	if m.hunkOpen {
 		out += m.hunkView() + "\n"
@@ -3240,10 +3367,25 @@ func (m *tuiModel) layoutHeight() int {
 	m.resizeInput()
 	in := min(m.inputHeight(), max(1, m.height/3))
 	h := m.height - 3 - in
+	if m.busy && m.width >= 96 {
+		h-- // persistent workspace drawer below the header
+	}
 	if m.showPopover() {
 		h -= 2
 	}
 	return max(5, h)
+}
+
+func (m *tuiModel) workspaceDrawer() string {
+	undoCount := 0
+	if m.env != nil && m.env.undo != nil {
+		undoCount = m.env.undo.Count()
+	}
+	text := fmt.Sprintf("%s %s  ·  %s %s  ·  %s %d tools  ·  undo %d", iconFolder, shorten(m.workspace, 34), iconBranch, shorten(m.branch, 18), iconTool, m.toolCalls, undoCount)
+	if m.queuedInput != "" {
+		text += "  ·  queued"
+	}
+	return lipgloss.NewStyle().Foreground(m.th.Muted).Background(m.th.Surface).Width(m.width).Render(text)
 }
 
 // inputHeight is the number of terminal rows the message input occupies

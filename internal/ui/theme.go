@@ -63,11 +63,19 @@ var nord = Theme{
 	Error:      lipgloss.Color("#bf616a"),
 }
 
+var highContrast = Theme{
+	Primary: lipgloss.Color("#ffffff"), Secondary: lipgloss.Color("#ffff00"), Accent: lipgloss.Color("#00ffff"),
+	Background: lipgloss.Color("#000000"), Surface: lipgloss.Color("#202020"), Muted: lipgloss.Color("#d0d0d0"),
+	Border: lipgloss.Color("#ffffff"), Foreground: lipgloss.Color("#ffffff"), Success: lipgloss.Color("#00ff00"),
+	Warning: lipgloss.Color("#ffff00"), Error: lipgloss.Color("#ff4040"),
+}
+
 // themes is the registry of selectable palettes (the "theme" setting).
 var themes = map[string]Theme{
-	"tokyo":      tokyoNight,
-	"catppuccin": catppuccinMocha,
-	"nord":       nord,
+	"tokyo":         tokyoNight,
+	"catppuccin":    catppuccinMocha,
+	"nord":          nord,
+	"high-contrast": highContrast,
 }
 
 // themeByName resolves a theme name, falling back to tokyo for unknown names.
@@ -78,9 +86,9 @@ func themeByName(name string) Theme {
 	return tokyoNight
 }
 
-// Icons: emoji render on virtually every terminal emulator; these replace the
-// ASCII markers throughout the TUI (kept short so the layout stays stable).
-const (
+// Icons default to emoji, but ASCII mode remains usable in terminals without
+// emoji fonts or reliable wide-character measurement.
+var (
 	iconAgent   = "🤖"
 	iconFolder  = "📁"
 	iconSession = "💬"
@@ -94,6 +102,36 @@ const (
 	iconBranch  = "🌿"
 	iconCommand = "/"
 )
+
+func setIconMode(mode string) {
+	iconAgent = "🤖"
+	iconFolder = "📁"
+	iconSession = "💬"
+	iconCtx = "🧠"
+	iconTool = "🛠"
+	iconOK = "✅"
+	iconBad = "❌"
+	iconWarn = "⚠"
+	iconGear = "⚙"
+	iconYOLO = "⚡"
+	iconBranch = "🌿"
+	iconCommand = "/"
+	if mode != "ascii" {
+		return
+	}
+	iconAgent = "[A]"
+	iconFolder = "[W]"
+	iconSession = "[S]"
+	iconCtx = "[C]"
+	iconTool = "[T]"
+	iconOK = "[OK]"
+	iconBad = "[X]"
+	iconWarn = "[!]"
+	iconGear = "[*]"
+	iconYOLO = "[!]"
+	iconBranch = "[B]"
+	iconCommand = ">"
+}
 
 // style helpers shared across views.
 func (th Theme) pill(bg, fg lipgloss.Color, bold bool) lipgloss.Style {

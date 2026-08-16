@@ -610,6 +610,9 @@ type UIConfig struct {
 	// LoopGuard auto-cancels a running turn when the model visibly repeats
 	// itself (a stuck generation loop). Default on.
 	LoopGuard bool `yaml:"loop_guard"`
+	// Accessibility controls terminal presentation: standard, high-contrast,
+	// or ascii (emoji-free labels for limited terminal fonts).
+	Accessibility string `yaml:"accessibility"`
 }
 
 // Defaults applied when no config file and no env override is present.
@@ -688,7 +691,7 @@ func LoadConfig(path string) (*Config, error) {
 		EmbeddingModel:   DefaultEmbeddingModel,
 		ContextWindow:    DefaultContextWindow,
 		Theme:            DefaultTheme,
-		UI:               UIConfig{ShowReasoning: true, LoopGuard: true},
+		UI:               UIConfig{ShowReasoning: true, LoopGuard: true, Accessibility: "standard"},
 		Sampling:         SamplingConfig{Temperature: DefaultTemperature, TopP: DefaultTopP},
 		Skills:           SkillsConfig{WriteApproval: false},
 		VramThresholdTPS: DefaultVramThresholdTPS,
@@ -923,6 +926,7 @@ func Settings() []SettingKey {
 		{Key: "sampling.reasoning_max_tokens", Label: "Reasoning cap per request (0 = off; speeds up reasoning models)"},
 		{Key: "ui.show_reasoning", Label: "Show thinking block", Options: []string{"true", "false"}},
 		{Key: "ui.loop_guard", Label: "Stop repeating-generation loops", Options: []string{"true", "false"}},
+		{Key: "ui.accessibility", Label: "TUI accessibility", Options: []string{"standard", "high-contrast", "ascii"}},
 		{Key: "web_search.provider", Label: "Web search provider", Options: []string{"duckduckgo", "mojeek", "searxng", "langsearch"}},
 		{Key: "web_search.searxng_url", Label: "SearXNG URL"},
 		{Key: "web_search.max_fetch_kib", Label: "web_fetch text cap (KiB, 0 = 32)"},
@@ -980,6 +984,8 @@ func (c *Config) Get(key string) string {
 		return strconv.FormatBool(c.UI.ShowReasoning)
 	case "ui.loop_guard":
 		return strconv.FormatBool(c.UI.LoopGuard)
+	case "ui.accessibility":
+		return c.UI.Accessibility
 	case "web_search.provider":
 		return c.Web.Provider
 	case "web_search.searxng_url":
@@ -1130,6 +1136,7 @@ func validateKey(parts []string, value string) error {
 		"sampling.min_p": true, "sampling.reasoning_max_tokens": true,
 		"ui.show_reasoning":   true,
 		"ui.loop_guard":       true,
+		"ui.accessibility":    true,
 		"web_search.provider": true, "web_search.searxng_url": true,
 		"web_search.max_fetch_kib":      true,
 		"web_search.langsearch_api_key": true, "web_search.papers": true,
@@ -1206,6 +1213,10 @@ func validateKey(parts []string, value string) error {
 	case "ui.show_reasoning", "ui.loop_guard", "codegen", "git_auto_commit":
 		if value != "true" && value != "false" {
 			return &ValidationError{msg: key + " must be true or false"}
+		}
+	case "ui.accessibility":
+		if !slices.Contains([]string{"standard", "high-contrast", "ascii"}, value) {
+			return &ValidationError{msg: "ui.accessibility must be standard, high-contrast or ascii"}
 		}
 	case "shell.sandbox":
 		if value != "" && value != "bwrap" {

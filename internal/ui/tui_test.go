@@ -1292,6 +1292,43 @@ func TestSessionsBrowser(t *testing.T) {
 	}
 }
 
+// TestSessionsSortAndPreview: the 's' key toggles recent/title ordering and 'p'
+// shows selected-session metadata (added to handleSessionsKey — a prior pass
+// mistakenly put them in handleSettingsKey where they were unreachable).
+func TestSessionsSortAndPreview(t *testing.T) {
+	st, err := memory.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := testModel(t)
+	m.env.st = st
+	for _, title := range []string{"zeta topic", "alpha topic", "mid topic"} {
+		s, _ := st.NewSession(context.Background(), "/tmp/ws")
+		_, _ = st.Append(context.Background(), s.ID, llm.Message{Role: "user", Content: title})
+	}
+	m.sessions, _ = st.ListSessions(context.Background())
+	m.sessionsOpen = true
+	m.sessionsIdx = 0
+	// 's' toggles to title order
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if !m.sessionsTitleSort {
+		t.Error("'s' did not enable title sorting")
+	}
+	if m.sessions[0].Title != "alpha topic" {
+		t.Errorf("title sort: first = %q, want alpha topic", m.sessions[0].Title)
+	}
+	// 's' again toggles back to recency ordering
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if m.sessionsTitleSort {
+		t.Error("'s' did not toggle back to recency")
+	}
+	// 'p' previews the selected session
+	m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if !strings.Contains(m.sessionsAction, "preview:") || !strings.Contains(m.sessionsAction, "messages") {
+		t.Errorf("preview action = %q", m.sessionsAction)
+	}
+}
+
 func TestPromptHistoryNavigation(t *testing.T) {
 	m := testModel(t)
 	m.inputCh = make(chan turnRequest, 10)

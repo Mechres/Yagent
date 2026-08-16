@@ -63,6 +63,7 @@ theme: tokyo
 # Display preferences.
 ui:
   show_reasoning: true   # dimmed "thinking" block for reasoning models
+  accessibility: standard # standard | high-contrast | ascii
 
 # Context window in tokens (also YAGENT_CONTEXT_WINDOW).
 context_window: 16384

@@ -5,6 +5,28 @@ All notable changes to Yagent. Versioning: `git describe` via `make build`.
 ## Unreleased
 
 ### Added
+- **Tool inspector filters** — `/tools` now cycles All → Failures → Writes →
+  Running with `f`, keeping keyboard selection within the filtered activity.
+- **Tool-to-transcript navigation** — press `g` in `/tools` to close the
+  inspector and position the transcript at the selected call's activity line.
+- **Faster tool-inspector navigation** — PgUp/PgDn move five calls at a time;
+  Home/End jump to the first/last call in the active filter.
+- **Session browser preview and sort** — `p` shows selected-session metadata;
+  `s` toggles recent-first and title order.
+- **Persistent active-turn workspace drawer** — on terminals at least 96
+  columns wide, a compact row below the header keeps workspace, branch, tool,
+  undo, and queued-work state visible without opening `/workspace`.
+- **Persistent accessibility modes** — `ui.accessibility: high-contrast`
+  (or `/set ui.accessibility high-contrast`) uses a black background with
+  high-contrast semantic colors; `ascii` substitutes emoji with ASCII labels
+  for terminals without emoji fonts. `NO_COLOR` suppresses color styling.
+
+### Fixed
+- **Session-browser `s`/`p` keys were unreachable** — the preview/sort cases
+  landed in `handleSettingsKey` (where sessions are empty and the settings modal
+  routes elsewhere), so `/sessions` sort and preview never worked. Moved to
+  `handleSessionsKey` with an early return so `p`'s preview text isn't cleared
+  on the next key. Covered by `TestSessionsSortAndPreview`.
 - **Inspectable TUI tool activity** — `/tools` opens a bounded activity view
   for the current session. Select a call and press Enter to inspect its
   arguments and captured result; compact transcript rows show running,
