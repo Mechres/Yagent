@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -207,26 +208,87 @@ func (c *Client) ChatStream(ctx context.Context, messages []Message, tools []Too
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// Only transport-level errors are retried; a server response with a
-		// non-2xx status is deterministic and would just fail again, and a
-		// truncated stream is a signal for the agent to recover, not retry.
-		if isHTTPError(err) || errors.Is(err, ErrStreamTruncated) {
+		// A truncated stream is a signal for the agent to recover, not retry.
+		if errors.Is(err, ErrStreamTruncated) {
 			return nil, err
+		}
+		// Transport errors and transient server statuses (429/500/502/503/504)
+		// are retried with backoff; 4xx contract/auth errors are fatal.
+		var se *httpStatusError
+		if errors.As(err, &se) {
+			if !isRetryableStatus(se.status) {
+				return nil, err
+			}
+			// Honor Retry-After instead of the fixed backoff when present.
+			if se.retryAfter > 0 {
+				select {
+				case <-time.After(se.retryAfter):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				continue
+			}
 		}
 	}
 	return nil, fmt.Errorf("chat stream failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-// isHTTPError reports whether err came from a non-2xx HTTP response
-// (as opposed to a transport/parse error worth retrying).
-func isHTTPError(err error) bool {
-	_, ok := err.(*httpStatusError)
-	return ok
+// parseRetryAfter parses an HTTP Retry-After header (delta-seconds or an HTTP
+// date). A zero result means "no guidance" — the caller falls back to its
+// fixed backoff schedule.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+		// Cap so a huge/evil value can't park the run for hours.
+		if secs > 60 {
+			secs = 60
+		}
+		return time.Duration(secs) * time.Second
+	}
+	// RFC1123 date form, e.g. "Wed, 21 Oct 2015 07:28:00 GMT".
+	if t, err := time.Parse(time.RFC1123, v); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			return 0
+		}
+		if d > 60*time.Second {
+			d = 60 * time.Second
+		}
+		return d
+	}
+	return 0
 }
 
 type httpStatusError struct {
-	status int
-	body   string
+	status     int
+	retryAfter time.Duration // 0 = none; honoured from the Retry-After header
+	body       string
+}
+
+// isRetryableStatus reports whether a non-2xx status is worth retrying rather
+// than failing the whole run. Transient overload/availability statuses
+// (429 too many requests, 500/502/503/504) are retried with backoff; 4xx
+// contract/auth errors (400/401/403/404/...) are fatal — retrying them would
+// just fail again (codex audit, 2026-08-16).
+func isRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusInternalServerError,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// classifyHTTPErrors returns whether err is an HTTP status worth retrying.
+func isRetryableHTTPError(err error) bool {
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		return isRetryableStatus(se.status)
+	}
+	return false
 }
 
 func (e *httpStatusError) Error() string {
@@ -252,7 +314,7 @@ func (c *Client) chatStreamOnce(ctx context.Context, body []byte, onDelta, onRea
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &httpStatusError{status: resp.StatusCode, body: strings.TrimSpace(string(msg))}
+		return nil, &httpStatusError{status: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")), body: strings.TrimSpace(string(msg))}
 	}
 
 	respMessage := &Response{}
@@ -363,7 +425,7 @@ func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]f
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &httpStatusError{status: resp.StatusCode, body: strings.TrimSpace(string(msg))}
+		return nil, &httpStatusError{status: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")), body: strings.TrimSpace(string(msg))}
 	}
 
 	var out struct {

@@ -356,6 +356,59 @@ func TestChatStreamHTTPErrorNotRetried(t *testing.T) {
 	}
 }
 
+func TestChatStreamRetriesRetryableStatus(t *testing.T) {
+	// codex audit (2026-08-16): a transient 5xx / 429 must be retried, not
+	// abort the whole run. A server returning 503 twice then SSE 200 must
+	// succeed; a 400 must not be retried.
+	var hits atomic.Int32
+	failN := int32(2)
+	status := int32(503)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n <= failN {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(int(atomic.LoadInt32(&status)))
+			return
+		}
+		// success: emit an SSE content stream.
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: "+chunkData("ok")+"\n\ndata: [DONE]\n\n")
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream after retries: %v", err)
+	}
+	if resp.Message.Content != "ok" {
+		t.Errorf("content = %q, want ok", resp.Message.Content)
+	}
+	if got := hits.Load(); got != failN+1 {
+		t.Errorf("server hit %d times, want %d (retried the transient 503s)", got, failN+1)
+	}
+}
+
+func TestChatStreamDoesNotRetry4xx(t *testing.T) {
+	// A 4xx contract/auth error is fatal — retrying would just fail again.
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":"bad request"}`)
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-model")
+	_, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}}, nil, func(string) {}, nil)
+	if err == nil {
+		t.Fatal("expected a 400 error")
+	}
+	if hits.Load() != 1 {
+		t.Errorf("server hit %d times, want 1 (no retry on 4xx)", hits.Load())
+	}
+}
+
 // failingRoundTripper fails the first n requests with a transport error,
 // then delegates to the wrapped transport.
 type failingRoundTripper struct {
