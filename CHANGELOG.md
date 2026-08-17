@@ -2,6 +2,22 @@
 
 All notable changes to Yagent. Versioning: `git describe` via `make build`.
 
+## v0.1.97 — 2026-08-18
+
+### Added
+
+- **Workspace capability profiles** — each task now receives a compact,
+  deterministic profile of project markers and locally installed toolchains.
+  Empty directories are supported greenfield workspaces: Yagent asks for a
+  stack or offers a small scaffold, while keeping its core editing, shell,
+  Git, planning, and research tools available. Diagnostics, targeted tests,
+  and runtime smoke schemas are withheld only until a usable project manifest
+  and toolchain exist, including in read-only plan mode. Successful
+  filesystem, refactor, or shell mutations refresh the profile, so a newly
+  created `go.mod`, `package.json`, `Cargo.toml`, or Python/C/C++ marker
+  enables matching verification on the following request. Missing prerequisites
+  are named directly (for example, `missing: go`).
+
 ## v0.1.96 — 2026-08-16
 
 Round 2 of hardening (10-iteration improvement loop, audited via codex,

@@ -278,6 +278,57 @@ func TestRunReadsFileAndAnswers(t *testing.T) {
 	}
 }
 
+func TestGreenfieldProfileHidesVerificationSchemasUntilManifestWrite(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{
+		toolCall("call_1", "fs_write", `{"path":"go.mod","content":"module example.com/new\n\ngo 1.25\n"}`),
+		finalContent("scaffolded"),
+	})
+	a, _, _, _ := setup(t, s, true, 10)
+
+	// An empty directory is a supported greenfield workspace. It gets a
+	// profile hint and does not see verification tools that can only return
+	// "no project" before a manifest exists.
+	if p := a.WorkspaceProfile(); !p.Greenfield() {
+		t.Fatalf("initial profile = %#v, want greenfield", p)
+	}
+	for _, schema := range a.activeToolSchemas("create a Go project", nil) {
+		if schema.Function.Name == "workspace_diagnostics" || schema.Function.Name == "test_runner" || schema.Function.Name == "runtime_smoke" {
+			t.Fatalf("greenfield schema set unexpectedly includes %q", schema.Function.Name)
+		}
+	}
+	a.SetPlanMode(true)
+	for _, schema := range a.activeToolSchemas("create a Go project", nil) {
+		if schema.Function.Name == "workspace_diagnostics" || schema.Function.Name == "test_runner" || schema.Function.Name == "runtime_smoke" {
+			t.Fatalf("greenfield plan schema set unexpectedly includes %q", schema.Function.Name)
+		}
+	}
+	a.SetPlanMode(false)
+	msgs := a.assembleContext("", "")
+	if !strings.Contains(msgs[0].Content, "[WORKSPACE PROFILE]\nstate: greenfield") {
+		t.Fatalf("system prompt missing greenfield profile: %q", msgs[0].Content)
+	}
+
+	if _, err := a.Run(context.Background(), "create a Go project"); err != nil {
+		t.Fatal(err)
+	}
+	if p := a.WorkspaceProfile(); p.Kind != "Go" || !p.VerificationReady {
+		t.Fatalf("profile after go.mod write = %#v, want verified Go project", p)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(s.requests))
+	}
+	second := string(s.requests[1])
+	if !strings.Contains(second, `"workspace_diagnostics"`) || !strings.Contains(second, `"test_runner"`) || !strings.Contains(second, `"runtime_smoke"`) {
+		t.Errorf("second request did not refresh verification schemas: %s", second)
+	}
+	if !strings.Contains(second, "project: Go (go.mod)") {
+		t.Errorf("second request did not refresh workspace profile: %s", second)
+	}
+}
+
 func TestRunDeniedWriteDoesNotExecute(t *testing.T) {
 	s := newScriptedLLM(t, [][]string{
 		toolCall("call_1", "fs_write", `{"path": "evil.txt", "content": "boom"}`),
@@ -2029,11 +2080,10 @@ func TestContextUsageUsesAccurateCounter(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	used, _ := a.ContextUsage()
-	// system (1) + user message (1) + assistant message (1) = 3, each 1000.
-	// Plus the tool schemas sent in the request's `tools` field (GPT sol #6):
-	// with a fixed 1000-token counter that's another 1000.
-	if used != 4000 {
-		t.Errorf("ContextUsage = %d, want 4000 (3 messages + tool schemas, accurate counter)", used)
+	// System prompt, workspace profile, user message, assistant message, and
+	// the tool schemas each count as 1000 through the configured counter.
+	if used != 5000 {
+		t.Errorf("ContextUsage = %d, want 5000 (system/profile/history/schemas, accurate counter)", used)
 	}
 	a.mu.RLock()
 	if a.schemaTokens == 0 {
@@ -2276,6 +2326,7 @@ func TestActiveToolSchemasFilters(t *testing.T) {
 		SkillsWriteApproval: true,
 		AskUser:             func(ctx context.Context, q string, choices []string) (string, error) { return "ok", nil },
 	})
+	writeWorkspaceFile(t, ws, "go.mod", "module schemafilter\n\ngo 1.25\n")
 	a := New(nil, reg, nil, Config{MaxIterations: 5}, ws)
 
 	has := func(schemas []llm.ToolSchema, name string) bool {

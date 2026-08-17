@@ -1,6 +1,11 @@
 name: core-tool-schemas
-description: v0.1.51 — the dynamic tool-schema filter always offers fs_patch, test_runner and subagent (core), so the model can call them on any turn
+description: v0.1.51 — the dynamic tool-schema filter offers fs_patch, test_runner and subagent for a runnable project
 subagent: true
+files:
+  go.mod: |
+    module schemafilter
+
+    go 1.25
 input: hello there
 steps:
   - answer: Hi! How can I help?

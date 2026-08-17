@@ -29,6 +29,7 @@ import (
 	"github.com/Mechres/Yagent/internal/memory"
 	"github.com/Mechres/Yagent/internal/skills"
 	"github.com/Mechres/Yagent/internal/tools"
+	workspacepkg "github.com/Mechres/Yagent/internal/workspace"
 )
 
 // ErrMaxIterations is returned when the loop hits the iteration cap without a
@@ -551,11 +552,13 @@ type Agent struct {
 	// injectedTokens are counted at the point each piece is set; lastCtx holds
 	// the token-only section summary of the most recent assembled context, so
 	// the gauge and budget math need no network calls under the lock.
-	sysTokens      int
-	summaryTokens  int
-	injectedTokens []int
-	lastCtx        []traceSection
-	traceSeq       int
+	sysTokens              int
+	workspaceProfile       workspacepkg.Profile
+	workspaceProfileTokens int
+	summaryTokens          int
+	injectedTokens         []int
+	lastCtx                []traceSection
+	traceSeq               int
 
 	// pressure is set when a stream's t/s fell below VramThresholdTPS, i.e.
 	// the KV cache likely spilled out of VRAM. budget() consumes it to force a
@@ -595,19 +598,22 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 		sys += codegenPromptSuffix
 		compact += codegenPromptSuffix
 	}
+	profile := workspacepkg.Detect(workspace)
 	a := &Agent{
-		cfg:            cfg,
-		llm:            llm,
-		summ:           cfg.Summarizer,
-		registry:       reg,
-		approver:       approver,
-		workspace:      workspace,
-		systemPrompt:   sys,
-		compactPrompt:  compact,
-		runningSummary: cfg.InitialSummary,
-		planMode:       cfg.PlanMode,
+		cfg:              cfg,
+		llm:              llm,
+		summ:             cfg.Summarizer,
+		registry:         reg,
+		approver:         approver,
+		workspace:        workspace,
+		systemPrompt:     sys,
+		compactPrompt:    compact,
+		runningSummary:   cfg.InitialSummary,
+		planMode:         cfg.PlanMode,
+		workspaceProfile: profile,
 	}
 	a.sysTokens = a.tokensFor(shortCtx(), a.systemPrompt)
+	a.workspaceProfileTokens = a.tokensFor(shortCtx(), profile.Context())
 	a.summaryTokens = a.tokensFor(shortCtx(), cfg.InitialSummary)
 	if cfg.Research {
 		reg.SetResearchNote(func(note string) { a.recordResearchFinding(note) })
@@ -734,6 +740,43 @@ func (a *Agent) SetRegistry(reg *tools.Registry) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.registry = reg
+}
+
+// WorkspaceProfile returns the current compact workspace profile. It is
+// refreshed after a successful workspace mutation so a greenfield task gains
+// project-specific verification as soon as its manifest is created.
+func (a *Agent) WorkspaceProfile() workspacepkg.Profile {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	p := a.workspaceProfile
+	p.Markers = append([]string(nil), p.Markers...)
+	p.Available = append([]string(nil), p.Available...)
+	p.Missing = append([]string(nil), p.Missing...)
+	return p
+}
+
+func (a *Agent) refreshWorkspaceProfile() {
+	profile := workspacepkg.Detect(a.workspace)
+	tokens := a.tokensFor(shortCtx(), profile.Context())
+	a.mu.Lock()
+	a.workspaceProfile = profile
+	a.workspaceProfileTokens = tokens
+	// The last assembled context contains the old profile. Clear its cached
+	// section summary so budget accounting uses the new profile immediately.
+	a.lastCtx = nil
+	a.mu.Unlock()
+}
+
+// workspaceMutation reports tools that can create or remove a project marker
+// or otherwise change the workspace's runnable state. Index and memory writes
+// intentionally do not trigger a probe because they cannot change that state.
+func workspaceMutation(name string) bool {
+	switch name {
+	case "fs_write", "fs_edit", "fs_patch", "fs_refactor", "shell_exec", "shell_bg":
+		return true
+	default:
+		return false
+	}
 }
 
 // PlanMode reports whether the loop is in read-only plan mode.
@@ -2719,11 +2762,25 @@ func (a *Agent) activeToolSchemas(input string, used map[string]bool) []llm.Tool
 	a.mu.RLock()
 	planMode := a.planMode
 	researchMode := a.researchMode
+	profile := a.workspaceProfile
 	a.mu.RUnlock()
 	if planMode {
-		return a.registry.SchemasForReadOnly("plan", "consult")
+		schemas := a.registry.SchemasForReadOnly("plan", "consult")
+		if profile.SuppressVerificationTools() {
+			return withoutToolSchemas(schemas, "workspace_diagnostics", "test_runner", "runtime_smoke")
+		}
+		return schemas
 	}
 	names := append([]string(nil), coreToolNames...)
+	// An empty workspace is a supported greenfield start, not a broken
+	// project. Until a manifest and its local toolchain exist, fixed
+	// diagnostics/test/smoke schemas only invite a weak model to waste turns on
+	// tools that can say nothing useful. The registry keeps them resolvable for
+	// an explicit call, and refreshWorkspaceProfile re-enables them after a
+	// scaffold creates go.mod/package.json/etc.
+	if profile.SuppressVerificationTools() {
+		names = withoutToolNames(names, "workspace_diagnostics", "test_runner", "runtime_smoke")
+	}
 	// MCP tools are offered selectively (GPT sol #7): only the servers the
 	// input signals or the model already used this turn. A big MCP server must
 	// not re-flood every request with all its schemas. The registry still holds
@@ -2742,6 +2799,26 @@ func (a *Agent) activeToolSchemas(input string, used map[string]bool) []llm.Tool
 		names = append(names, jobToolNames...)
 	}
 	return a.registry.SchemasFor(names)
+}
+
+func withoutToolNames(names []string, removed ...string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if !slices.Contains(removed, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func withoutToolSchemas(schemas []llm.ToolSchema, removed ...string) []llm.ToolSchema {
+	out := make([]llm.ToolSchema, 0, len(schemas))
+	for _, schema := range schemas {
+		if !slices.Contains(removed, schema.Function.Name) {
+			out = append(out, schema)
+		}
+	}
+	return out
 }
 
 func researchSignal(s string) bool {
@@ -2842,6 +2919,19 @@ func (a *Agent) assembleContext(recall, code string) []llm.Message {
 	// system prompt
 	sections = append(sections, traceSection{Name: "system", Content: prompt, Tokens: promptTokens})
 	sys.WriteString(prompt)
+
+	// Workspace profile: a compact deterministic view of project markers and
+	// local prerequisites. It gives an empty directory a first-class greenfield
+	// path and prevents a missing toolchain from being mistaken for source code
+	// that needs editing.
+	a.mu.RLock()
+	profile := a.workspaceProfile.Context()
+	profileTokens := a.workspaceProfileTokens
+	a.mu.RUnlock()
+	if profile != "" {
+		sections = append(sections, traceSection{Name: "workspace profile", Content: profile, Tokens: profileTokens})
+		sys.WriteString("\n\n" + profile)
+	}
 
 	// skills L0 index
 	if l0 := a.skillIndex(); l0 != "" {
@@ -3172,7 +3262,7 @@ func (a *Agent) estTokensLocked() int {
 			total += s.Tokens
 		}
 	} else {
-		total = a.sysTokens + a.summaryTokens
+		total = a.sysTokens + a.workspaceProfileTokens + a.summaryTokens
 		if a.cfg.Skills != nil {
 			total += maxL0Tokens // L0 skills index is always in context
 		}
@@ -3664,6 +3754,9 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		if json.Unmarshal(call.Function.Arguments, &wpa) == nil && wpa.Path != "" {
 			a.cfg.Capsules.RecordRecovery(wpa.Path, name)
 		}
+	}
+	if !strings.HasPrefix(result, "error:") && workspaceMutation(name) {
+		a.refreshWorkspaceProfile()
 	}
 	// Plan-mode exit: approving the plan flips read-only mode off so the model
 	// can start editing (Hermes P0 explore-then-edit). Also record the approved

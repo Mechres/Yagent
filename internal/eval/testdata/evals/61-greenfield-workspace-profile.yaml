@@ -1,0 +1,11 @@
+name: greenfield-workspace-profile
+description: An empty workspace is an explicit supported starting state with scaffold guidance.
+input: Create a small app from scratch.
+steps:
+  - answer: I can help choose a stack and scaffold it.
+assert:
+  requests_contain:
+    - "[WORKSPACE PROFILE]"
+    - "state: greenfield"
+    - "Ask with clarify, or offer a small scaffold"
+    - '"name":"fs_write"'

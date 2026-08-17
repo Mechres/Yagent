@@ -44,6 +44,7 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 
 ```
 [system prompt]                    identity, rules, tool usage guidance   ~800 tok
+[workspace profile]                project markers + local prerequisites   ~100 tok
 [tool schemas]                     sent as API tools field, not in prompt ~varies
 [running summary]                  of old history, if any                  ≤ 600 tok
 [long-term memory retrieval]       top-k relevant memories                 ≤ 1000 tok
@@ -63,6 +64,23 @@ When recent history doesn't fit, old tool results are first concealed behind
 one-line markers. If that is not enough, the **oldest half** is summarized by
 the main model or an explicitly configured `summarizer:` model. See
 `memory.md`.
+
+### Workspace capability profile
+
+Before the first request, the agent inspects supported project manifests and
+the locally available toolchain. A directory with no manifest is reported as a
+**greenfield** workspace, not as an unsupported project: the model keeps its
+core file, shell, Git, planning, and research tools, but project verification
+schemas are withheld until they can be useful. The profile explicitly asks the
+model to clarify the language/framework or offer a small scaffold. After a
+successful filesystem/refactor/shell mutation, it is refreshed; creating
+`go.mod`, `package.json`, `Cargo.toml`, or a Python/C/C++ marker therefore
+enables the matching diagnostics, tests, and smoke checks on the next request.
+
+For a recognized project with a missing local prerequisite, the profile says
+so directly and likewise suppresses those verification schemas. The registry
+still resolves an explicitly emitted tool call; schema filtering reduces noise
+for small models rather than becoming a hard capability block.
 
 ## Tool-call protocol
 

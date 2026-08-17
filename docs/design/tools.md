@@ -2,7 +2,10 @@
 
 Tools are the agent's hands. With small local models, **fewer, sharper tools
 beat many fuzzy ones**. The registry below is the current surface; schemas are
-also filtered dynamically so a turn sees the tools relevant to its task.
+also filtered dynamically so a turn sees the tools relevant to its task. A
+workspace capability profile suppresses diagnostics, tests, and smoke schemas
+when an empty workspace has not selected a stack yet, or when the required
+local toolchain is missing; they reappear after a successful scaffold write.
 
 ## Risk levels & approval
 
