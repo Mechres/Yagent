@@ -1,72 +1,82 @@
-<div align="center">
-<img width="300" height="300" alt="resim" src="https://github.com/user-attachments/assets/1516e379-c7e8-4ef1-b8be-bcd611ca6d01" />
+<p align="center">
+  <img width="300" height="300" alt="Yagent logo" src="https://github.com/user-attachments/assets/1516e379-c7e8-4ef1-b8be-bcd611ca6d01">
+</p>
 
+<h1 align="center">Yagent</h1>
 
-# Yagent
-</div>
+<p align="center">
+  A local-first AI agent for coding, audits, reviews, web search, and research.
+</p>
 
-[![Go](https://img.shields.io/badge/Go-1.25-blue.svg)](https://go.dev/dl/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/Mechres/Yagent/actions/workflows/ci.yml/badge.svg)](https://github.com/Mechres/Yagent/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/Go-1.25-blue.svg" alt="Go 1.25"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
+  <a href="https://github.com/Mechres/Yagent/actions/workflows/ci.yml"><img src="https://github.com/Mechres/Yagent/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
-A local-first AI agent for **code, audit, review, web search and research** — written in Go, running against OpenAI-compatible inference servers (Ollama, llama.cpp, or any cloud endpoint you opt into). It implements its own agent loop, memory, orchestration and tools — no LLM frameworks.
+Yagent is written in Go and runs against OpenAI-compatible inference servers: Ollama, llama.cpp, or a cloud endpoint you explicitly configure. It owns the agent loop, memory, orchestration, and tools—no LLM framework required.
 
-## Features
+## Why Yagent
 
-- **Agent loop with tools** — streaming chat, risk-gated approvals with TUI change summaries and diff previews, per-hunk `fs_patch` approval (`a` accepts remaining hunks; `x` rejects them), validation + retry with fuzzy argument aliasing, `/yolo`, **Esc cancels the running turn** (the session stays alive), and a **loop guard** that auto-stops repeating-generation loops.
-- **Deterministic "compiles, runs, behaves, and actually finished" gates** — `workspace_diagnostics` (auto `go vet`/`tsc`/`cargo check`/`ruff`/`make`/`cmake`), **`test_runner`** (targeted tests for Go/Rust/Python/JS-TS), **`runtime_smoke`** (builds and runs the program — even browser JS under a headless node DOM shim — asserting it doesn't crash and behaves, via scripted `steps`), **pre-flight syntax + YAML/JSON validation**, `diff_semantic` (symbol-delta guardrail), **`GoalGate`/`TestGate`** (refuse completion on broken builds/tests), **goal success predicates** (`--check "file contains text"` refuses DONE until the declared conditions hold), and **codegen mode** (whole-file writes + compile-gated answers for greenfield builds).
-- **Git-backed session safety** (aider-style) — each turn auto-commits as `yagent: turn N` (dirty user files are snapshotted up front, never lost or mixed in), `/undo`/`/undo list`/`/undo <N>` revert via git (crash-safe), and **`/diff`** shows the cumulative session diff with `/diff discard` — a plandex-style "review before you keep" sandbox.
-- **Memory** — SQLite sessions (`yagent sessions`, `chat --continue`, `/undo` multi-turn revert, Markdown/HTML exports), **accurate token counting** (server tokenizer), a budget that first prunes old tool output then summarizes, and hybrid semantic recall (vector + FTS5 + importance + recency).
-- **Skills** — procedural memory as `SKILL.md` files with progressive disclosure, autonomous creation + a verification harness (`/skills verify`), a TUI skills manager modal (bare `/skills`), and `yagent skills import`.
-- **Codebase index** — gitignore-aware walker, tree-sitter chunking (go/py/js/ts/rust/c/cpp/java/bash/html/css), incremental re-embed, symbol-aware search, call-graph `code_references`, **`code_impact`** (change radius before an edit), **`code_topology`** (package DAG), **`code_unused`** (dead-symbol candidates), **`code_slice`** for surgical single-declaration reads, **`code_environment`** (toolchain & native-binding audit), and **`code_references`**-style downstream-impact hints in compile errors.
-- **Web tools** — `web_search` (DuckDuckGo default, Mojeek/SearXNG alternatives, provider fallback) and `web_fetch` with HTML→text extraction — results wrapped as untrusted data (prompt-injection defense).
-- **Orchestration** — goal mode with workspace checkpoints and `--resume-goal`, declarative **playbooks** (`.yagent/playbooks/*.yaml`), parallel subagents with preset **roles** (architect/auditor/test-engineer/docs-writer), tool subsets and a shared scratchpad, an advisor (`consult`) model, a **`summarizer`** model (offload history condensation to a second machine), and **`clarify`/`plan`** tools for structured user handoffs — plus **read-only plan mode** (`/plan`: explore before editing).
-- **Extensible** — **MCP support** (`mcp:` config attaches any Model Context Protocol server; each tool registers as `<server>_<tool>`), a **hook bus** (`hooks:` config runs deterministic pre/post-tool policy — a pre-hook can veto a call), and **approval allow-remember** (approved tool+args auto-approve for the session).
-- **Provider/model selector** (`/model` in the TUI) — pick from a built-in catalog (Local llama.cpp/Ollama, OpenCode Zen/Go, DeepSeek, OpenRouter, Groq, Together, Mistral, NVIDIA NIM) with a **live model list** for local servers (`/v1/models`) and **cloud models synced from models.dev** — no stale catalogs. API keys are entered inline in the TUI (or `/key` in the REPL) and stored in the config file's `api_key` field (`/key clear` removes them; env vars like `DEEPSEEK_API_KEY` take precedence and are never written to disk). Model selection warns when a model is weak at tool calling.
-- **Two UIs** — a bubbletea TUI and a plain REPL sharing one runtime: 24-bit themes (Tokyo Night default; Catppuccin/Nord in `/settings`), pill header/status bar with a live context gauge and turns-to-window forecast, markdown rendering, collapsible "thinking" blocks, **Ctrl+F transcript search**, **`/compact`** (distill the session into a ledger), interactive settings/sessions/skills modals, **`/tools`** activity inspector, **`/workspace`** overview, `/sessions <query>` filtering, **`/model`** provider picker, and **OS notifications** when an approval is needed or a goal run finishes. Saved API keys are masked in the TUI settings list.
-- **Tuning & diagnostics** — per-model sampling profiles, `sampling.min_p`/`repetition_penalty`/`reasoning_max_tokens` knobs, context-window auto-detect (budget capped at the server's real `n_ctx`), **adaptive system-prompt compression** (lean prompt above 70% context), `yagent doctor`, **`yagent calibrate`** (live benchmark across sampling recipes), `yagent bench --repeat 3` with regression baseline tracking, `--trace` prompt dumps, a golden YAML eval harness, a live small-model benchmark, a **VRAM pressure detector** (auto-prunes context when streaming slows — KV spill), a **diagnostic error sanitizer** (error cascades collapse to top root causes), `fs_edit` **whitespace auto-alignment**, **missing-import preflight** on writes, **atomic multi-file `fs_patch`** (all-or-nothing), and **`yagent export-dataset`** (verified sessions → OpenAI/ShareGPT/DPO fine-tuning JSONL).
+- **Make changes safely.** Stream tool use, review risk-gated writes and diffs, approve `fs_patch` hunks individually, and cancel a running turn with Esc without losing the session. A loop guard stops repeated generation; `/yolo` is available when you deliberately want automatic approvals.
+- **Verify work before calling it done.** Built-in diagnostics, targeted tests, runtime smoke checks, syntax/YAML/JSON validation, and semantic-diff protection catch common mistakes. Goal and test gates can refuse completion until declared checks pass; codegen mode is tuned for greenfield builds.
+- **Keep every turn recoverable.** In Git repositories, turn commits preserve pre-existing work and power crash-safe `/undo`; `/diff` shows the cumulative session change before you keep it. SQLite sessions support resume, search, and Markdown or HTML export.
+- **Work across longer tasks.** Context is token-budgeted with old tool output pruned before summaries; hybrid memory combines vector search, FTS5, importance, and recency. Skills provide reusable `SKILL.md` procedures with progressive disclosure and optional verification.
+- **Understand a codebase before editing it.** A gitignore-aware, tree-sitter index supports structural search, surgical symbol reads, call references, impact analysis, topology, unused-symbol candidates, and environment audits.
+- **Delegate and automate deliberately.** Use goal mode, resumable checkpoints, declarative playbooks, parallel read-only subagents, and a shared scratchpad. `clarify` and `plan` provide structured handoffs; `/plan` keeps exploration read-only.
+- **Stay local by default, extend when needed.** Web results are treated as untrusted data; DuckDuckGo, Mojeek, and SearXNG are supported. MCP tools, deterministic hooks, an optional advisor, and a separate summarizer model extend the workflow without changing the core loop.
+- **Choose the model and interface that suit the job.** The Bubble Tea TUI and plain REPL share one runtime. The TUI includes provider/model selection, settings, sessions, skills, tool activity, workspace overview, transcript search, themes, accessibility modes, and notifications. Local models are discovered live; cloud choices come from models.dev.
 
-## Install
+For the full command and safety model, see [the tool documentation](docs/design/tools.md). For local-model results and recommended settings, see [the benchmark guide](docs/models-benchmark.md).
+
+## Install and run
 
 ```bash
 go install github.com/Mechres/Yagent@latest
 ```
 
-Requires Go 1.22+ (built and tested with 1.25). Note: tree-sitter chunking needs **cgo** (a C toolchain) to build.
+Requires Go 1.22+ (built and tested with Go 1.25). Tree-sitter indexing requires cgo, so install a C toolchain too.
 
-Then set up an inference server and pull a model:
+Start a local inference server and pull a chat model plus an embedding model:
 
 ```bash
 ollama serve                 # or: llama.cpp llama-server --embeddings
-ollama pull qwen3vl:8b       # or your GGUF on llama.cpp (e.g. Qwen3VL-8B-Instruct-Q4_K_M.gguf)
+ollama pull qwen3vl:8b       # or load a GGUF with llama.cpp
 ollama pull nomic-embed-text
 ```
+
+Yagent defaults to Ollama at `http://localhost:11434`. Configure another OpenAI-compatible endpoint through `YAGENT_SERVER_URL`, `YAGENT_MODEL`, or `config.yaml`; a repository-local `.yagent/config.yaml` overrides the global configuration. See [`config.example.yaml`](config.example.yaml) for every setting.
 
 ## Quickstart
 
 ```bash
-yagent init                   # create starter config if none exists
-yagent doctor                 # diagnose config / server / model / embeddings / toolchain
-yagent chat                   # streaming TUI (or REPL with --plain)
-yagent chat --goal "refactor the parser package"    # autonomous goal loop
-yagent chat --goal "build a tetris" --check "tetris.cpp exists"  # + deterministic success checks
-yagent chat --playbook release-checklist   # run a declarative workflow
-yagent bench --repeat 3       # run canonical benchmarks and record baseline
-yagent calibrate              # tune sampling for your local model
-yagent export-dataset --output fine-tune.jsonl --format sharegpt   # turn verified sessions into a training set
-yagent export-dataset --format dpo --output preferences.jsonl      # DPO/ORPO preference pairs (failed -> success)
-yagent sessions export <id> --format html  # share a session as HTML
+yagent init                                      # write a starter configuration
+yagent doctor                                    # verify server, model, embeddings, and toolchain
+yagent chat                                      # open the streaming TUI (--plain for the REPL)
+yagent chat --goal "refactor the parser package"  # run an autonomous goal loop
+yagent chat --goal "build a tetris" --check "tetris.cpp exists"
+yagent chat --playbook release-checklist         # run a declarative workflow
+yagent bench --repeat 3                          # measure and record a model baseline
+yagent calibrate                                 # find a sampling recipe for the current model
 ```
 
-By default Yagent talks to `http://localhost:11434` (Ollama). Point it elsewhere with `YAGENT_SERVER_URL` / `YAGENT_MODEL` / `config.yaml` — see [`config.example.yaml`](config.example.yaml). In the TUI, **`/model`** picks a provider and model (local models auto-detected; cloud lists live from models.dev).
+Useful follow-ons:
 
-### TUI controls
+```bash
+yagent sessions export <id> --format html                 # share a session
+yagent export-dataset --format sharegpt --output data.jsonl  # export verified trajectories
+yagent export-dataset --format dpo --output preferences.jsonl
+```
+
+In the TUI, `/model` selects a provider and model (local models are auto-detected; cloud choices refresh from models.dev).
+
+### Useful TUI controls
 
 | Command / key | Effect |
 |---|---|
-| `/tools` | Browse tool calls; `f` filters, `g` jumps to the transcript activity, Enter expands details, and PgUp/PgDn/Home/End navigate long lists. |
+| `/tools` | Browse tool calls; `f` filters, `g` jumps to transcript activity, Enter expands details, and PgUp/PgDn/Home/End navigate. |
 | `/workspace` | Show workspace, branch, context use, tool count, undo availability, and queued-work state. A compact drawer appears during active turns on wide terminals. |
-| `/sessions <query>` | Filter sessions by ID or generated title. In the browser, `p` previews, `s` toggles recent/title order, `n` renames, and `*` pins a session. |
+| `/sessions <query>` | Filter sessions by ID or generated title. In the browser, `p` previews, `s` changes ordering, `n` renames, and `*` pins. |
 | Enter while working | Queue one follow-up message; a later queued message replaces the earlier one. |
 | `a` / `x` during patch review | Accept all remaining hunks / reject all remaining hunks. |
 | `/set ui.accessibility high-contrast` | Persist a high-contrast TUI palette; set `standard` to restore it. |
