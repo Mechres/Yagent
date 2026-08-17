@@ -78,13 +78,13 @@ Acceptance: *(all verified — 60-turn budget + remember/recall e2e against fake
 
 ## M3.5 — Skills (procedural memory)
 
-**Goal**: Hermes-style autonomous skill creation — the agent saves reusable workflows as `SKILL.md` files it can load on demand. Design: [`docs/design/skills.md`](docs/design/skills.md). Depends on the M2 tool loop.
+**Goal**: Hermes-style autonomous skill creation — the agent saves reusable workflows as `SKILL.md` files it can load on demand. Design: [`design/skills.md`](design/skills.md). Depends on the M2 tool loop.
 
 Tasks:
 - [x] `internal/skills`: filesystem store — global `<data>/skills/` + project `<workspace>/.yagent/skills/` (both read roots), agentskills.io-compatible frontmatter subset via `yaml.v3`, lifecycle metadata (`source`/`created_at`/`last_used`, store-managed), validation (slug regex, ≤60-char description, required sections, size caps), path hardening for `references/`, dangerous-pattern scanner (block/flag verdicts), dedup helper
 - [x] tools: `skills_list` / `skill_view` (read; bumps `last_used`), `skill_manage` (create/patch/edit/delete/write_file/remove_file, `scope: global|project`; write-gated; per-session cap)
 - [x] end-of-turn creation-trigger prompt (5+ tool calls succeeded / user correction / error→working path / non-trivial workflow) with embedded authoring rules + dedup-before-create + ≤2 staged writes/session
-- [x] approval gate `skills.write_approval` (default true): staging under `<data>/pending/skills/`, `/skills pending|diff|approve|reject`
+- [x] approval gate `skills.write_approval`: staging under `<data>/pending/skills/`, `/skills pending|diff|approve|reject`. It originally defaulted to `true`; the current default is `false` (apply immediately).
 - [x] REPL invocation: `/skill-name` loads SKILL.md; `/skills list`
 - [x] L0 budget: skills_list in system prompt capped (~3k tokens / 40 skills, evict by `last_used`); activation respects L1 budget
 - [x] tests: fake-LLM scripted skill_manage flows, gate on/off, patch ambiguity, path traversal, frontmatter validation retry, dedup rejection, session cap, scanner block/flag, project-store write

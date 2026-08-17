@@ -1,5 +1,10 @@
 # Research: what to borrow from opencode, aider, plandex
 
+> **Historical research log.** Each assessment records the repository state on
+> its stated date; later sections record shipped follow-ups. For the current
+> capability and safety surface, use the README, `docs/design/tools.md`, and
+> `config.example.yaml`.
+
 Assessment date: 2026-08-15. Sources: opencode.ai/docs (providers, lsp, mcp-servers,
 zen, go), aider.chat/docs (git, repomap, edit-formats), plandex README + docs.
 Filter applied: *does it make a 9B–14B local model more reliable?* — features that

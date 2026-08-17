@@ -13,7 +13,7 @@ Adopt (small-model, local-first subset):
 - Progressive disclosure: `skills_list` → `skill_view(name)` → `skill_view(name, path)`
 - `skill_manage` tool (create/patch/edit/delete/write_file/remove_file)
 - Autonomous creation triggers + slash-command invocation (`/skill-name`)
-- Write-approval gate, **default ON** (deliberate difference from Hermes, which defaults off — see below)
+- Write-approval gate, **default OFF** (automatic creation; see below)
 - **Anti-hoarding guard** (dedup, per-session cap, authoring rules) — see "Autonomous creation"
 - **Dangerous-pattern scanner** on agent skill writes + load warning — see "Safety"
 - **Lifecycle metadata** (`source`, `created_at`, `last_used`) powering L0 eviction — see "SKILL.md format"
@@ -177,7 +177,9 @@ REPL review surface (extends the M1 slash-command set):
 /skill-name [args]          # invoke a skill by name
 ```
 
-Approval uses the same y/n prompt machinery as dangerous `fs`/`shell` writes. A staged write shows the diff, not a one-line summary — a SKILL.md is too large to review inline.
+Review happens through the `/skills` commands rather than the generic y/n
+approval prompt. A staged write shows the full diff, not a one-line summary—a
+`SKILL.md` is too large to review inline.
 
 ## Context budget integration
 
@@ -192,7 +194,7 @@ Approval uses the same y/n prompt machinery as dangerous `fs`/`shell` writes. A 
 - `internal/tools`: `skills_list`, `skill_view` (read, bumps `last_used`), `skill_manage` (write, **self-gated**: gate on → `Stage`, gate off → `Apply`; enforces per-session cap counter). Registered only when a skills store is configured.
 - `internal/agent`: L0 index injected each request (merged into the single system message); end-of-turn creation-trigger pass offering only the skills tools (with authoring rules + cap); `InjectSystem` for `/skill-name`; `Finish` for the session-end pass.
 - `internal/ui`: `/skills` + `/skill-name` commands; approve/reject flow; `/skills approval on|off` persists to the config file via `config.SetWriteApproval`.
-- config: `skills.write_approval` (default true), `skills.data_dir` (default data dir), `skills.project_dir` (default `<workspace>/.yagent/skills`)
+- config: `skills.write_approval` (default `false`), `skills.data_dir` (default data dir), `skills.project_dir` (default `<workspace>/.yagent/skills`)
 
 Tests (no network — fake LLM server pattern from M2):
 

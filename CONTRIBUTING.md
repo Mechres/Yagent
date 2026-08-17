@@ -13,13 +13,15 @@ project with strict rules — please read `AGENTS.md` (contributor guide) and
 
 ## Rules
 
-- **Local-first**: LLM/embedding requests go only to the configured server.
-  The one deliberately opt-in cloud path is `consult` with an explicit
-  `api_key`; everything else stays on your machine.
+- **Local-first by default**: LLM and embedding requests use the configured
+  server, which defaults to local Ollama/llama.cpp. The main loop and
+  `consult` can use an OpenAI-compatible cloud endpoint only after the user
+  explicitly configures an `api_key`; do not add provider SDKs.
 - **No new dependencies** without explaining why in the commit (see the
   approved list in `AGENTS.md`).
-- **No git mutations from the agent's tools**, and no commits without an
-  explicit ask.
+- **No git mutations from the agent's tools**, and no pushes, rebases, or
+  resets without an explicit ask. `git_auto_commit: true` is the documented
+  opt-in for local, per-turn safety commits in Git repositories.
 - Add tests with every change (table-driven where sensible; fake the LLM via
   `httptest` — no network in unit tests).
 

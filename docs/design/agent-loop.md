@@ -33,11 +33,12 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 
 | Condition | Behavior |
 |---|---|
-| Response with no tool calls | Return — this is the normal exit |
-| `max_iterations` (default 25) hit | Stop, show the user a summary + option to continue |
-| `ctx.Done()` (Ctrl-C) | Abort promptly; tools must respect ctx |
+| Response with no tool calls | Return when no write-verification, goal, test, or success-check gate needs another pass |
+| `max_iterations` (default 25) hit | Stop and return a clear incomplete-turn error |
+| `ctx.Done()` (Esc/Ctrl-C) | Abort promptly; the session remains usable |
 | Validation errors 3× on the same call | Give up on that call, tell the model it's failing |
-| Unrecoverable tool error | Return the error text **to the model** as the tool result; never crash the loop |
+| Tool failure | Return structured error text **to the model** as a tool result; never crash the loop |
+| Repetition, stalled reads, or truncated stream | Send a bounded recovery nudge; cancel only when recovery cannot converge |
 
 ## Context assembly (order matters)
 
@@ -51,9 +52,17 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 [current user message]
 ```
 
-Defaults: `context_window: 16384`, `reserve_for_response: 2048`. Token counting uses the **server tokenizer** (`llama.cpp /tokenize` / Ollama `/api/tokenize`, probed once at startup) via `llm.Client.CountTokens`, with a `len/4` fallback when the server has no tokenizer. Every request's tool-schema cost is accounted too (MCP servers included), so the context gauge and budget reflect the real prompt. The reserve is auto-sized as `Window/8`.
+Defaults: `context_window: 16384`, with a response reserve of 2048 tokens (or
+one eighth of the configured window in the UI). Token counting uses the
+**server tokenizer** (`llama.cpp /tokenize` / Ollama `/api/tokenize`, probed
+once at startup) via `llm.Client.CountTokens`, with a `len/4` fallback when the
+server has no tokenizer. Every request's tool-schema cost is accounted too
+(MCP servers included), so the context gauge and budget reflect the real prompt.
 
-When recent history doesn't fit, the **oldest half is summarized** (by the same local model, or a configured offloaded `summarizer:` model, with a dedicated summarization prompt) into the running summary. Before summarization, old tool outputs are collapsed to one-line `[tool output concealed; N lines hidden]` markers (kept in memory, re-pruned on resume). See `memory.md`.
+When recent history doesn't fit, old tool results are first concealed behind
+one-line markers. If that is not enough, the **oldest half** is summarized by
+the main model or an explicitly configured `summarizer:` model. See
+`memory.md`.
 
 ## Tool-call protocol
 
@@ -97,20 +106,21 @@ type Approver interface {              // implemented by ui
 }
 ```
 
-## Config knobs
+## Runtime and configuration knobs
 
 ```yaml
-agent:
-  max_iterations: 25
-context:
-  window: 16384            # capped at the server's real n_ctx when lower (P2 auto-detect)
-  reserve: 2048            # auto-sized as window/8 (llama.cpp /props n_ctx probe)
-  summary_max_tokens: 600
-  memory_max_tokens: 1000
-  index_max_tokens: 2000
+context_window: 16384       # capped at the server's real n_ctx when lower
 sampling:
-  reasoning_max_tokens: 0  # opt-in cap on thinking (the biggest 12 GB speed lever)
+  reasoning_max_tokens: 0  # opt-in cap on thinking
+vram_threshold_tps: 5      # force-prune tool output after a slow stream; 0 disables
+# summarizer:               # optional second OpenAI-compatible model for condensation
+#   server_url: http://laptop:11434
+#   model: qwen3:4b
 ```
+
+`max_iterations`, reserve size, recall budget, and completion gates are agent
+runtime settings rather than public YAML keys. The UI wires the production
+defaults; goal mode also supplies its own round limit through `--rounds`.
 
 ## What the loop must never do
 

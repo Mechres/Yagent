@@ -1,5 +1,10 @@
 # Yagent improvement roadmap
 
+> **Historical roadmap and decision log.** Entries describe the state at their
+> dated review; shipped work and rejected proposals remain for rationale. Use
+> `docs/audit-backlog.md` for the canonical remaining audit work and the design
+> docs/README for the current implementation.
+
 Consolidated, prioritized plan for post-M6 work. Status: **P0, P1, B1–B4,
 C1/C2 and the eval/benchmark expansion are all shipped** (2026-08-12 batches);
 the remaining items are C3 and the M7 gated/deferred items, both waiting on

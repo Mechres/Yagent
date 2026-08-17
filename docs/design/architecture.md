@@ -9,18 +9,20 @@
 │  ui (REPL/TUI)                                 │
 │    └─ agent (loop, context assembly, budget)   │
 │        ├─ llm    (OpenAI-compatible client)    │
-│        ├─ tools  (fs, shell, git, web, ...)    │
+│        ├─ tools  (fs, shell, git, web, MCP…)   │
 │        ├─ memory (sessions, vectors, summary)  │
-│        └─ index  (repo chunking + embeddings)  │
+│        ├─ index  (repo chunking + embeddings)  │
+│        └─ mcp/jobs/gitops (optional services)  │
 │                    │                           │
 │              internal/config                   │
 └───────────────────────┬────────────────────────┘
-                        │ HTTP, localhost only
+                        │ OpenAI-compatible HTTP
 ┌───────────────────────▼────────────────────────┐
-│ Ollama or llama.cpp llama-server               │
+│ Local Ollama / llama.cpp (default)             │
+│ or an explicitly configured cloud endpoint     │
 │   /v1/chat/completions  (chat + tool calling)  │
 │   /v1/embeddings        (nomic-embed-text)     │
-│   GPU: ROCm (HSA override) or Vulkan           │
+│   local GPU: ROCm (HSA override) or Vulkan     │
 └────────────────────────────────────────────────┘
 ```
 
@@ -33,29 +35,35 @@ The Go binary owns everything except raw inference. The server is swappable beca
 | `cmd/yagent` | flags, config wiring, subcommand dispatch | all internals |
 | `internal/config` | yaml config + defaults + env overrides | stdlib only |
 | `internal/llm` | chat completions (streaming SSE), tool-call parsing, embeddings, retry/backoff | config |
-| `internal/tools` | `Tool` interface, registry, fs/shell/git/web implementations, approval hooks | config |
+| `internal/tools` | `Tool` interface, registry, filesystem/shell/git/web/index tools, approvals and hooks | config, optional subsystems |
 | `internal/memory` | session store (SQLite), summarizer, vector memory | llm, config |
 | `internal/index` | repo walker, tree-sitter chunker, embedding store, semantic search | llm, config |
+| `internal/mcp` | stdio/HTTP Model Context Protocol client | llm types, config |
+| `internal/jobs` / `internal/gitops` | session-scoped background jobs / durable Git turn safety | stdlib |
 | `internal/agent` | the loop, context assembly, token budgeting, tool dispatch | llm, tools, memory, index |
-| `internal/ui` | REPL first, bubbletea TUI in M6 | agent |
+| `internal/ui` | shared Bubble Tea TUI and plain REPL runtime | agent |
 
 Import direction is one-way: `ui → agent → {llm, tools, memory, index} → config`. No cycles. `llm` knows nothing about tools or agents — it speaks typed request/response structs.
 
 ## Data flow (one user turn)
 
 1. **ui** receives input, hands to `agent.Run(ctx, input)`.
-2. **agent** assembles context: system prompt + tool schemas → long-term memory retrieval (memory + index) → session history (budgeted, summarized if needed) → user message.
+2. **agent** assembles one leading system message, budgeted memory/index retrieval, session history, and the current user message. It accounts for the tool-schema cost too.
 3. **llm** streams a chat completion with tool schemas. Tokens stream to **ui** live.
-4. If the response contains `tool_calls`: **agent** validates args against the schema, runs tools (read-only ones in parallel via `errgroup`-style goroutines; approvals prompted via ui), appends results, loops to 3.
-5. Loop ends on: final text response, max iterations, context cancellation, or unrecoverable error.
+4. If the response contains `tool_calls`: **agent** validates args, asks for approval when required, executes read-only calls in parallel, appends results, and loops to 3. Write verification and goal/test gates can add a deterministic follow-up before a final answer is accepted.
+5. Loop ends on a verified final response, max iterations, context cancellation, or an unrecoverable startup error.
 
 ## Persistence
 
-Everything under `~/.local/share/yagent/` (configurable):
+Global state lives under `$XDG_DATA_HOME/yagent` (falling back to
+`~/.local/share/yagent`) unless `data_dir` overrides it:
 
-- `yagent.db` — SQLite: sessions, messages, memories (schema in `memory.md`)
-- `config.yaml` — user config at `~/.config/yagent/config.yaml`
-- repo indexes live in the same DB, keyed by absolute repo path + content hash
+- `sessions.db` — SQLite: sessions, messages, global memory, and repo indexes
+- `skills/` and `pending/skills/` — global skills and staged skill writes
+- `config.yaml` — user configuration under the OS config directory
+- `.yagent/config.yaml` — optional repository overlay; `.yagent/memory/memory.db`
+  holds project memory; checkpoints, scratchpad, research reports, and playbooks
+  also live beneath `.yagent/`
 
 ## Decision log
 
@@ -63,17 +71,17 @@ Everything under `~/.local/share/yagent/` (configurable):
 |---|---|---|---|
 | D1 | External inference server (HTTP) | Embedded llama.cpp via cgo | GPU/backend wrangling (ROCm gfx1031 quirks, Vulkan) stays in the server; Go binary iterates fast; language speed is irrelevant to agent latency |
 | D2 | Go | Python, TS, Rust, C++ | Single static binary, good-enough ecosystem, fast iteration; see project discussion — agent quality is context engineering, not glue-code speed |
-| D3 | OpenAI-compatible API only | Ollama native API, per-server adapters | One client works against Ollama AND llama-server; tool calling + embeddings both covered |
+| D3 | OpenAI-compatible API | Ollama native API, per-server adapters | One client works against Ollama, llama.cpp, and user-configured cloud endpoints; tool calling + embeddings share one contract |
 | D4 | Own loop/memory/orchestration | langchaingo, other frameworks | Frameworks are built for frontier models and cloud APIs; small local models need tight control of context and tool protocols |
-| D5 | Single agent loop first | Multi-agent / planner-executor from day one | Premature orchestration is the top failure mode; add subagents (M7) only if M1–M6 prove the need |
+| D5 | One primary loop with bounded subagents | Planner/executor swarm by default | The main loop remains simple; isolated read-only subagents are available for context-heavy work when explicitly delegated |
 | D6 | SQLite (modernc.org/sqlite, pure Go) | boltDB, JSON files, external DB | One file, queryable, no cgo, covers sessions+memory+index |
-| D7 | chromem-go for vectors | sqlite-vec, faiss | Pure Go, in-memory + persistable, OpenAI-compat embedding funcs built in; revisit if it bottlenecks |
+| D7 | SQLite hybrid retrieval | chromem-go, sqlite-vec, faiss | Vectors, FTS5 keywords, importance, and recency share the existing SQLite store with no extra service or ANN dependency |
 | D8 | Qwen-family primary model | Gemma 3 | Tool-calling reliability at 7B–14B is the project's biggest risk; Qwen is measurably better at it |
-| D9 | Approval-gated destructive tools | full auto, allowlist-only | Local agent ≠ safe agent; shell/git-mutation/cross-workspace writes always ask |
+| D9 | Approval-gated destructive tools | full auto, allowlist-only | Local agent ≠ safe agent; shell and workspace writes ask unless the user explicitly enables session-level `/yolo` consent |
 
-## Non-goals (for now)
+## Non-goals
 
-- Cloud LLM providers (hard constraint, permanent)
-- Embedded inference (revisit only after the agent design stabilizes)
-- Multi-agent orchestration (M7, optional)
-- Plugin system / MCP client (revisit after M6)
+- Embedded inference or provider-specific SDKs; inference remains an external,
+  OpenAI-compatible service.
+- Unbounded autonomous swarms; subagents are deliberately isolated and scoped.
+- A hosted Yagent service or telemetry pipeline; local operation is the default.
