@@ -71,7 +71,8 @@ Build reusable core contracts before adding GUI-specific code.
    missing path/tool case. Nested `AGENTS.md`/`CLAUDE.md`/`.cursorrules` files
    are discovered on first subtree touch with containment, scanner checks,
    size caps, caching, and single-system-message injection.
-4. Add a model-facing `session_search` tool. Keep historical transcript search
+4. Extend the model-facing `session_search` tool with any needed session
+   scoping or replay metadata. It now provides bounded FTS5 transcript search,
    distinct from semantic durable memory.
 5. Improve compaction with structured summaries, protected first/last user
    anchors, and tool-call/result boundary alignment.

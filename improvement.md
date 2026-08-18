@@ -23,6 +23,10 @@ The third item is now shipped: nested `AGENTS.md`/`CLAUDE.md`/`.cursorrules`
 files are discovered on first subtree touch, cached, capped, scanner-checked,
 and injected into the existing single system message.
 
+The fourth item is now shipped: the read-only `session_search` tool exposes
+bounded FTS5 transcript search to the model without conflating it with L3
+semantic memory.
+
 Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
 ## P0 — done this pass

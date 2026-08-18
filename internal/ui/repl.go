@@ -1089,6 +1089,7 @@ func newChatEnv(ctx context.Context, cfg *config.Config, continueID, forkID stri
 	env.registry = tools.NewRegistry(ws, tools.Options{
 		Vectors:             vs,
 		ProjectVectors:      projVS,
+		SessionStore:        st,
 		SessionID:           sessionID,
 		Skills:              sk,
 		Index:               idx,
@@ -1137,6 +1138,7 @@ func newAgent(client *llm.Client, cfg *config.Config, env *chatEnv, approver age
 			Index:          env.idx,
 			Vectors:        env.vs,
 			ProjectVectors: env.projVS,
+			SessionStore:   env.st,
 			Skills:         env.sk,
 		})
 		if len(toolset) > 0 {

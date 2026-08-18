@@ -90,7 +90,9 @@ type Options struct {
 	// ProjectVectors is a repo-shared store the tools also search/write.
 	Vectors        *memory.VectorStore
 	ProjectVectors *memory.VectorStore
-	SessionID      string
+	// SessionStore enables model-facing historical transcript search.
+	SessionStore *memory.Store
+	SessionID    string
 	// Skills enables the skills tools (may be nil).
 	Skills *skills.Store
 	// Index enables the codebase-index tools (may be nil).
@@ -184,6 +186,9 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"git_log":               &gitLogTool{ws: r.workspace},
 		"memory_save":           &memorySaveTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors, sessionID: opts.SessionID},
 		"memory_search":         &memorySearchTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors},
+	}
+	if opts.SessionStore != nil {
+		reg["session_search"] = &sessionSearchTool{store: opts.SessionStore}
 	}
 	if opts.Skills != nil {
 		reg["skills_list"] = &skillsListTool{store: opts.Skills}

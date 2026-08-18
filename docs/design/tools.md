@@ -63,6 +63,7 @@ existing single system message; it is never sent as a separate system role.
 |---|---|---|---|
 | `memory_save` | M3 | Write | store a fact/decision/preference (see `memory.md`) |
 | `memory_search` | M3 | RO | semantic search over long-term memory |
+| `session_search` | v0.1.x | RO | FTS5 search over historical transcript messages; returns bounded snippets and session ids, distinct from durable semantic memory |
 | `index_repo` | M4 | Write | (re)index the workspace incrementally; unchanged files are skipped |
 | `index_search` | M4 | RO | semantic code search; returns `path:start-end` + snippet |
 | `web_search` | M5 | RO | DuckDuckGo HTML by default (`html.duckduckgo.com/html/?q=`; no key, unofficial scraping — structure can change, rate-limits); Mojeek (`www.mojeek.com/search?q=`, independent index, may serve a JS challenge from datacenter IPs) or SearXNG JSON (`format: json` in settings.yml) via `web_search.provider`; hosted **LangSearch** (`web_search.provider: langsearch` + `web_search.langsearch_api_key`, free key from langsearch.com) joins the fallback chain when a key is set; top-8 results: title, url, snippet. A `queries` array (up to 8) runs the searches concurrently in one call (v0.1.80). Results cached per session (10 min TTL, 64 entries) |

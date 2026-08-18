@@ -58,7 +58,7 @@ func (r *Registry) ResearchProfile() (*Registry, error) {
 		"git_status", "git_diff", "git_log",
 		"index_search", "code_outline", "code_slice", "code_topology", "code_references", "code_impact", "code_unused",
 		"web_search", "web_fetch", "paper_search",
-		"memory_save", "memory_search", "research_note", "scratch_read",
+		"memory_save", "memory_search", "session_search", "research_note", "scratch_read",
 		"fs_write",
 	}
 	nr, err := r.Restrict(allowed)
