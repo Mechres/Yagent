@@ -104,3 +104,8 @@ session search, structured boundary-safe compaction, bounded always-on memory,
 skill bundles, and recoverable skill lifecycle maintenance. These are tracked
 in `improvement.md`; the Hermes gateway, remote backends, and Python plugin
 surface are explicitly outside Yagent's scope.
+
+Tool execution now emits a neutral `tools.ToolOutcome` event alongside the
+existing model-facing string result. This keeps presentation semantics at the
+core boundary: terminal, diff, read/search, web, approval, and failure clients
+can render the same event without depending on Bubble Tea or REPL formatting.

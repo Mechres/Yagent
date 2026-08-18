@@ -63,9 +63,10 @@ Build reusable core contracts before adding GUI-specific code.
    presentation metadata. Research mode now allows web/paper search, web
    fetch, read/search tools, memory, and markdown report writes under
    `.yagent/research/`; it denies shell, source writes, git mutation, and MCP.
-2. Add neutral structured tool outcomes and presentation metadata so a GUI can
-   render terminal, diff, read, search, web, approval, and failure cards without
-   parsing TUI strings.
+2. Extend the neutral `tools.ToolOutcome` contract into persisted session
+   events when the GUI work begins. Dispatch now emits status/risk/timing and
+   presentation metadata for terminal, diff, read, search, web, approval, and
+   failure cards without requiring TUI-string parsing.
 3. Add progressive nested project instructions. Discover a relevant
    `AGENTS.md`/`CLAUDE.md` when a tool first touches a subdirectory, with path
    scanning, size caps, caching, and prompt-injection protection.

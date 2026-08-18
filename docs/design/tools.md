@@ -17,6 +17,13 @@ local toolchain is missing; they reappear after a successful scaffold write.
 
 The UI implements `Approver`; prompts show a mutation-specific summary plus the command or filesystem diff and wait for y/n. Multi-hunk `fs_patch` review supports individual decisions, `a` to accept all remaining hunks, and `x` to reject them. A denied call returns `error: user denied this action` as the tool result so the model can adapt. The TUI also records an inspectable `/tools` timeline with arguments, result, and elapsed time; its compact transcript rows never echo successful tool output.
 
+Every dispatch also has a UI-neutral `tools.ToolOutcome` projection: call ID,
+tool name, risk, status, elapsed time, model-visible result, and semantic
+presentation metadata (`read`, `search`, `web`, `terminal`, `diff`,
+`approval`, or `memory`). The legacy string callbacks remain available for
+the REPL/TUI, while GUI clients can consume the structured event without
+parsing terminal text.
+
 ## Core tool registry
 
 | Name | Risk | Args (JSON schema) | Notes |

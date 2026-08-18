@@ -229,6 +229,9 @@ type Config struct {
 	// OnToolResult is called after a tool that was actually started finishes.
 	// It receives the model-visible result and elapsed execution time. Optional.
 	OnToolResult func(llm.ToolCall, string, time.Duration)
+	// OnToolOutcome receives a UI-neutral structured outcome for every tool
+	// call, including denied, skipped, and unknown calls. Optional.
+	OnToolOutcome func(tools.ToolOutcome)
 
 	// Window and Reserve bound the context budget (tokens, heuristic len/4).
 	Window  int
@@ -3724,9 +3727,28 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	name := call.Function.Name
 	var started time.Time
 	startedTool := false
+	risk := tools.RiskReadOnly
 	defer func() {
+		elapsed := time.Duration(0)
+		if startedTool {
+			elapsed = time.Since(started)
+		}
 		if startedTool && a.cfg.OnToolResult != nil {
-			a.cfg.OnToolResult(call, result, time.Since(started))
+			a.cfg.OnToolResult(call, result, elapsed)
+		}
+		if a.cfg.OnToolOutcome != nil {
+			status := tools.OutcomeSkipped
+			if startedTool {
+				status = tools.OutcomeSucceeded
+				if strings.HasPrefix(result, "error:") {
+					status = tools.OutcomeFailed
+				}
+			} else if strings.Contains(result, "user denied") || strings.Contains(result, "approval failed") {
+				status = tools.OutcomeDenied
+			} else if strings.HasPrefix(result, "error:") {
+				status = tools.OutcomeFailed
+			}
+			a.cfg.OnToolOutcome(tools.NewToolOutcome(call, risk, status, result, elapsed))
 		}
 	}()
 
@@ -3734,6 +3756,7 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	if !ok {
 		return fmt.Sprintf("error: unknown tool %q, available: %s", name, strings.Join(a.registry.Names(), ", "))
 	}
+	risk = tool.Risk()
 	if blocked[name] {
 		return fmt.Sprintf("error: tool %q is blocked for this turn (repeated validation failures)", name)
 	}

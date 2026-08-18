@@ -15,6 +15,10 @@ reproducibility, and tool-result contracts.
 The first deferred item is now in progress: research mode has a restricted
 tool profile and a report writer confined to `.yagent/research/*.md`.
 
+The second item is now in progress: dispatch emits `tools.ToolOutcome` with
+stable status/risk/timing fields and UI-neutral presentation metadata while
+retaining the legacy callbacks.
+
 Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
 ## P0 — done this pass
