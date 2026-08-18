@@ -12,6 +12,9 @@ on evidence that the current design is the bottleneck. The 2026-08-18 DeepSeek
 Harness review adds a separate, evidence-gated queue for replay, request
 reproducibility, and tool-result contracts.
 
+The first deferred item is now in progress: research mode has a restricted
+tool profile and a report writer confined to `.yagent/research/*.md`.
+
 Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
 ## P0 — done this pass

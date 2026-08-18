@@ -840,6 +840,19 @@ func grillClarifyAllowed(calls int) bool {
 	return calls < grill.MaxQuestions
 }
 
+func researchMutationAllowed(name string, args json.RawMessage, workspace string) bool {
+	if name == "memory_save" {
+		return true
+	}
+	if name != "fs_write" {
+		return false
+	}
+	var v struct {
+		Path string `json:"path"`
+	}
+	return json.Unmarshal(args, &v) == nil && tools.ResearchReportPathAllowed(workspace, v.Path)
+}
+
 // SetSessionID switches the session that new messages persist to.
 func (a *Agent) SetSessionID(id string) {
 	a.mu.Lock()
@@ -1623,11 +1636,16 @@ func (a *Agent) RunResearch(ctx context.Context, topic string, maxRounds int, on
 		maxRounds = DefaultGoalRounds
 	}
 	a.mu.Lock()
+	previousRegistry := a.registry
+	if restricted, err := previousRegistry.ResearchProfile(); err == nil {
+		a.registry = restricted
+	}
 	a.researchMode = true
 	a.goalMode = true // the ROOT GOAL anchor keeps the topic pinned in TASK STATE
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()
+		a.registry = previousRegistry
 		a.researchMode = false
 		a.goalMode = false
 		a.mu.Unlock()
@@ -3732,9 +3750,13 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	}
 	a.mu.RLock()
 	grilling := a.grillMode
+	researching := a.researchMode
 	a.mu.RUnlock()
 	if grilling && tool.Risk() != tools.RiskReadOnly && !grillMutationAllowed(name, call.Function.Arguments) {
 		return fmt.Sprintf("error: grill-with-docs permits writes only to CONTEXT.md and docs/adr/*.md; tool %q was not executed", name)
+	}
+	if researching && tool.Risk() != tools.RiskReadOnly && !researchMutationAllowed(name, call.Function.Arguments, a.workspace) {
+		return fmt.Sprintf("error: research mode permits memory_save and markdown report writes only under .yagent/research/; tool %q was not executed", name)
 	}
 	if grilling && name == "clarify" {
 		a.mu.Lock()

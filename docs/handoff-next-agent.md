@@ -59,10 +59,10 @@ Build reusable core contracts before adding GUI-specific code.
 
 ### Do Before GUI
 
-1. Make research mode a first-class restricted tool profile. It should allow
-   web/paper search, web fetch, read/search tools, memory, and report writes
-   under `.yagent/research/`; it should deny shell, source writes, git mutation,
-   and arbitrary MCP writes.
+1. Extend the research profile with any missing deterministic coverage or
+   presentation metadata. Research mode now allows web/paper search, web
+   fetch, read/search tools, memory, and markdown report writes under
+   `.yagent/research/`; it denies shell, source writes, git mutation, and MCP.
 2. Add neutral structured tool outcomes and presentation metadata so a GUI can
    render terminal, diff, read, search, web, approval, and failure cards without
    parsing TUI strings.

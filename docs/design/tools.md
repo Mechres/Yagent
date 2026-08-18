@@ -58,6 +58,17 @@ outside the workspace.
 | `consult` | M6.13 | RO | ask a configured advisor for guidance or a second opinion; it can use another OpenAI-compatible server or an installed terminal AI app |
 | `<server>_<tool>` | M7 | Write by default | an MCP-advertised tool; only names in that server's `read_only_tools` allowlist skip approval |
 
+### Research profile
+
+`--research` and `/research` temporarily replace the normal registry with a
+restricted profile. It exposes web/paper search and fetch, filesystem
+read/search, read-only code/git inspection, memory, `research_note`, and
+`scratch_read`. The only workspace mutation is `fs_write` for `.md` files under
+`.yagent/research/`; shell, source edits, git mutations, jobs, subagents, and
+MCP tools are unavailable. Dispatch enforces the same boundary even if the
+model emits a tool call whose schema was not offered. The original registry is
+restored when the research workflow ends.
+
 ## Execution rules
 
 1. **Validate args** into a typed struct per tool. Missing/invalid → error tool result, model retries (max 3).

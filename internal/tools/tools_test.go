@@ -39,3 +39,41 @@ func TestOffloadResult(t *testing.T) {
 		t.Errorf("small output should pass through: %q", got)
 	}
 }
+
+func TestResearchReportPathAllowed(t *testing.T) {
+	ws := "/tmp/workspace"
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{".yagent/research/report.md", true},
+		{".yagent/research/nested/report.md", true},
+		{".yagent/research/report.txt", false},
+		{"main.go", false},
+		{".yagent/research/../config.yaml", false},
+		{"../outside.md", false},
+		{"/tmp/workspace/.yagent/research/report.md", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResearchReportPathAllowed(ws, tt.name); got != tt.want {
+				t.Fatalf("ResearchReportPathAllowed(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResearchProfileScopesTools(t *testing.T) {
+	profile, err := NewRegistry(t.TempDir(), Options{}).ResearchProfile()
+	if err != nil {
+		t.Fatalf("ResearchProfile: %v", err)
+	}
+	for _, name := range []string{"shell_exec", "fs_edit", "fs_patch", "subagent"} {
+		if _, ok := profile.Get(name); ok {
+			t.Fatalf("research profile exposes %s", name)
+		}
+	}
+	if _, ok := profile.Get("fs_write"); !ok {
+		t.Fatal("research profile must expose report writer")
+	}
+}
