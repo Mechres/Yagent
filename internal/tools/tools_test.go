@@ -8,6 +8,7 @@ import (
 )
 
 func TestOffloadResult(t *testing.T) {
+	before := CompressionStats()
 	ws := t.TempDir()
 	big := strings.Repeat("line of output\n", 100)
 	got := offloadResult(ws, big, 100)
@@ -23,6 +24,10 @@ func TestOffloadResult(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(ws, ".yagent", "scratch", files[0].Name()))
 	if string(data) != big {
 		t.Errorf("scratch file content mismatch (len %d vs %d)", len(data), len(big))
+	}
+	after := CompressionStats()
+	if after.Offloaded <= before.Offloaded || after.OriginalBytes <= before.OriginalBytes {
+		t.Fatalf("compression metrics did not record offload: before=%+v after=%+v", before, after)
 	}
 	// the return shows the head lines (capped at maxBytes), not the tail
 	if !strings.HasPrefix(got, "line of output") {

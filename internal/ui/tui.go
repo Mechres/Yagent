@@ -139,7 +139,7 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 				}
 				incoming <- turnDoneMsg{answer: answer, err: err, seq: req.seq}
 			case req := <-workflowCh:
-				// Long-running autonomous commands run off the update thread so
+				// Long-running or interactive workflows run off the update thread so
 				// the TUI keeps streaming/rendering. The agent's OnToken/etc.
 				// callbacks push into `incoming`, which the update loop drains.
 				env.undo.StartTurn()
@@ -155,6 +155,10 @@ func RunTUI(ctx context.Context, client *llm.Client, cfg *config.Config, continu
 					answer, err = ag.RunResearch(req.ctx, req.arg, 0, func(r int, _ string) {
 						incoming <- progressMsg{text: fmt.Sprintf("research round %d", r)}
 					})
+				case "grill":
+					answer, err = ag.RunGrill(req.ctx, req.arg)
+				case "handoff":
+					answer, err = ag.RunHandoff(req.ctx)
 				default:
 					err = fmt.Errorf("unknown workflow %q", req.kind)
 				}
@@ -281,10 +285,9 @@ type turnRequest struct {
 	seq  int
 }
 
-// workflowRequest carries a long-running autonomous command (/goal, /research,
-// /playbook) to the runner goroutine, so it streams like a normal turn instead
-// of blocking the TUI's update loop. kind is "goal" or "research"; arg is the
-// goal text or topic.
+// workflowRequest carries an autonomous or interactive workflow (/goal,
+// /research, /grill-with-docs) to the runner goroutine, so it streams like a
+// normal turn instead of blocking the TUI's update loop.
 type workflowRequest struct {
 	kind string
 	arg  string
@@ -1768,6 +1771,11 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 			m.append(note)
 		}
 		return m, m.nextCmd()
+	case "/stats":
+		m.msgInput.Reset()
+		s := tools.CompressionStats()
+		m.append(fmt.Sprintf("compression: %d offloaded, %d compressed, %d -> %d bytes", s.Offloaded, s.Compressed, s.OriginalBytes, s.PreviewBytes))
+		return m, m.nextCmd()
 	}
 	if strings.HasPrefix(text, "/") {
 		m.msgInput.Reset()
@@ -1792,6 +1800,19 @@ func (m *tuiModel) submitLine() (tea.Model, tea.Cmd) {
 			}
 			m.activeWorkflow = "research: " + shorten(topic, 20)
 			return m.startWorkflow("research", topic)
+		}
+		if strings.HasPrefix(text, "/grill-with-docs ") {
+			topic := strings.TrimSpace(strings.TrimPrefix(text, "/grill-with-docs"))
+			if topic == "" {
+				m.append("usage: /grill-with-docs <topic>")
+				return m, m.nextCmd()
+			}
+			m.activeWorkflow = "grill: " + shorten(topic, 20)
+			return m.startWorkflow("grill", topic)
+		}
+		if text == "/handoff" {
+			m.activeWorkflow = "handoff: plan"
+			return m.startWorkflow("handoff", "")
 		}
 		if strings.HasPrefix(text, "/sessions ") {
 			m.sessionsFilter = strings.TrimSpace(strings.TrimPrefix(text, "/sessions"))
@@ -2284,10 +2305,13 @@ func (m *tuiModel) helpView() string {
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/skills"), descStyle.Render("Procedural skills manager")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/goal <desc>"), descStyle.Render("Autonomous goal loop")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/research <topic>"), descStyle.Render("Autonomous research workflow (cited report)")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/grill-with-docs <topic>"), descStyle.Render("Interview and record glossary/ADRs")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/handoff"), descStyle.Render("Turn the interview into an approved plan")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/steer <text>"), descStyle.Render("Pin a course-correction into TASK STATE")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/undo [list|<N>]"), descStyle.Render("Revert previous file changes")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/retry"), descStyle.Render("Retry with stable sampling")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/compact"), descStyle.Render("Condense conversation ledger")),
+		fmt.Sprintf("  %-16s %s", keyStyle.Render("/stats"), descStyle.Render("Show recoverable output compression")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/yolo [on|off]"), descStyle.Render("Toggle auto-approval mode")),
 		fmt.Sprintf("  %-16s %s", keyStyle.Render("/clear"), descStyle.Render("Reset transcript history")),
 	}
@@ -3280,7 +3304,7 @@ func (m *tuiModel) thinkingBlock() string {
 // the names of all saved skills (so "/<skill>" completes too).
 func (m *tuiModel) slashCommands() []string {
 	cmds := []string{
-		"/exit", "/clear", "/compact", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/research <topic>", "/steer <text>", "/settings", "/set <key> <value>", "/model", "/key",
+		"/exit", "/clear", "/compact", "/stats", "/help", "/retry", "/export [file]", "/yolo", "/goal <what>", "/research <topic>", "/grill-with-docs <topic>", "/steer <text>", "/settings", "/set <key> <value>", "/model", "/key",
 		"/undo", "/undo list", "/undo <N>", "/diff", "/plan", "/tools", "/workspace", "/sessions", "/sessions <query>", "/checkpoint", "/checkpoint save <name>", "/checkpoint restore <name>", "/checkpoint delete <name>",
 		"/playbook", "/mouse",
 		"/skills", "/skills list", "/skills pending", "/skills diff <id>",

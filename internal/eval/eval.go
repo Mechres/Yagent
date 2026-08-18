@@ -57,6 +57,10 @@ type Task struct {
 	// the research gate refuses DONE until a cited report exists under
 	// .yagent/research/. Takes precedence over Input/Inputs and Goal.
 	Research string `yaml:"research"`
+	// Grill runs the clarification/documentation workflow. GrillAnswers supplies
+	// deterministic responses to clarify calls in the offline harness.
+	Grill        string   `yaml:"grill"`
+	GrillAnswers []string `yaml:"grill_answers"`
 	// Subagent wires the subagent tool to a child agent (M7).
 	Subagent bool `yaml:"subagent"`
 	// Jobs enables the background-process tools (shell_bg / shell_logs /
@@ -232,6 +236,21 @@ func Run(t *testing.T, task Task) {
 	if task.Jobs {
 		opts.Jobs = jobs.New()
 	}
+	if task.Grill != "" {
+		answers := append([]string(nil), task.GrillAnswers...)
+		answerIdx := 0
+		opts.AskUser = func(ctx context.Context, _ string, choices []string) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			if answerIdx >= len(answers) {
+				return "(no answer)", nil
+			}
+			answer := answers[answerIdx]
+			answerIdx++
+			return answer, nil
+		}
+	}
 
 	reg := tools.NewRegistry(ws, opts)
 	client := llm.NewClient(llmServer.URL, "test-model")
@@ -297,6 +316,11 @@ func Run(t *testing.T, task Task) {
 		answer, err = a.RunGoal(context.Background(), task.Goal, task.Rounds, nil)
 		if err != nil {
 			t.Fatalf("RunGoal: %v", err)
+		}
+	} else if task.Grill != "" {
+		answer, err = a.RunGrill(context.Background(), task.Grill)
+		if err != nil {
+			t.Fatalf("RunGrill: %v", err)
 		}
 	} else {
 		for _, in := range inputs {

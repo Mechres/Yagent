@@ -16,6 +16,7 @@ import (
 type mcpTool struct {
 	client   *mcp.Client
 	tool     mcp.Tool
+	ws       string
 	readOnly bool // true only when the server config allowlists this tool name
 }
 
@@ -63,7 +64,7 @@ func (t *mcpTool) Execute(ctx context.Context, raw json.RawMessage) (string, err
 	if err != nil {
 		return fmt.Sprintf("error: %s [class=mcp_error retryable=false]", err), nil
 	}
-	return capResult(out, maxResultBytes), nil
+	return offloadResult(t.ws, out, maxResultBytes), nil
 }
 
 // convertSchema translates an MCP JSON Schema object into our {properties,

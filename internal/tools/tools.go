@@ -199,7 +199,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 	}
 	if opts.Web != nil {
 		reg["web_search"] = &webSearchTool{client: opts.Web}
-		reg["web_fetch"] = &webFetchTool{client: opts.Web}
+		reg["web_fetch"] = &webFetchTool{client: opts.Web, ws: r.workspace}
 		if opts.Papers {
 			reg["paper_search"] = &paperSearchTool{client: opts.Web}
 		}
@@ -231,6 +231,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 			reg[mcpToolName(client.Name(), t.Name)] = &mcpTool{
 				client:   client,
 				tool:     t,
+				ws:       r.workspace,
 				readOnly: client.IsReadOnlyTool(t.Name),
 			}
 		}
@@ -920,16 +921,25 @@ func offloadResult(ws, s string, maxBytes int) string {
 	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
 		return capResult(s, maxBytes)
 	}
-	lines := strings.Split(s, "\n")
-	keep := lines
-	if len(keep) > 15 {
-		keep = keep[:15]
+	preview, compressed := compressPreview(s)
+	if !compressed {
+		lines := strings.Split(s, "\n")
+		keep := lines
+		if len(keep) > 15 {
+			keep = keep[:15]
+		}
+		preview = strings.Join(keep, "\n")
 	}
-	head := strings.Join(keep, "\n")
+	head := preview
 	if len(head) > maxBytes {
 		head = head[:maxBytes]
 	}
-	return head + fmt.Sprintf("\n\n[full output (%d bytes) saved to .yagent/scratch/%s — use fs_read on that file with offset/limit to inspect the rest]", len(s), name)
+	recordCompression(len(s), len(head), compressed)
+	label := "top of output"
+	if compressed {
+		label = "lossy compressed preview"
+	}
+	return head + fmt.Sprintf("\n\n[%s; full output (%d bytes) saved to .yagent/scratch/%s — use fs_read on that file with offset/limit to inspect the rest]", label, len(s), name)
 }
 
 // maxDistinctErrors is how many distinct root causes the cascade summarizer

@@ -38,6 +38,28 @@ func writeFile(t *testing.T, ws, path, content string) {
 	}
 }
 
+func TestDocumentationArtifactPreflight(t *testing.T) {
+	_, reg := fakeWorkspace(t)
+	bad := execTool(t, reg, "fs_write", map[string]any{
+		"path": "CONTEXT.md", "content": "# Glossary\nno term heading",
+	})
+	if !strings.Contains(bad, "documentation artifact validation") {
+		t.Fatalf("bad CONTEXT write = %q", bad)
+	}
+	good := execTool(t, reg, "fs_write", map[string]any{
+		"path": "CONTEXT.md", "content": "# Glossary\n\n## Widget\nA project term.",
+	})
+	if !strings.Contains(good, "wrote CONTEXT.md") {
+		t.Fatalf("good CONTEXT write = %q", good)
+	}
+	adr := execTool(t, reg, "fs_write", map[string]any{
+		"path": "docs/adr/0001-widget.md", "content": "# Widget\n\n## Status\nAccepted\n## Context\nNeed\n## Decision\nUse it\n## Consequences\nTrade-off",
+	})
+	if !strings.Contains(adr, "wrote docs/adr/0001-widget.md") {
+		t.Fatalf("good ADR write = %q", adr)
+	}
+}
+
 func execTool(t *testing.T, reg *Registry, name string, args any) string {
 	t.Helper()
 	tool, ok := reg.Get(name)

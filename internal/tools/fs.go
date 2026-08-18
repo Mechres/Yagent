@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Mechres/Yagent/internal/grill"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/undo"
 )
@@ -326,6 +327,9 @@ func (t *fsWriteTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if msg := preflightPlaceholders(a.Path, a.Content); msg != "" {
 		return "error: " + msg, nil
 	}
+	if docErr := grill.ValidateArtifact(a.Path, a.Content); docErr != nil {
+		return "error: documentation artifact validation: " + docErr.Error(), nil
+	}
 	// Record the undo entry only after preflight passes: a rejected write
 	// never touched disk, so it must not leave a phantom undo entry (finding
 	// #5, 2026-08-13 — /undo would "revert" a write that never happened and
@@ -425,6 +429,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 			if msg := preflightSymbols(a.Path, old, newContent); msg != "" {
 				return "error: " + msg, nil
 			}
+			if docErr := grill.ValidateArtifact(a.Path, newContent); docErr != nil {
+				return "error: documentation artifact validation: " + docErr.Error(), nil
+			}
 			if t.undo != nil {
 				t.undo.Record(path, data)
 			}
@@ -448,6 +455,9 @@ func (t *fsEditTool) Execute(ctx context.Context, raw json.RawMessage) (string, 
 	}
 	if msg := preflightSymbols(a.Path, old, newContent); msg != "" {
 		return "error: " + msg, nil
+	}
+	if docErr := grill.ValidateArtifact(a.Path, newContent); docErr != nil {
+		return "error: documentation artifact validation: " + docErr.Error(), nil
 	}
 	if t.undo != nil {
 		t.undo.Record(path, data)

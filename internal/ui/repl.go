@@ -395,7 +395,7 @@ func RunChat(ctx context.Context, client *llm.Client, cfg *config.Config, contin
 			}
 			continue
 		case "/help":
-			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /plan /goal <what> /research <topic> /steer <text> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
+			fmt.Fprintln(w, "commands: /exit /clear /compact /help /yolo /retry /export [file] /settings /set /model /key /diff /stats /plan /goal <what> /research <topic> /grill-with-docs <topic> /handoff /steer <text> /checkpoint /playbook /sessions /undo [list|<N>] /skills list|pending|diff|verify|approve|reject|approval /skill-name")
 			continue
 		case "/steer":
 			text := strings.TrimSpace(strings.TrimPrefix(line, "/steer"))
@@ -1269,6 +1269,12 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 			return true, fmt.Errorf("usage: /research <topic> — runs an autonomous research workflow (parallel searches, fetches, cross-checked findings) and writes a cited report to .yagent/research/")
 		}
 		return h.runResearch(ag, strings.TrimSpace(strings.TrimPrefix(rest, "research")))
+	case rest == "grill-with-docs" || strings.HasPrefix(rest, "grill-with-docs "):
+		return h.runGrill(ag, strings.TrimSpace(strings.TrimPrefix(rest, "grill-with-docs")))
+	case rest == "handoff":
+		return h.runHandoff(ag)
+	case rest == "stats":
+		return h.showCompressionStats()
 	case rest == "settings" || strings.HasPrefix(rest, "set "):
 		if rest == "settings" {
 			return h.showSettings()
@@ -2041,6 +2047,45 @@ func (h *skillsHandler) runResearch(ag *agent.Agent, topic string) (bool, error)
 	} else {
 		fmt.Fprintf(h.w, "\nresearch complete.\n")
 	}
+	return true, nil
+}
+
+// runGrill conducts a bounded clarification/documentation pass. Unlike goal
+// mode it is one normal agent turn, so the user can continue the interview or
+// hand off to /plan immediately afterward.
+func (h *skillsHandler) runGrill(ag *agent.Agent, topic string) (bool, error) {
+	if strings.TrimSpace(topic) == "" {
+		return true, fmt.Errorf("usage: /grill-with-docs <topic>")
+	}
+	fmt.Fprintf(h.w, "grill-with-docs — clarifying: %s\n", topic)
+	h.env.undo.StartTurn()
+	_, err := ag.RunGrill(h.ctx, topic)
+	h.env.undo.EndTurn()
+	h.env.turnSeq++
+	if ws, werr := os.Getwd(); werr == nil {
+		h.env.commitTurn(ws, fmt.Sprintf("grill: %s", topic))
+	}
+	if err != nil {
+		fmt.Fprintf(h.w, "\ngrill: %v\n", err)
+	}
+	return true, nil
+}
+
+func (h *skillsHandler) runHandoff(ag *agent.Agent) (bool, error) {
+	fmt.Fprintln(h.w, "handoff — converting the discussion into an approved implementation plan")
+	h.env.undo.StartTurn()
+	_, err := ag.RunHandoff(h.ctx)
+	h.env.undo.EndTurn()
+	h.env.turnSeq++
+	if ws, werr := os.Getwd(); werr == nil {
+		h.env.commitTurn(ws, "handoff: implementation plan")
+	}
+	return true, err
+}
+
+func (h *skillsHandler) showCompressionStats() (bool, error) {
+	s := tools.CompressionStats()
+	fmt.Fprintf(h.w, "compression: %d offloaded, %d compressed, %d -> %d bytes\n", s.Offloaded, s.Compressed, s.OriginalBytes, s.PreviewBytes)
 	return true, nil
 }
 

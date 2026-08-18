@@ -1,0 +1,27 @@
+name: grill-with-docs
+description: grill interviews once, writes only durable docs, and re-reads the changed artifact
+grill: add a cache to the repository
+grill_answers:
+  - "Use an in-memory cache with a short TTL."
+steps:
+  - tool_call:
+      name: fs_read
+      args: '{"path":"CONTEXT.md"}'
+  - tool_call:
+      name: clarify
+      args: '{"question":"Which cache behavior should be documented?","choices":["in-memory with TTL","persistent cache"]}'
+  - tool_call:
+      name: fs_write
+      args: '{"path":"CONTEXT.md","content":"# Glossary\n\n## Cache\nAn in-memory cache with a short TTL."}'
+  - tool_call:
+      name: fs_read
+      args: '{"path":"CONTEXT.md"}'
+  - answer: "Settled vocabulary: Cache. Decision: use an in-memory cache with a short TTL. Next: /handoff."
+assert:
+  requests_contain:
+    - GRILL-WITH-DOCS MODE
+  tool_results_contain:
+    - "user answered: Use an in-memory cache with a short TTL."
+  file_contains:
+    - path: CONTEXT.md
+      text: "## Cache"

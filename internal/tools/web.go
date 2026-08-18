@@ -110,6 +110,7 @@ func headerPrefix(header string) string {
 
 type webFetchTool struct {
 	client *web.Client
+	ws     string
 }
 
 type webFetchArgs struct {
@@ -150,7 +151,7 @@ func (t *webFetchTool) Execute(ctx context.Context, raw json.RawMessage) (string
 	}
 	wrapped := WrapUntrusted(a.URL, text)
 	if t.client.CacheHits() > hitsBefore {
-		return "[cached page]\n" + wrapped, nil
+		return "[cached page]\n" + offloadResult(t.ws, wrapped, maxResultBytes), nil
 	}
-	return wrapped, nil
+	return offloadResult(t.ws, wrapped, maxResultBytes), nil
 }

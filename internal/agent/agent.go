@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/Mechres/Yagent/internal/capsule"
+	"github.com/Mechres/Yagent/internal/grill"
 	"github.com/Mechres/Yagent/internal/index"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
@@ -519,6 +520,10 @@ type Agent struct {
 	// message and keeps web tools offered so the loop behaves as a research
 	// workflow rather than an open-ended chat.
 	researchMode bool
+	// grillMode suppresses end-of-turn skill distillation while the user is
+	// conducting a clarification/documentation pass.
+	grillMode         bool
+	grillClarifyCalls int
 	// planMode, when true, restricts the offered tools to read-only ones plus
 	// plan/consult (Hermes P0: explore-then-edit). The plan tool's approval
 	// flips it off, letting the model start editing. Set via SetPlanMode.
@@ -809,6 +814,30 @@ func (a *Agent) SetPlanMode(on bool) {
 	a.mu.Lock()
 	a.planMode = on
 	a.mu.Unlock()
+}
+
+// grillMutationAllowed keeps the documentation interview from becoming an
+// accidental implementation turn. Only the two markdown artifact paths may be
+// changed, and only through the ordinary filesystem tools.
+func grillMutationAllowed(name string, args json.RawMessage) bool {
+	if name != "fs_write" && name != "fs_edit" {
+		return false
+	}
+	var v struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(args, &v) != nil {
+		return false
+	}
+	p := filepath.ToSlash(filepath.Clean(strings.TrimSpace(v.Path)))
+	if p == "." || strings.HasPrefix(p, "../") || filepath.IsAbs(v.Path) {
+		return false
+	}
+	return p == "CONTEXT.md" || (strings.HasPrefix(p, "docs/adr/") && strings.HasSuffix(p, ".md"))
+}
+
+func grillClarifyAllowed(calls int) bool {
+	return calls < grill.MaxQuestions
 }
 
 // SetSessionID switches the session that new messages persist to.
@@ -1289,14 +1318,65 @@ func (a *Agent) Finish(ctx context.Context) error {
 // /skill-name) that is folded into the single leading system message on the
 // next request. It is never persisted and does not disturb conversation order.
 func (a *Agent) InjectSystem(content string) {
+	_ = a.InjectSystemScoped(content)
+}
+
+// InjectSystemScoped records a system chunk and returns a cleanup function.
+// Skills use the persistent InjectSystem API; temporary workflows such as
+// grill use this form so their rules cannot leak into later turns.
+func (a *Agent) InjectSystemScoped(content string) func() {
 	if content == "" {
-		return
+		return func() {}
 	}
 	tokens := a.tokensFor(shortCtx(), content)
 	a.mu.Lock()
 	a.injected = append(a.injected, content)
 	a.injectedTokens = append(a.injectedTokens, tokens)
 	a.mu.Unlock()
+	return func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		for i := len(a.injected) - 1; i >= 0; i-- {
+			if a.injected[i] != content {
+				continue
+			}
+			a.injected = append(a.injected[:i], a.injected[i+1:]...)
+			a.injectedTokens = append(a.injectedTokens[:i], a.injectedTokens[i+1:]...)
+			break
+		}
+	}
+}
+
+// RunGrill starts a user-invoked grill-with-docs interview. The prompt is
+// injected rather than persisted as a user message, so the session contains
+// the actual topic and answers, not implementation machinery.
+func (a *Agent) RunGrill(ctx context.Context, topic string) (string, error) {
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return "", fmt.Errorf("grill topic is required")
+	}
+	cleanup := a.InjectSystemScoped(grill.Prompt(topic))
+	defer cleanup()
+	a.mu.Lock()
+	a.grillMode = true
+	a.grillClarifyCalls = 0
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.grillMode = false
+		a.mu.Unlock()
+	}()
+	return a.Run(ctx, grill.Opening(topic))
+}
+
+// RunHandoff turns the current grill conversation into an approved plan. It
+// starts plan mode before the model sees the handoff request, so a model cannot
+// skip the approval gate and begin implementation.
+func (a *Agent) RunHandoff(ctx context.Context) (string, error) {
+	cleanup := a.InjectSystemScoped(grill.HandoffPrompt())
+	defer cleanup()
+	a.SetPlanMode(true)
+	return a.Run(ctx, "Hand off the settled discussion to implementation planning now.")
 }
 
 // maybeOfferSkillCreation gates the end-of-turn opportunity on trigger size
@@ -1311,7 +1391,7 @@ func (a *Agent) maybeOfferSkillCreation(ctx context.Context, turnCalls int) erro
 		return nil
 	}
 	a.mu.RLock()
-	autonomous := a.goalMode || a.researchMode
+	autonomous := a.goalMode || a.researchMode || a.grillMode
 	a.mu.RUnlock()
 	if autonomous {
 		return nil
@@ -3649,6 +3729,21 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 	a.mu.RUnlock()
 	if plan && tool.Risk() != tools.RiskReadOnly && name != "plan" {
 		return fmt.Sprintf("error: read-only plan mode is on; tool %q requires approval. Call the plan tool with your proposed changes (approving it flips plan mode off and lets you edit).", name)
+	}
+	a.mu.RLock()
+	grilling := a.grillMode
+	a.mu.RUnlock()
+	if grilling && tool.Risk() != tools.RiskReadOnly && !grillMutationAllowed(name, call.Function.Arguments) {
+		return fmt.Sprintf("error: grill-with-docs permits writes only to CONTEXT.md and docs/adr/*.md; tool %q was not executed", name)
+	}
+	if grilling && name == "clarify" {
+		a.mu.Lock()
+		if !grillClarifyAllowed(a.grillClarifyCalls) {
+			a.mu.Unlock()
+			return fmt.Sprintf("error: grill-with-docs clarification limit reached (%d questions); summarize the settled decisions and finish the handoff", grill.MaxQuestions)
+		}
+		a.grillClarifyCalls++
+		a.mu.Unlock()
 	}
 
 	// Dedup: small models occasionally repeat an identical *write/destructive*

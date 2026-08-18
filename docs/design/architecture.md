@@ -78,6 +78,8 @@ Global state lives under `$XDG_DATA_HOME/yagent` (falling back to
 | D7 | SQLite hybrid retrieval | chromem-go, sqlite-vec, faiss | Vectors, FTS5 keywords, importance, and recency share the existing SQLite store with no extra service or ANN dependency |
 | D8 | Qwen-family primary model | Gemma 3 | Tool-calling reliability at 7B–14B is the project's biggest risk; Qwen is measurably better at it |
 | D9 | Approval-gated destructive tools | full auto, allowlist-only | Local agent ≠ safe agent; shell and workspace writes ask unless the user explicitly enables session-level `/yolo` consent |
+| D10 | Borrow contracts, not framework architecture | DeepSeek Harness/Cordis wholesale | Yagent should adopt evidence-backed replay, fault-injection, structured tool-result, and presentation contracts incrementally while retaining a small synchronous Go loop |
+| D11 | Borrow deterministic context ergonomics, not deployment surface | Hermes gateway/plugin/cloud runtime wholesale | Progressive instructions, explicit context references, bounded memory, and structured compaction help local models; multi-platform delivery and remote backends do not |
 
 ## Non-goals
 
@@ -85,3 +87,20 @@ Global state lives under `$XDG_DATA_HOME/yagent` (falling back to
   OpenAI-compatible service.
 - Unbounded autonomous swarms; subagents are deliberately isolated and scoped.
 - A hosted Yagent service or telemetry pipeline; local operation is the default.
+
+## External Harness Review
+
+The DeepSeek Harness review identified five potentially useful contracts for
+future work: a reusable LLM fault/replay testkit, compact durable request
+manifests, an append-only event extension for exact replay, structured tool
+outcomes with UI-neutral presentation metadata, and monotonic tool guards.
+These are tracked in `improvement.md`. The Harness's Cordis plugin architecture
+is intentionally not adopted: it would add indirection and lifecycle surface
+without evidence that Yagent's local model loop needs it.
+
+The Hermes Agent review identified a separate queue: progressive nested
+instructions, deterministic `@` context references, model-facing historical
+session search, structured boundary-safe compaction, bounded always-on memory,
+skill bundles, and recoverable skill lifecycle maintenance. These are tracked
+in `improvement.md`; the Hermes gateway, remote backends, and Python plugin
+surface are explicitly outside Yagent's scope.

@@ -6,9 +6,11 @@
 > docs/README for the current implementation.
 
 Consolidated, prioritized plan for post-M6 work. Status: **P0, P1, B1–B4,
-C1/C2 and the eval/benchmark expansion are all shipped** (2026-08-12 batches);
-the remaining items are C3 and the M7 gated/deferred items, both waiting on
-evidence that the current design is the bottleneck.
+C1/C2 and the eval/benchmark expansion are all shipped** (2026-08-12 batches).
+The older remaining items are C3 and the M7 gated/deferred items, both waiting
+on evidence that the current design is the bottleneck. The 2026-08-18 DeepSeek
+Harness review adds a separate, evidence-gated queue for replay, request
+reproducibility, and tool-result contracts.
 
 Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
@@ -102,6 +104,128 @@ Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
   not a fit for a local-first single binary; would add surface and, for
   telemetry, conflict with the privacy stance. (CI shipped in M6.18 —
   `.github/workflows/ci.yml` runs gofmt/vet/test/race on every push.)
+
+## DeepSeek Harness review (2026-08-18)
+
+Reviewed [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
+an MIT-licensed developer-preview agent harness built around Cordis. The
+useful ideas are contracts around replay, tools, and testing; its TypeScript
+plugin framework is not a fit for Yagent's small, local-first Go binary.
+
+### Recommended borrowings
+
+- 🟡 **Reusable LLM fault/replay testkit** — extract the existing scripted eval
+  server into a shared test-support package with deterministic faults for
+  truncated SSE, connection resets, delayed chunks, invalid tool JSON,
+  duplicate calls, and finish-reason mismatches. This extends Yagent's current
+  golden evals rather than replacing them.
+- 🟡 **Durable request manifests** — persist a compact per-request/epoch record
+  containing model route, effective sampling, system-prompt hash, tool-schema
+  hash, and token estimates. `--trace` remains the opt-in full-content dump.
+  This makes a failed local-model decision reproducible without bloating the
+  normal session log.
+- 🟡 **Event-sourced session extension** — add an append-only `session_events`
+  table for raw assistant chunks, tool calls/results, cancellations, context
+  changes, and compaction boundaries. Keep the current message projection for
+  compatibility; derive replay/debug views from events. Start only after a
+  concrete crash-recovery or exact-replay requirement appears.
+- 🟡 **Structured tool outcomes and neutral presentation** — incrementally
+  separate canonical tool value, model-facing content, error identity, and UI
+  presentation metadata. Start with filesystem, shell, diagnostics, and MCP;
+  let the TUI render diff/terminal/read/search cards without parsing strings.
+- 🟡 **Monotonic tool guards** — formalize the existing hooks and approvals into
+  a policy layer where a matching guard may deny a call but no later hook can
+  re-allow it. Preserve the current approval behavior and fail-closed defaults.
+
+### Already covered in Yagent
+
+- ✅ Scoped tool subsets through subagents, playbooks, and `SetRegistry`.
+- ✅ Pre/post hooks, approvals, cancellation, queued input, and bounded loops.
+- ✅ Compaction, model-free tool-output pruning, scratchpad offload, and token
+  accounting.
+- ✅ Goal/workflow orchestration, checkpoints, MCP, model profiles, and
+  deterministic golden/live benchmarks.
+
+### Do not borrow
+
+- ⚪ Cordis or a process-wide plugin/event-bus rewrite.
+- ⚪ The large TypeScript package graph and cloud-oriented composition layers.
+- ⚪ Full telemetry, hosted-service, or deployment infrastructure; these conflict
+  with Yagent's local-first and privacy defaults.
+
+### Priority
+
+1. Fault/replay testkit.
+2. Compact request manifests.
+3. Structured tool results and presentation metadata.
+4. Event-sourced session log, gated on evidence from replay/crash needs.
+
+## Hermes Agent review (2026-08-18)
+
+Reviewed [Hermes Agent](https://github.com/NousResearch/hermes-agent), an
+MIT-licensed Python agent with strong procedural-memory, context-management,
+and local/cloud deployment features. The useful borrowings are deterministic
+context ergonomics and bounded memory; its gateway, plugin, and remote-runtime
+surface is not a fit for Yagent's local-first single binary.
+
+### Recommended borrowings
+
+- 🟡 **Progressive subdirectory instructions** — discover a nested
+  `AGENTS.md`/`CLAUDE.md` when a tool first touches that directory. Cache each
+  directory once, apply path/security scanning and size caps, and inject only
+  the relevant instructions. This extends Yagent's current root-only project
+  instruction reader and is especially useful for monorepos.
+- 🟡 **Deterministic `@` context references** — support bounded references such
+  as `@file:path`, `@file:path:line-line`, `@folder:path`, `@diff`, `@staged`, and
+  possibly `@url:` before the user message reaches the model. Enforce workspace
+  confinement, sensitive-path blocking, binary detection, and soft/hard token
+  limits. This reduces tool-discovery burden for small local models.
+- 🟡 **Model-facing session search** — expose FTS5 search and bounded historical
+  scrolling as a read-only `session_search` tool. Keep semantic memory for
+  durable facts and use session search to recover details after compaction or
+  pruning without injecting old transcripts by default.
+- 🟡 **Structured, boundary-safe compaction** — preserve the first exchange and
+  latest real user messages, never split tool-call/result pairs, and summarize
+  into stable sections: Goal, Constraints, Progress, Decisions, Files, Next
+  Steps, and Critical Context. Update the previous summary on later compactions
+  instead of starting over.
+- 🟡 **Bounded always-on memory** — add compact project-facts and user-profile
+  snapshots with hard token/character caps and explicit replace/remove behavior.
+  Keep Yagent's larger hybrid L3 store for on-demand recall rather than putting
+  all semantic matches into every system prompt.
+- 🟡 **Skill bundles** — add a small YAML alias that loads several existing
+  skills plus one short instruction, without adopting a marketplace or remote
+  registry.
+- 🟡 **Recoverable skill lifecycle** — add pin/unpin, archive/restore, store
+  snapshots, and a mutation audit trail before considering autonomous pruning.
+
+### Already covered in Yagent
+
+- ✅ Progressive skill disclosure, project/global skill precedence, source
+  metadata, scanners, approval staging, and verification.
+- ✅ Hybrid semantic/FTS memory, session FTS search for users, `/compact`,
+  tool-output pruning, scratchpad recovery, and accurate token accounting.
+- ✅ Project instructions, MCP/tool filtering, subagents, playbooks, and
+  bounded autonomous workflows.
+
+### Do not borrow
+
+- ⚪ Telegram/Discord/Slack gateway and multi-platform delivery.
+- ⚪ Remote terminal backends, cloud browsers, hosted sandboxes, and serverless
+  runtime infrastructure.
+- ⚪ The large Python dependency/runtime surface and full plugin framework.
+- ⚪ Provider-specific prompt caching; Yagent must remain correct for local
+  llama.cpp/Ollama servers before optimizing cloud-provider caches.
+
+### Priority
+
+1. Progressive subdirectory instructions.
+2. Model-facing `session_search`.
+3. `@` context references.
+4. Structured compaction summaries.
+5. Bounded always-on memory snapshots.
+6. Skill bundles.
+7. Recoverable skill lifecycle maintenance.
 
 ## Proposed (external agent reviews — not yet scoped/started)
 

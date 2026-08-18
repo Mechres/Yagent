@@ -27,6 +27,39 @@ import (
 	"github.com/Mechres/Yagent/internal/web"
 )
 
+func TestGrillMutationAllowedOnlyForDocumentation(t *testing.T) {
+	tests := []struct {
+		name string
+		args string
+		want bool
+	}{
+		{"context", `{"path":"CONTEXT.md"}`, true},
+		{"adr", `{"path":"docs/adr/0001-choice.md"}`, true},
+		{"source", `{"path":"internal/main.go"}`, false},
+		{"traversal", `{"path":"docs/adr/../../main.go"}`, false},
+		{"patch", `{"path":"docs/adr/choice.md"}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := grillMutationAllowed(map[string]string{
+				"context": "fs_write", "adr": "fs_write", "source": "fs_write",
+				"traversal": "fs_write", "patch": "fs_patch",
+			}[tt.name], json.RawMessage(tt.args)); got != tt.want {
+				t.Fatalf("grillMutationAllowed = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGrillClarifyLimit(t *testing.T) {
+	if !grillClarifyAllowed(0) || !grillClarifyAllowed(7) {
+		t.Fatal("questions below the limit should be allowed")
+	}
+	if grillClarifyAllowed(8) || grillClarifyAllowed(9) {
+		t.Fatal("questions at or beyond the limit should be rejected")
+	}
+}
+
 // memoryOpen / memoryOpenVector are thin wrappers so agent tests can use the
 // memory package without cluttering call sites.
 func memoryOpen(dir string) (*memory.Store, error) { return memory.Open(dir) }
@@ -930,6 +963,27 @@ func TestInjectSystemAppearsInNextRequest(t *testing.T) {
 	req := string(s.requests[0])
 	if !strings.Contains(req, "SKILL CONTENT: run the checklist") {
 		t.Error("injected skill content missing from the request")
+	}
+}
+
+func TestInjectSystemScopedCleansUp(t *testing.T) {
+	s := newScriptedLLM(t, [][]string{finalContent("one"), finalContent("two")})
+	a, _, _, _ := setup(t, s, true, 5)
+	cleanup := a.InjectSystemScoped("TEMPORARY GRILL RULE")
+	if _, err := a.Run(context.Background(), "first"); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	cleanup()
+	if _, err := a.Run(context.Background(), "second"); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !strings.Contains(string(s.requests[0]), "TEMPORARY GRILL RULE") {
+		t.Fatal("scoped injection missing from first request")
+	}
+	if strings.Contains(string(s.requests[1]), "TEMPORARY GRILL RULE") {
+		t.Fatal("scoped injection leaked into second request")
 	}
 }
 

@@ -90,6 +90,10 @@ Use the OpenAI tools API (`tools` + `tool_choice: "auto"`). Both Ollama and llam
 2. **Validate before executing.** Parse args into a typed struct; on failure do NOT execute — append a tool result like `error: argument "path" is required` and let the model retry. Cap at 3 retries per call.
 3. **Parallel execution** is allowed only for read-only tools. Anything with side effects runs sequentially, after approval.
 4. **Truncation.** Every tool result passes through a per-tool cap (default: 2000 lines / 32 KiB, whichever first) with a `... truncated (N bytes omitted)` marker. This is what keeps the context alive.
+   High-volume shell/git results are first saved in full under `.yagent/scratch/`
+   and may receive a content-aware preview (compact JSON, diagnostic-focused
+   logs, or changed-line-focused diffs). The recovery path is included in the
+   result; source code is never lossy-compressed.
 5. **Unknown tool name** → return `error: unknown tool "x", available: ...` as the tool result; the model usually recovers.
 
 ## Error taxonomy
