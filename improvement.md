@@ -19,6 +19,10 @@ The second item is now in progress: dispatch emits `tools.ToolOutcome` with
 stable status/risk/timing fields and UI-neutral presentation metadata while
 retaining the legacy callbacks.
 
+The third item is now shipped: nested `AGENTS.md`/`CLAUDE.md`/`.cursorrules`
+files are discovered on first subtree touch, cached, capped, scanner-checked,
+and injected into the existing single system message.
+
 Legend: ✅ shipped · 🟡 queued · ⚪ not a fit for a local-first tool.
 
 ## P0 — done this pass

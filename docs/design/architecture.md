@@ -109,3 +109,10 @@ Tool execution now emits a neutral `tools.ToolOutcome` event alongside the
 existing model-facing string result. This keeps presentation semantics at the
 core boundary: terminal, diff, read/search, web, approval, and failure clients
 can render the same event without depending on Bubble Tea or REPL formatting.
+
+Project instructions are progressively discovered by touched path. Root
+instructions remain loaded at startup; nested `AGENTS.md`, `CLAUDE.md`, and
+`.cursorrules` files are cached per directory and merged into the same single
+system message after a tool first touches that subtree. Nested content is
+size-capped, workspace-confined, scanner-checked, and wrapped as untrusted
+project data.

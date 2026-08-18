@@ -50,6 +50,13 @@ confined with bubblewrap by default when it is installed and otherwise fail
 closed. `shell.sandbox: unsafe` is an explicit escape hatch that permits paths
 outside the workspace.
 
+When a filesystem or code-inspection tool first touches a nested directory,
+the agent discovers that directory's `AGENTS.md`, `CLAUDE.md`, or
+`.cursorrules` (outer directories first). Each directory is cached after one
+scan, files are capped at 8 KiB and the aggregate section at 24 KiB, and
+scanner-blocked content is omitted. The resulting section is added to the
+existing single system message; it is never sent as a separate system role.
+
 ## Tool registry (later milestones)
 
 | Name | Milestone | Risk | Purpose |

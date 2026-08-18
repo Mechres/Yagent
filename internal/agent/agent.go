@@ -26,6 +26,7 @@ import (
 	"github.com/Mechres/Yagent/internal/capsule"
 	"github.com/Mechres/Yagent/internal/grill"
 	"github.com/Mechres/Yagent/internal/index"
+	"github.com/Mechres/Yagent/internal/instructions"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
 	"github.com/Mechres/Yagent/internal/skills"
@@ -437,6 +438,7 @@ type Agent struct {
 	readCache map[string]string
 
 	workspace      string
+	nested         *instructions.Loader
 	systemPrompt   string
 	compactPrompt  string // lean variant used under >70% context pressure
 	history        []historyEntry
@@ -614,6 +616,7 @@ func New(llm ChatLLM, reg *tools.Registry, approver Approver, cfg Config, worksp
 		registry:         reg,
 		approver:         approver,
 		workspace:        workspace,
+		nested:           instructions.New(workspace),
 		systemPrompt:     sys,
 		compactPrompt:    compact,
 		runningSummary:   cfg.InitialSummary,
@@ -3033,6 +3036,13 @@ func (a *Agent) assembleContext(recall, code string) []llm.Message {
 		sections = append(sections, traceSection{Name: "workspace profile", Content: profile, Tokens: profileTokens})
 		sys.WriteString("\n\n" + profile)
 	}
+	if a.nested != nil {
+		if nested := a.nested.Context(); nested != "" {
+			nestedTokens := a.tokensFor(shortCtx(), nested)
+			sections = append(sections, traceSection{Name: "nested instructions", Content: nested, Tokens: nestedTokens})
+			sys.WriteString("\n\n" + nested)
+		}
+	}
 
 	// skills L0 index
 	if l0 := a.skillIndex(); l0 != "" {
@@ -3123,6 +3133,23 @@ func (a *Agent) assembleContext(recall, code string) []llm.Message {
 	msgs := []llm.Message{{Role: "system", Content: sys.String()}}
 	msgs = append(msgs, hist...)
 	return msgs
+}
+
+// discoverNestedInstructions records guidance for the directory a filesystem
+// or code-inspection tool is about to touch. The next model request receives
+// the newly discovered files in the same leading system message as all other
+// context; no second system message is ever sent.
+func (a *Agent) discoverNestedInstructions(call llm.ToolCall) {
+	if a.nested == nil {
+		return
+	}
+	var args struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(call.Function.Arguments, &args) != nil || strings.TrimSpace(args.Path) == "" {
+		return
+	}
+	a.nested.Discover(args.Path)
 }
 
 // renderHistoryDump renders the history messages as text for the --trace dump.
@@ -3757,6 +3784,7 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall, valFails map[st
 		return fmt.Sprintf("error: unknown tool %q, available: %s", name, strings.Join(a.registry.Names(), ", "))
 	}
 	risk = tool.Risk()
+	a.discoverNestedInstructions(call)
 	if blocked[name] {
 		return fmt.Sprintf("error: tool %q is blocked for this turn (repeated validation failures)", name)
 	}

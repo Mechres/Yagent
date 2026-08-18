@@ -67,9 +67,10 @@ Build reusable core contracts before adding GUI-specific code.
    events when the GUI work begins. Dispatch now emits status/risk/timing and
    presentation metadata for terminal, diff, read, search, web, approval, and
    failure cards without requiring TUI-string parsing.
-3. Add progressive nested project instructions. Discover a relevant
-   `AGENTS.md`/`CLAUDE.md` when a tool first touches a subdirectory, with path
-   scanning, size caps, caching, and prompt-injection protection.
+3. Extend progressive nested project instructions only if live use reveals a
+   missing path/tool case. Nested `AGENTS.md`/`CLAUDE.md`/`.cursorrules` files
+   are discovered on first subtree touch with containment, scanner checks,
+   size caps, caching, and single-system-message injection.
 4. Add a model-facing `session_search` tool. Keep historical transcript search
    distinct from semantic durable memory.
 5. Improve compaction with structured summaries, protected first/last user

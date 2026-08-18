@@ -1100,6 +1100,25 @@ func TestRepoInstructionsPrecedenceAndCap(t *testing.T) {
 	}
 }
 
+func TestNestedRepoInstructionsArriveAfterTouchedPath(t *testing.T) {
+	ws := t.TempDir()
+	writeWorkspaceFile(t, ws, "src/AGENTS.md", "SRC-RULE: keep this package small")
+	writeWorkspaceFile(t, ws, "src/main.go", "package main\n")
+	s := newScriptedLLM(t, [][]string{
+		toolCall("c1", "fs_read", `{"path":"src/main.go"}`),
+		finalContent("ok"),
+	})
+	a := New(llm.NewClient(s.ts.URL, "test-model"), tools.NewRegistry(ws, tools.Options{}), &stubApprover{allow: true}, Config{MaxIterations: 4}, ws)
+	if _, err := a.Run(context.Background(), "inspect src/main.go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) < 2 || !strings.Contains(string(s.requests[1]), "SRC-RULE: keep this package small") {
+		t.Fatalf("nested instructions missing from follow-up context; requests=%d", len(s.requests))
+	}
+}
+
 func TestCodegenModeAppendsPromptSuffix(t *testing.T) {
 	// The system prompt carries the greenfield-code strategy only when Codegen
 	// is enabled — the loop can't accidentally codegen a pure chat turn.
