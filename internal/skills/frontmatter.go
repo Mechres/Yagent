@@ -32,6 +32,7 @@ type frontmatter struct {
 	CreatedAt   int64    `yaml:"created_at,omitempty"`
 	LastUsed    int64    `yaml:"last_used,omitempty"`
 	Failures    int      `yaml:"failures,omitempty"`
+	Pinned      bool     `yaml:"pinned,omitempty"`
 }
 
 // parseFrontmatter splits content into the metadata block and the body.

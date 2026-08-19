@@ -311,6 +311,11 @@ func (s *Store) Apply(op Op) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if op.Action != ActionCreate && s.Exists(op.Name) {
+		if _, err := s.CreateSnapshot(op.Name, op.Action); err != nil {
+			return "", fmt.Errorf("snapshot before %s: %w", op.Action, err)
+		}
+	}
 	if err := s.apply(op); err != nil {
 		return "", err
 	}
@@ -354,6 +359,7 @@ func (s *Store) apply(op Op) error {
 		fm.Source = s.preserveSource(op.Name, SourceAgent)
 		fm.CreatedAt = s.preserveCreatedAt(op.Name, fm.CreatedAt)
 		fm.LastUsed = time.Now().Unix()
+		fm.Pinned = s.preservePinned(op.Name)
 		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(renderSkill(fm, body)), 0o644); err != nil {
 			return fmt.Errorf("write SKILL.md: %w", err)
 		}
@@ -376,6 +382,7 @@ func (s *Store) apply(op Op) error {
 		fm.Source = s.preserveSource(op.Name, SourceAgent)
 		fm.CreatedAt = s.preserveCreatedAt(op.Name, fm.CreatedAt)
 		fm.LastUsed = time.Now().Unix()
+		fm.Pinned = s.preservePinned(op.Name)
 		if err := os.WriteFile(path, []byte(renderSkill(fm, body)), 0o644); err != nil {
 			return fmt.Errorf("write SKILL.md: %w", err)
 		}
@@ -435,6 +442,15 @@ func (s *Store) preserveCreatedAt(name string, fallback int64) int64 {
 		return fallback
 	}
 	return time.Now().Unix()
+}
+
+func (s *Store) preservePinned(name string) bool {
+	if dir, _, ok := s.findSkill(name); ok {
+		if fm, _, err := parseFrontmatter(readFile(filepath.Join(dir, "SKILL.md"))); err == nil {
+			return fm.Pinned
+		}
+	}
+	return false
 }
 
 // preserveSource keeps the original author of an existing skill across edits.

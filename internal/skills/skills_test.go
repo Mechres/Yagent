@@ -130,6 +130,36 @@ func TestBundleShadowingAndValidation(t *testing.T) {
 	}
 }
 
+func TestRecoverableLifecycle(t *testing.T) {
+	s := openStore(t)
+	createSkill(t, s, "recover-me", "recoverable skill")
+	if err := s.SetPinned("recover-me", true); err != nil {
+		t.Fatal(err)
+	}
+	if metas := s.List(); len(metas) != 1 || !metas[0].Pinned {
+		t.Fatalf("pinned metadata = %+v", metas)
+	}
+	if _, err := s.Apply(Op{Action: ActionPatch, Name: "recover-me", OldString: "recoverable skill", NewString: "updated skill"}); err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := s.ListSnapshots("recover-me")
+	if err != nil || len(snaps) < 2 {
+		t.Fatalf("snapshots = %+v, err=%v", snaps, err)
+	}
+	if err := s.Archive("recover-me"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Exists("recover-me") {
+		t.Fatal("archived skill still active")
+	}
+	if err := s.Restore("recover-me"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Exists("recover-me") {
+		t.Fatal("restored skill missing")
+	}
+}
+
 func TestCreateValidationErrors(t *testing.T) {
 	s := openStore(t)
 

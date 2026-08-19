@@ -90,9 +90,9 @@ type skillManageArgs struct {
 	Scope       string `json:"scope,omitempty"`
 }
 
-var skillManageSchema = fnSchema("skill_manage", "write to a skill (procedural memory): create/patch/edit/delete/write_file/remove_file; writes are gated — with the approval gate on they are staged for review, not applied",
+var skillManageSchema = fnSchema("skill_manage", "write to a skill (procedural memory): create/patch/edit/delete/write_file/remove_file/pin/unpin/archive/restore; writes are gated — with the approval gate on they are staged for review, not applied",
 	map[string]any{
-		"action":       strProp("create, patch, edit, delete, write_file, remove_file"),
+		"action":       strProp("create, patch, edit, delete, write_file, remove_file, pin, unpin, archive, restore"),
 		"name":         strProp("skill slug [a-z][a-z0-9_-]*"),
 		"content":      strProp("full SKILL.md (create/edit): frontmatter + When to Use + Procedure + Pitfalls + Verification"),
 		"category":     strProp("category dir for create, optional"),
@@ -117,7 +117,27 @@ func (t *skillManageTool) Execute(ctx context.Context, raw json.RawMessage) (str
 		return "", err
 	}
 	if a.Action == "" {
-		return "", validationErrorf(`argument "action" is required: create|patch|edit|delete|write_file|remove_file`)
+		return "", validationErrorf(`argument "action" is required: create|patch|edit|delete|write_file|remove_file|pin|unpin|archive|restore`)
+	}
+	switch a.Action {
+	case skills.ActionPin, skills.ActionUnpin:
+		if a.Name == "" {
+			return "", validationErrorf(`argument "name" is required`)
+		}
+		if err := t.store.SetPinned(a.Name, a.Action == skills.ActionPin); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		return a.Action + "ned skill", nil
+	case skills.ActionArchive:
+		if err := t.store.Archive(a.Name); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		return "archived skill (recoverable)", nil
+	case skills.ActionRestore:
+		if err := t.store.Restore(a.Name); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		return "restored skill", nil
 	}
 	if a.Name == "" {
 		return "", validationErrorf(`argument "name" is required`)

@@ -16,6 +16,9 @@ Adopt (small-model, local-first subset):
 - Local bundles: `<data>/bundles/<name>.yaml` plus project
   `.yagent/bundles/<name>.yaml`, shadowed project-first; `/bundle-name` loads
   existing skills and one bounded instruction
+- Recoverable lifecycle: `pin`/`unpin`, `archive`/`restore`, pre-mutation
+  snapshots under `<data>/snapshots/skills/`, and an append-only JSONL audit
+  trail
 - Write-approval gate, **default OFF** (automatic creation; see below)
 - **Anti-hoarding guard** (dedup, per-session cap, authoring rules) — see "Autonomous creation"
 - **Dangerous-pattern scanner** on agent skill writes + load warning — see "Safety"
@@ -70,6 +73,15 @@ files shadow global files. A bundle may reference at most eight existing skills
 and its instruction is capped at 2,000 characters and passed through the safety
 scanner. `/review-flow` injects the referenced skill bodies plus instruction;
 bundle files never fetch or embed content.
+
+## Recoverable lifecycle
+
+`skill_manage` supports `pin`, `unpin`, `archive`, and `restore`. Mutations to
+an existing skill first copy its complete directory into the global snapshot
+store and append an audit record. Archive moves the active directory into a
+scope-specific archive; restore returns it to its original scope. Pin metadata
+is preserved across edits and is exposed by `skills_list`. There is no automatic
+deletion or pruning.
 
 ## SKILL.md format
 

@@ -46,6 +46,7 @@ type SkillMeta struct {
 	CreatedAt   int64
 	LastUsed    int64
 	Failures    int // failed verifications; >= MaxSkillFailures marks stale
+	Pinned      bool
 }
 
 // Store is a filesystem store with two read roots. The project store
@@ -179,6 +180,7 @@ func (s *Store) readMeta(name, dir, root string) SkillMeta {
 	m.CreatedAt = fm.CreatedAt
 	m.LastUsed = fm.LastUsed
 	m.Failures = fm.Failures
+	m.Pinned = fm.Pinned
 	return m
 }
 

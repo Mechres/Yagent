@@ -217,8 +217,9 @@ surface is not a fit for Yagent's local-first single binary.
   skills plus one short instruction, without adopting a marketplace or remote
   registry. Local project/global bundles now shadow, validate, and load through
   the same slash-command path as individual skills.
-- 🟡 **Recoverable skill lifecycle** — add pin/unpin, archive/restore, store
-  snapshots, and a mutation audit trail before considering autonomous pruning.
+- ✅ **Recoverable skill lifecycle** — `skill_manage` now supports pin/unpin and
+  archive/restore; existing-skill mutations create recoverable snapshots and an
+  append-only audit trail. Automatic deletion/pruning remains disabled.
 
 ### Already covered in Yagent
 
