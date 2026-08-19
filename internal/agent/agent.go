@@ -569,6 +569,7 @@ type Agent struct {
 	injectedTokens         []int
 	lastCtx                []traceSection
 	traceSeq               int
+	manifestSeq            int
 
 	// pressure is set when a stream's t/s fell below VramThresholdTPS, i.e.
 	// the KV cache likely spilled out of VRAM. budget() consumes it to force a
@@ -1017,7 +1018,9 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 		}
 		schemas := a.activeToolSchemas(input, used)
 		a.setSchemaTokens(ctx, schemas)
-		resp, err := a.llm.ChatStream(reqCtx, a.assembleContext(recall, code), schemas,
+		assembled := a.assembleContext(recall, code)
+		manifestID := a.recordRequestManifest(ctx, assembled, schemas)
+		resp, err := a.llm.ChatStream(reqCtx, assembled, schemas,
 			func(d string) {
 				streamTokens += len(d) / 4
 				if a.cfg.OnToken != nil {
@@ -1033,6 +1036,20 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 				detect(d)
 			})
 		reqCancel()
+		if manifestID != 0 {
+			status := "succeeded"
+			failure := ""
+			if err != nil {
+				status, failure = "failed", err.Error()
+			} else if looped {
+				status = "cancelled"
+			}
+			if a.cfg.Store != nil {
+				if uerr := a.cfg.Store.UpdateRequestManifest(ctx, manifestID, status, failure); uerr != nil {
+					slog.Warn("update request manifest", "error", uerr)
+				}
+			}
+		}
 		if looped {
 			// The stream repeated itself (cancelled mid-stream or ended that
 			// way): feed back a stop-repeating nudge and let the model finish.
@@ -3429,6 +3446,59 @@ func (a *Agent) setSchemaTokens(ctx context.Context, schemas []llm.ToolSchema) {
 	a.mu.Lock()
 	a.schemaTokens = a.tokensFor(ctx, string(b))
 	a.mu.Unlock()
+}
+
+// recordRequestManifest stores the compact, replay-relevant shape of a model
+// request. It records hashes rather than full prompts; --trace remains the
+// opt-in full-context facility. Persistence is diagnostic and never makes a
+// valid chat request fail.
+func (a *Agent) recordRequestManifest(ctx context.Context, messages []llm.Message, schemas []llm.ToolSchema) int64 {
+	if a.cfg.Store == nil || a.cfg.SessionID == "" {
+		return 0
+	}
+	var system strings.Builder
+	for _, m := range messages {
+		if m.Role == "system" {
+			system.WriteString(m.Content)
+			system.WriteByte('\x00')
+		}
+	}
+	schemaBytes, err := json.Marshal(schemas)
+	if err != nil {
+		return 0
+	}
+	route, model, sampling := "", "", "{}"
+	if c, ok := a.llm.(*llm.Client); ok && c != nil {
+		route, model = c.ServerURL, c.Model
+		if b, merr := json.Marshal(c.Sampling); merr == nil {
+			sampling = string(b)
+		}
+	}
+	a.mu.Lock()
+	a.manifestSeq++
+	sequence := a.manifestSeq
+	contextTokens, historyTokens := 0, 0
+	for _, section := range a.lastCtx {
+		contextTokens += section.Tokens
+		if section.Name == "history" {
+			historyTokens = section.Tokens
+		}
+	}
+	manifest := memory.RequestManifest{
+		SessionID: a.cfg.SessionID, Sequence: sequence, Route: route, Model: model,
+		SamplingJSON:  sampling,
+		SystemHash:    fmt.Sprintf("%x", sha256.Sum256([]byte(system.String()))),
+		SchemaHash:    fmt.Sprintf("%x", sha256.Sum256(schemaBytes)),
+		ContextTokens: contextTokens, HistoryTokens: historyTokens,
+		SummaryTokens: a.summaryTokens, SchemaTokens: a.schemaTokens, Status: "started",
+	}
+	a.mu.Unlock()
+	id, err := a.cfg.Store.RecordRequestManifest(ctx, manifest)
+	if err != nil {
+		slog.Warn("record request manifest", "error", err)
+		return 0
+	}
+	return id
 }
 
 // tokensFor estimates the token count of text: accurate via the configured

@@ -43,7 +43,14 @@ CREATE TABLE summaries (
     summary     TEXT NOT NULL,
     covers_until INTEGER NOT NULL        -- last message id included
 );
+
 ```
+
+Request manifests are stored separately from transcript messages. Each record
+keeps the session sequence, route/model, sampling JSON, hashes of the system
+prompt and tool schemas, context/history/summary/schema token estimates, and a
+started/succeeded/failed/cancelled status. This supports replay diagnosis
+without retaining full prompts; full contexts remain opt-in through `--trace`.
 
 CLI: `yagent chat` (new), `yagent chat --continue <id>`, `yagent sessions`.
 

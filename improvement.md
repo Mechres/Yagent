@@ -134,9 +134,10 @@ plugin framework is not a fit for Yagent's small, local-first Go binary.
   truncated SSE, connection resets, delayed chunks, invalid tool JSON,
   duplicate calls, and finish-reason mismatches. This extends Yagent's current
   golden evals rather than replacing them.
-- 🟡 **Durable request manifests** — persist a compact per-request/epoch record
+- ✅ **Durable request manifests** — persist a compact per-request/epoch record
   containing model route, effective sampling, system-prompt hash, tool-schema
-  hash, and token estimates. `--trace` remains the opt-in full-content dump.
+  hash, token estimates, and completion status. `--trace` remains the opt-in
+  full-content dump.
   This makes a failed local-model decision reproducible without bloating the
   normal session log.
 - 🟡 **Event-sourced session extension** — add an append-only `session_events`

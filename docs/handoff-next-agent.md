@@ -77,8 +77,10 @@ Build reusable core contracts before adding GUI-specific code.
 5. Extend compaction only if new evidence requires it. Automatic and manual
    compaction now use stable ledger sections, protect the first exchange and
    latest prior user turn, and align boundaries around tool-call/result groups.
-6. Persist compact request manifests: route, sampling, system hash, schema hash,
-   and token estimates. Keep full context dumps opt-in through `--trace`.
+6. Extend request manifests only if replay evidence requires more fields.
+   Manifests now persist route/model, sampling, system/schema hashes, token
+   estimates, and completion status; full context dumps remain opt-in through
+   `--trace`.
 
 ### Do Later
 

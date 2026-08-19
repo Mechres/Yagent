@@ -70,6 +70,24 @@ CREATE TABLE IF NOT EXISTS summaries (
     summary      TEXT NOT NULL,
     covers_until INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS request_manifests (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id     TEXT NOT NULL REFERENCES sessions(id),
+    sequence       INTEGER NOT NULL,
+    route          TEXT,
+    model          TEXT,
+    sampling_json  TEXT NOT NULL,
+    system_hash    TEXT NOT NULL,
+    schema_hash    TEXT NOT NULL,
+    context_tokens INTEGER NOT NULL,
+    history_tokens INTEGER NOT NULL,
+    summary_tokens INTEGER NOT NULL,
+    schema_tokens  INTEGER NOT NULL,
+    status         TEXT NOT NULL,
+    error          TEXT,
+    created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_request_manifests_session ON request_manifests(session_id, id);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content);
 `
 
@@ -77,6 +95,77 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content);
 type Store struct {
 	db  *sql.DB
 	dir string
+}
+
+// RequestManifest records the deterministic inputs and token accounting for
+// one model request. It is intentionally compact: full contexts remain
+// opt-in through Agent.Config.Trace.
+type RequestManifest struct {
+	ID            int64
+	SessionID     string
+	Sequence      int
+	Route         string
+	Model         string
+	SamplingJSON  string
+	SystemHash    string
+	SchemaHash    string
+	ContextTokens int
+	HistoryTokens int
+	SummaryTokens int
+	SchemaTokens  int
+	Status        string
+	Error         string
+	CreatedAt     int64
+}
+
+// RecordRequestManifest persists a request manifest and returns its id.
+func (s *Store) RecordRequestManifest(ctx context.Context, m RequestManifest) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO request_manifests
+		(session_id, sequence, route, model, sampling_json, system_hash, schema_hash,
+		 context_tokens, history_tokens, summary_tokens, schema_tokens, status, error, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.SessionID, m.Sequence, nullIfEmpty(m.Route), nullIfEmpty(m.Model), m.SamplingJSON,
+		m.SystemHash, m.SchemaHash, m.ContextTokens, m.HistoryTokens, m.SummaryTokens,
+		m.SchemaTokens, m.Status, nullIfEmpty(m.Error), time.Now().Unix())
+	if err != nil {
+		return 0, fmt.Errorf("insert request manifest: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// UpdateRequestManifest completes a previously recorded request.
+func (s *Store) UpdateRequestManifest(ctx context.Context, id int64, status, failure string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE request_manifests SET status = ?, error = ? WHERE id = ?`,
+		status, nullIfEmpty(scrub.Text(failure)), id)
+	if err != nil {
+		return fmt.Errorf("update request manifest: %w", err)
+	}
+	return nil
+}
+
+// RequestManifests returns manifests for a session, oldest first.
+func (s *Store) RequestManifests(ctx context.Context, sessionID string) ([]RequestManifest, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, sequence, route, model,
+		sampling_json, system_hash, schema_hash, context_tokens, history_tokens,
+		summary_tokens, schema_tokens, status, error, created_at
+		FROM request_manifests WHERE session_id = ? ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("query request manifests: %w", err)
+	}
+	defer rows.Close()
+	var out []RequestManifest
+	for rows.Next() {
+		var m RequestManifest
+		var route, model, failure sql.NullString
+		if err := rows.Scan(&m.ID, &m.Sequence, &route, &model, &m.SamplingJSON,
+			&m.SystemHash, &m.SchemaHash, &m.ContextTokens, &m.HistoryTokens,
+			&m.SummaryTokens, &m.SchemaTokens, &m.Status, &failure, &m.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan request manifest: %w", err)
+		}
+		m.SessionID, m.Route, m.Model, m.Error = sessionID, route.String, model.String, failure.String
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // Open opens (creating if needed) the SQLite store under dir.

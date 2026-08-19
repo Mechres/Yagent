@@ -108,6 +108,38 @@ func TestStoreSummary(t *testing.T) {
 	}
 }
 
+func TestRequestManifestRoundTrip(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	sess, err := st.NewSession(ctx, "/tmp/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.RecordRequestManifest(ctx, RequestManifest{
+		SessionID: sess.ID, Sequence: 2, Route: "http://model",
+		Model: "qwen", SamplingJSON: `{"temperature":0.3}`,
+		SystemHash: "sys", SchemaHash: "schema", ContextTokens: 120,
+		HistoryTokens: 40, SummaryTokens: 10, SchemaTokens: 20, Status: "started",
+	})
+	if err != nil || id == 0 {
+		t.Fatalf("RecordRequestManifest = %d, %v", id, err)
+	}
+	if err := st.UpdateRequestManifest(ctx, id, "failed", "timeout"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.RequestManifests(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Sequence != 2 || got[0].Status != "failed" || got[0].Error != "timeout" || got[0].SchemaHash != "schema" {
+		t.Fatalf("manifests = %+v", got)
+	}
+}
+
 func TestStoreCleanSlate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "yagent-data")
 	st, err := Open(dir)
