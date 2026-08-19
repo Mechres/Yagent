@@ -86,8 +86,10 @@ Build reusable core contracts before adding GUI-specific code.
 
 - Build the GUI on stable session events and neutral tool presentation types,
   not on Bubble Tea callbacks.
-- Add deterministic `@file`, `@file:path:line-line`, `@diff`, `@staged`, and
-  `@folder` context references after the core event/context APIs exist.
+- Extend deterministic `@file`, `@file:path:line-line`, `@diff`, `@staged`, and
+  `@folder` references only if live usage reveals another bounded case. The
+  current resolver enforces workspace confinement, sensitive-path blocking,
+  binary rejection, and hard context caps.
 - Add skill bundles after the skill library has recurring combinations.
 - Add skill pin/archive/restore/audit lifecycle only when skill volume justifies
   it.

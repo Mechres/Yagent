@@ -193,11 +193,12 @@ surface is not a fit for Yagent's local-first single binary.
   directory once, apply path/security scanning and size caps, and inject only
   the relevant instructions. This extends Yagent's current root-only project
   instruction reader and is especially useful for monorepos.
-- 🟡 **Deterministic `@` context references** — support bounded references such
+- ✅ **Deterministic `@` context references** — support bounded references such
   as `@file:path`, `@file:path:line-line`, `@folder:path`, `@diff`, `@staged`, and
   possibly `@url:` before the user message reaches the model. Enforce workspace
   confinement, sensitive-path blocking, binary detection, and soft/hard token
-  limits. This reduces tool-discovery burden for small local models.
+  limits. `internal/refs` now resolves the local forms before each turn and
+  injects a capped, non-persisted system-context block; URLs remain deferred.
 - ✅ **Model-facing session search** — expose FTS5 search and bounded historical
   scrolling as a read-only `session_search` tool. Keep semantic memory for
   durable facts and use session search to recover details after compaction or

@@ -29,6 +29,7 @@ import (
 	"github.com/Mechres/Yagent/internal/instructions"
 	"github.com/Mechres/Yagent/internal/llm"
 	"github.com/Mechres/Yagent/internal/memory"
+	"github.com/Mechres/Yagent/internal/refs"
 	"github.com/Mechres/Yagent/internal/skills"
 	"github.com/Mechres/Yagent/internal/tools"
 	workspacepkg "github.com/Mechres/Yagent/internal/workspace"
@@ -476,6 +477,9 @@ type Agent struct {
 	// long autonomous run can be course-corrected without discarding the
 	// session. Set via Steer(); cleared by a new user turn or Reset().
 	steerText string
+	// turnRefs is bounded context resolved from @ references in the current
+	// user input. It is cleared when the turn ends and is never persisted.
+	turnRefs string
 
 	// activePlan is the ordered step list of the most recently APPROVED plan
 	// tool call (plan-step tracker, AGY #6). Rendered into TASK STATE as an
@@ -955,6 +959,14 @@ func (a *Agent) GrowthForecast() int {
 // Run processes one user input through the loop and returns the final answer
 // text (which was also streamed via cfg.OnToken).
 func (a *Agent) Run(ctx context.Context, input string) (string, error) {
+	a.mu.Lock()
+	a.turnRefs = refs.Resolve(a.workspace, input)
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.turnRefs = ""
+		a.mu.Unlock()
+	}()
 	if _, err := a.appendMessage(ctx, llm.Message{Role: "user", Content: input}); err != nil {
 		return "", err
 	}
@@ -3048,10 +3060,16 @@ func (a *Agent) assembleContext(recall, code string) []llm.Message {
 	a.mu.RLock()
 	profile := a.workspaceProfile.Context()
 	profileTokens := a.workspaceProfileTokens
+	turnRefs := a.turnRefs
 	a.mu.RUnlock()
 	if profile != "" {
 		sections = append(sections, traceSection{Name: "workspace profile", Content: profile, Tokens: profileTokens})
 		sys.WriteString("\n\n" + profile)
+	}
+	if turnRefs != "" {
+		refTokens := len(turnRefs) / 4
+		sections = append(sections, traceSection{Name: "user references", Content: turnRefs, Tokens: refTokens})
+		sys.WriteString("\n\n" + turnRefs)
 	}
 	if a.nested != nil {
 		if nested := a.nested.Context(); nested != "" {
