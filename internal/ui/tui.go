@@ -3314,6 +3314,9 @@ func (m *tuiModel) slashCommands() []string {
 		for _, s := range m.env.sk.List() {
 			cmds = append(cmds, "/"+s.Name)
 		}
+		for _, b := range m.env.sk.ListBundles() {
+			cmds = append(cmds, "/"+b)
+		}
 	}
 	return cmds
 }

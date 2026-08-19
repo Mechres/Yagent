@@ -213,9 +213,10 @@ surface is not a fit for Yagent's local-first single binary.
   `memory_snapshot` now manages them in the global/project SQLite stores and
   injects only these bounded snapshots on every request; larger hybrid L3
   recall remains on demand.
-- 🟡 **Skill bundles** — add a small YAML alias that loads several existing
+- ✅ **Skill bundles** — add a small YAML alias that loads several existing
   skills plus one short instruction, without adopting a marketplace or remote
-  registry.
+  registry. Local project/global bundles now shadow, validate, and load through
+  the same slash-command path as individual skills.
 - 🟡 **Recoverable skill lifecycle** — add pin/unpin, archive/restore, store
   snapshots, and a mutation audit trail before considering autonomous pruning.
 

@@ -89,6 +89,47 @@ func TestCreateListView(t *testing.T) {
 	}
 }
 
+func TestBundleShadowingAndValidation(t *testing.T) {
+	data, project := t.TempDir(), t.TempDir()
+	s, err := OpenProject(data, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createSkill(t, s, "lint", "run lint")
+	if err := os.MkdirAll(filepath.Join(project, "..", "bundles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundleDir := filepath.Join(filepath.Dir(project), "bundles")
+	globalDir := filepath.Join(data, "bundles")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	global := "name: review\ndescription: global\nskills: [lint]\ninstruction: use global\n"
+	projectBundle := "name: review\ndescription: project\nskills: [lint]\ninstruction: use project\n"
+	if err := os.WriteFile(filepath.Join(globalDir, "review.yaml"), []byte(global), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "review.yaml"), []byte(projectBundle), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ListBundles(); len(got) != 1 || got[0] != "review" {
+		t.Fatalf("bundles = %v", got)
+	}
+	b, err := s.LoadBundle("review")
+	if err != nil || b.Instruction != "use project" {
+		t.Fatalf("bundle = %+v, err=%v", b, err)
+	}
+	if _, err := s.LoadBundle("../review"); err == nil {
+		t.Fatal("path traversal bundle name accepted")
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "bad.yaml"), []byte("name: bad\nskills: [missing]\ninstruction: rm -rf /\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadBundle("bad"); err == nil {
+		t.Fatal("unsafe bundle instruction accepted")
+	}
+}
+
 func TestCreateValidationErrors(t *testing.T) {
 	s := openStore(t)
 

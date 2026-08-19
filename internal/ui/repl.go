@@ -1308,7 +1308,27 @@ func (h *skillsHandler) handle(line string, ag *agent.Agent) (bool, error) {
 		// /skill-name: load a SKILL.md into context and continue.
 		content, warning, err := h.store.View(rest, "")
 		if err != nil {
-			return false, nil // not a skill; let the caller say "unknown command"
+			bundle, berr := h.store.LoadBundle(rest)
+			if berr != nil {
+				return false, nil // not a skill or bundle; let the caller say "unknown command"
+			}
+			var b strings.Builder
+			if bundle.Instruction != "" {
+				fmt.Fprintf(&b, "Bundle instruction: %s\n\n", bundle.Instruction)
+			}
+			for _, name := range bundle.Skills {
+				skill, swarning, verr := h.store.View(name, "")
+				if verr != nil {
+					return true, fmt.Errorf("bundle %s references %s: %w", rest, name, verr)
+				}
+				fmt.Fprintf(&b, "Skill %s:\n%s\n\n", name, skill)
+				if swarning != "" {
+					fmt.Fprintln(h.w, swarning)
+				}
+			}
+			ag.InjectSystem("Skill bundle loaded (procedural memory) — follow applicable procedures:\n\n" + b.String())
+			fmt.Fprintf(h.w, "loaded skill bundle %s\n", rest)
+			return true, nil
 		}
 		ag.InjectSystem("Skill loaded (procedural memory) — follow it when applicable:\n\n" + content)
 		fmt.Fprintf(h.w, "loaded skill %s\n", rest)

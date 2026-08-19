@@ -13,6 +13,9 @@ Adopt (small-model, local-first subset):
 - Progressive disclosure: `skills_list` → `skill_view(name)` → `skill_view(name, path)`
 - `skill_manage` tool (create/patch/edit/delete/write_file/remove_file)
 - Autonomous creation triggers + slash-command invocation (`/skill-name`)
+- Local bundles: `<data>/bundles/<name>.yaml` plus project
+  `.yagent/bundles/<name>.yaml`, shadowed project-first; `/bundle-name` loads
+  existing skills and one bounded instruction
 - Write-approval gate, **default OFF** (automatic creation; see below)
 - **Anti-hoarding guard** (dedup, per-session cap, authoring rules) — see "Autonomous creation"
 - **Dangerous-pattern scanner** on agent skill writes + load warning — see "Safety"
@@ -21,7 +24,9 @@ Adopt (small-model, local-first subset):
 Defer (note why):
 
 - Skills Hub / taps / marketplaces, `hermes skills install/search` — needs network registries + trust infra; not local-first
-- Bundles, `platforms`, fallback/conditional activation, `config` settings, `required_environment_variables` — context and complexity a 7B–14B model doesn't need day one
+- `platforms`, fallback/conditional activation, `config` settings,
+  `required_environment_variables` — context and complexity a 7B–14B model
+  doesn't need day one
 - Follow-ups with their own spec below: staleness/retirement, verification harness, `yagent skills` CLI, background self-improvement review, `/learn` from large corpora
 
 ## Storage
@@ -48,6 +53,23 @@ Two read roots; both are plain directories walked for `skills_list`. Category di
 - On name collision the project store shadows the global one in `skills_list`/`skill_view`
 - Skill names must match `^[a-z][a-z0-9_-]*$` (same rule as Hermes/agentskills slugs)
 - Filesystem is the store — no SQLite needed; the only index is the directory walk for `skills_list`
+
+## Local bundles
+
+Bundles are intentionally local aliases, not a registry or package format:
+
+```yaml
+name: review-flow
+description: review and verify a change
+skills: [code-review, test-run]
+instruction: Apply the review skill first, then verify the result.
+```
+
+They live under `<data>/bundles/` or `<workspace>/.yagent/bundles/`; project
+files shadow global files. A bundle may reference at most eight existing skills
+and its instruction is capped at 2,000 characters and passed through the safety
+scanner. `/review-flow` injects the referenced skill bodies plus instruction;
+bundle files never fetch or embed content.
 
 ## SKILL.md format
 
