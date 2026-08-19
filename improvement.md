@@ -129,11 +129,13 @@ plugin framework is not a fit for Yagent's small, local-first Go binary.
 
 ### Recommended borrowings
 
-- 🟡 **Reusable LLM fault/replay testkit** — extract the existing scripted eval
+- ✅ **Reusable LLM fault/replay testkit** — extract the existing scripted eval
   server into a shared test-support package with deterministic faults for
   truncated SSE, connection resets, delayed chunks, invalid tool JSON,
-  duplicate calls, and finish-reason mismatches. This extends Yagent's current
-  golden evals rather than replacing them.
+  duplicate calls, and finish-reason mismatches. `internal/testkit` now
+  provides scripted SSE steps, request capture, delays, truncation, status
+  errors, connection resets, and content/tool event helpers. This extends
+  Yagent's current golden evals rather than replacing them.
 - ✅ **Durable request manifests** — persist a compact per-request/epoch record
   containing model route, effective sampling, system-prompt hash, tool-schema
   hash, token estimates, and completion status. `--trace` remains the opt-in
