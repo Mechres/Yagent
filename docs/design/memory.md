@@ -11,9 +11,9 @@ L4 codebase index    tree-sitter chunks + embeddings          (index pkg)
 
 ## L1 — Working context
 
-The slice of messages actually sent to the model, assembled per `agent-loop.md`. Budgeted by accurate token counts from the server tokenizer (`llm.Client.CountTokens`; `len/4` fallback). When over budget: old tool outputs are first collapsed to one-line `[tool output concealed; N lines hidden]` markers (user/assistant turns kept), then the oldest 50% of history (excluding system/tool-schema) is summarized and replaced by the running summary.
+The slice of messages actually sent to the model, assembled per `agent-loop.md`. Budgeted by accurate token counts from the server tokenizer (`llm.Client.CountTokens`; `len/4` fallback). When over budget: old tool outputs are first collapsed to one-line `[tool output concealed; N lines hidden]` markers (user/assistant turns kept), then the oldest 50% of history (excluding system/tool-schema) is summarized and replaced by the running summary. Automatic and manual compaction choose message boundaries that never split an assistant tool call from its tool results. Manual `/compact` retains the latest prior user exchange alongside the current turn and protects the first exchange as an anchor in the ledger.
 
-Summarization prompt (dedicated, no tools): *"Condense this conversation segment into ≤400 words. Preserve: decisions made, file paths touched, errors encountered, user preferences, open tasks. Drop: pleasantries, repeated code, verbose tool output."*
+Summarization prompt (dedicated, no tools) requests stable sections: *Goal, Constraints, Progress, Decisions, Files, Next Steps,* and *Critical Context*. It is capped at 400 words and must preserve decisions, paths, errors, preferences, open tasks, and unresolved constraints without inventing facts.
 
 ## L2 — Session store (SQLite, modernc.org/sqlite)
 

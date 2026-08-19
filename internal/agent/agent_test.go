@@ -1343,17 +1343,39 @@ func TestCompactDistillsWholeHistory(t *testing.T) {
 	if summ.calls != 1 {
 		t.Errorf("summarizer called %d times, want 1", summ.calls)
 	}
-	if !strings.Contains(note, "compacted 5 historical message") {
+	if !strings.Contains(note, "compacted 3 historical message") {
 		t.Errorf("note = %q", note)
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	// only the current user turn remains in history
-	if len(a.history) != 1 || a.history[0].msg.Role != "user" || a.history[0].msg.Content != "current turn: please report" {
+	// The latest prior exchange and current user turn remain visible.
+	if len(a.history) != 3 || a.history[0].msg.Content != "turn 2: now fix the bug in parse()" || a.history[2].msg.Content != "current turn: please report" {
 		t.Errorf("history after compact = %+v", a.history)
 	}
 	if a.runningSummary != summ.summary {
 		t.Errorf("running summary = %q", a.runningSummary)
+	}
+}
+
+func TestSafeHistoryBoundaryDoesNotSplitToolResults(t *testing.T) {
+	history := []historyEntry{
+		{msg: llm.Message{Role: "user", Content: "inspect"}},
+		{msg: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Function: llm.ToolCallFunction{Name: "fs_read"}}}}},
+		{msg: llm.Message{Role: "tool", ToolCallID: "c1", Content: "first result"}},
+		{msg: llm.Message{Role: "tool", ToolCallID: "c2", Content: "second result"}},
+		{msg: llm.Message{Role: "assistant", Content: "done"}},
+	}
+	for _, tc := range []struct {
+		desired int
+		want    int
+	}{
+		{desired: 2, want: 1},
+		{desired: 3, want: 1},
+		{desired: 4, want: 4},
+	} {
+		if got := safeHistoryBoundary(history, tc.desired); got != tc.want {
+			t.Errorf("safeHistoryBoundary(%d) = %d, want %d", tc.desired, got, tc.want)
+		}
 	}
 }
 

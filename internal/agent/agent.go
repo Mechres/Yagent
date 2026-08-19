@@ -147,7 +147,7 @@ func canonicalArgs(args json.RawMessage) string {
 }
 
 // summaryPrompt condenses old history into the running summary (memory.md L1).
-const summaryPrompt = `Condense this conversation segment into at most 400 words. Preserve: decisions made, file paths touched, errors encountered, user preferences, open tasks. Drop: pleasantries, repeated code, verbose tool output.`
+const summaryPrompt = `Condense this conversation segment into at most 400 words using exactly these headings: Goal, Constraints, Progress, Decisions, Files, Next Steps, Critical Context. Preserve decisions, file paths, errors, user preferences, open tasks, and unresolved constraints. Drop pleasantries, repeated code, and verbose tool output. Never invent facts.`
 
 // Skills constants (docs/design/skills.md).
 const (
@@ -3491,7 +3491,8 @@ func (a *Agent) budget(ctx context.Context) error {
 		return nil
 	}
 	// summarize the oldest half of the messages before the current user turn
-	seg := a.history[:cutoff/2]
+	segEnd := safeHistoryBoundary(a.history, cutoff/2)
+	seg := a.history[:segEnd]
 	if len(seg) == 0 {
 		a.mu.Unlock()
 		return nil
@@ -3504,9 +3505,7 @@ func (a *Agent) budget(ctx context.Context) error {
 	if previousSummary != "" {
 		fmt.Fprintf(&b, "Previous summary:\n%s\n\n", previousSummary)
 	}
-	for _, h := range segCopy {
-		fmt.Fprintf(&b, "%s: %s\n", h.msg.Role, h.msg.Content)
-	}
+	b.WriteString(formatHistoryForSummary(segCopy))
 	prompt := []llm.Message{
 		{Role: "system", Content: "You are a conversation summarizer. " + summaryPrompt},
 		{Role: "user", Content: b.String()},
@@ -3545,8 +3544,10 @@ func (a *Agent) budget(ctx context.Context) error {
 	return nil
 }
 
-// Compact distills the ENTIRE conversation (everything before the current user
-// turn) into a compact session knowledge ledger and replaces it in context —
+// Compact distills the conversation before the current turn while retaining
+// the most recent real user turn in history. The older prefix, including the
+// first exchange, is represented in the structured ledger. Tool-call/result
+// exchanges are never split at the compaction boundary.
 // the manual, on-demand counterpart to budget()'s automatic pressure-driven
 // summarization (`/compact`). Unlike budget() it collapses all historical turns
 // at once into a structured ledger, freeing most of the context window.
@@ -3563,19 +3564,50 @@ func (a *Agent) Compact(ctx context.Context) (string, error) {
 		a.mu.Unlock()
 		return "nothing to compact (no history before the current turn)", nil
 	}
-	segCopy := append([]historyEntry(nil), a.history[:cutoff]...)
+	// Keep the most recent prior user turn plus the current user turn visible;
+	// this protects the latest user intent while still allowing older work to
+	// collapse into the ledger.
+	keepStart := cutoff
+	priorUsers := 0
+	for i := 0; i < cutoff; i++ {
+		if a.history[i].msg.Role == "user" {
+			priorUsers++
+		}
+	}
+	// Keep the latest prior exchange once there is an older user turn to
+	// compact. With only one prior exchange, compact it too so /compact still
+	// meaningfully reduces a short session.
+	if priorUsers > 1 {
+		for i := cutoff - 1; i >= 0; i-- {
+			if a.history[i].msg.Role == "user" {
+				keepStart = safeHistoryBoundary(a.history, i)
+				break
+			}
+		}
+	}
+	segCopy := append([]historyEntry(nil), a.history[:keepStart]...)
+	if len(segCopy) == 0 {
+		a.mu.Unlock()
+		return "nothing to compact (only the latest user turn is present)", nil
+	}
 	previousSummary := a.runningSummary
+	firstEnd := firstExchangeEnd(a.history, cutoff)
+	firstExchange := append([]historyEntry(nil), a.history[:firstEnd]...)
 	a.mu.Unlock()
 
 	var b strings.Builder
 	if previousSummary != "" {
 		fmt.Fprintf(&b, "Previous summary:\n%s\n\n", previousSummary)
 	}
-	for _, h := range segCopy {
-		fmt.Fprintf(&b, "%s: %s\n", h.msg.Role, h.msg.Content)
+	if len(firstExchange) > 0 {
+		b.WriteString("Protected first exchange (preserve its goal and constraints):\n")
+		b.WriteString(formatHistoryForSummary(firstExchange))
+		b.WriteString("\n")
 	}
+	b.WriteString("Conversation to condense:\n")
+	b.WriteString(formatHistoryForSummary(segCopy))
 	prompt := []llm.Message{
-		{Role: "system", Content: "You are a conversation distiller. Produce a tight SESSION LEDGER in exactly this structure, at most 400 words:\n[SESSION LEDGER]\n- Validated facts & file locations: ...\n- Decisions made: ...\n- Failed approaches (do not retry): ...\n- Active task & next step: ..."},
+		{Role: "system", Content: "You are a conversation distiller. Produce a tight SESSION LEDGER in exactly this structure, at most 400 words. Preserve the protected first exchange and use every heading:\n[SESSION LEDGER]\nGoal:\nConstraints:\nProgress:\nDecisions:\nFiles:\nNext Steps:\nCritical Context:"},
 		{Role: "user", Content: b.String()},
 	}
 	resp, err := a.summ.ChatStream(ctx, prompt, nil, func(string) {}, nil)
@@ -3596,7 +3628,7 @@ func (a *Agent) Compact(ctx context.Context) (string, error) {
 	a.mu.Lock()
 	a.runningSummary = ledger
 	a.summaryTokens = summaryTokens
-	a.history = append([]historyEntry{}, a.history[cutoff:]...)
+	a.history = append([]historyEntry{}, a.history[keepStart:]...)
 	a.mu.Unlock()
 	slog.Info("compacted history", "covered_messages", len(segCopy), "ledger_len", len(ledger))
 
@@ -3607,6 +3639,62 @@ func (a *Agent) Compact(ctx context.Context) (string, error) {
 		}
 	}
 	return fmt.Sprintf("compacted %d historical message(s) into a session ledger (~%d tokens freed)", len(segCopy), summaryTokens), nil
+}
+
+// safeHistoryBoundary returns the latest boundary at or before desired that
+// does not split an assistant tool call from its following tool results.
+func safeHistoryBoundary(history []historyEntry, desired int) int {
+	if desired < 0 {
+		return 0
+	}
+	if desired > len(history) {
+		desired = len(history)
+	}
+	for i := desired; i > 0; i-- {
+		if i < len(history) && history[i].msg.Role == "tool" &&
+			(i > 0 && (history[i-1].msg.Role == "tool" || len(history[i-1].msg.ToolCalls) > 0)) {
+			continue
+		}
+		if len(history[i-1].msg.ToolCalls) > 0 {
+			continue
+		}
+		return i
+	}
+	return 0
+}
+
+// firstExchangeEnd finds the boundary before the second user turn. The first
+// user exchange is included in the distiller input as a protected anchor.
+func firstExchangeEnd(history []historyEntry, before int) int {
+	if before > len(history) {
+		before = len(history)
+	}
+	seen := 0
+	for i := 0; i < before; i++ {
+		if history[i].msg.Role == "user" {
+			seen++
+			if seen == 2 {
+				return safeHistoryBoundary(history, i)
+			}
+		}
+	}
+	return before
+}
+
+func formatHistoryForSummary(history []historyEntry) string {
+	var b strings.Builder
+	for _, h := range history {
+		content := h.msg.Content
+		if content == "" && len(h.msg.ToolCalls) > 0 {
+			var names []string
+			for _, tc := range h.msg.ToolCalls {
+				names = append(names, tc.Function.Name)
+			}
+			content = "tool calls: " + strings.Join(names, ", ")
+		}
+		fmt.Fprintf(&b, "%s: %s\n", h.msg.Role, content)
+	}
+	return b.String()
 }
 
 // pruneToolOutputs collapses tool-result messages before the current user turn

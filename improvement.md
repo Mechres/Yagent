@@ -185,7 +185,7 @@ surface is not a fit for Yagent's local-first single binary.
 
 ### Recommended borrowings
 
-- 🟡 **Progressive subdirectory instructions** — discover a nested
+- ✅ **Progressive subdirectory instructions** — discover a nested
   `AGENTS.md`/`CLAUDE.md` when a tool first touches that directory. Cache each
   directory once, apply path/security scanning and size caps, and inject only
   the relevant instructions. This extends Yagent's current root-only project
@@ -195,15 +195,15 @@ surface is not a fit for Yagent's local-first single binary.
   possibly `@url:` before the user message reaches the model. Enforce workspace
   confinement, sensitive-path blocking, binary detection, and soft/hard token
   limits. This reduces tool-discovery burden for small local models.
-- 🟡 **Model-facing session search** — expose FTS5 search and bounded historical
+- ✅ **Model-facing session search** — expose FTS5 search and bounded historical
   scrolling as a read-only `session_search` tool. Keep semantic memory for
   durable facts and use session search to recover details after compaction or
   pruning without injecting old transcripts by default.
-- 🟡 **Structured, boundary-safe compaction** — preserve the first exchange and
-  latest real user messages, never split tool-call/result pairs, and summarize
-  into stable sections: Goal, Constraints, Progress, Decisions, Files, Next
-  Steps, and Critical Context. Update the previous summary on later compactions
-  instead of starting over.
+- ✅ **Structured, boundary-safe compaction** — automatic and manual compaction
+  preserve the first exchange and latest prior user turn, never split
+  tool-call/result pairs, and summarize into stable sections: Goal, Constraints,
+  Progress, Decisions, Files, Next Steps, and Critical Context. Later compactions
+  include the previous ledger as context instead of starting over.
 - 🟡 **Bounded always-on memory** — add compact project-facts and user-profile
   snapshots with hard token/character caps and explicit replace/remove behavior.
   Keep Yagent's larger hybrid L3 store for on-demand recall rather than putting
