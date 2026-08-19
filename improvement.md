@@ -151,9 +151,10 @@ plugin framework is not a fit for Yagent's small, local-first Go binary.
   separate canonical tool value, model-facing content, error identity, and UI
   presentation metadata. Start with filesystem, shell, diagnostics, and MCP;
   let the TUI render diff/terminal/read/search cards without parsing strings.
-- 🟡 **Monotonic tool guards** — formalize the existing hooks and approvals into
+- ✅ **Monotonic tool guards** — formalize the existing hooks and approvals into
   a policy layer where a matching guard may deny a call but no later hook can
-  re-allow it. Preserve the current approval behavior and fail-closed defaults.
+  re-allow it. `tools.Guard` now runs before hooks and execution with
+  fail-closed defaults; approval behavior is unchanged.
 
 ### Already covered in Yagent
 

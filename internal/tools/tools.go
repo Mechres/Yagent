@@ -84,6 +84,10 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// Guard is a fail-closed policy check. A non-nil error denies the call before
+// hooks or tool execution; later lifecycle stages cannot re-allow it.
+type Guard func(toolName string, args json.RawMessage) error
+
 // Options wires optional subsystems into the registry.
 type Options struct {
 	// Vectors + SessionID enable the semantic-memory tools (may be nil/empty);
@@ -113,6 +117,8 @@ type Options struct {
 	// Hooks are lifecycle hooks (Hermes P0): a command run before ("pre") or
 	// after ("post") a matching tool executes.
 	Hooks []Hook
+	// Guards are monotonic policy checks that always run before hooks.
+	Guards []Guard
 	// ReadOnly restricts the registry to read-only tools (used by subagents).
 	ReadOnly bool
 	// Subagent delegates a task to an isolated child agent (M7 v1). The
@@ -144,6 +150,7 @@ type Registry struct {
 	tools     map[string]Tool
 	skills    *skills.Store
 	hooks     *Hooks
+	guards    []Guard
 }
 
 // skillsDirs joins the skills store's SKILL.md roots ("|"-separated) so the fs
@@ -164,6 +171,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		tools:     make(map[string]Tool),
 		skills:    opts.Skills,
 		hooks:     NewHooks(opts.Hooks),
+		guards:    append([]Guard(nil), opts.Guards...),
 	}
 	reg := map[string]Tool{
 		"fs_read":               &fsReadTool{ws: r.workspace},
@@ -380,6 +388,14 @@ func (r *Registry) SchemasFor(names []string) []llm.ToolSchema {
 // (a non-zero exit vetoes the call), then the tool, then post-hooks. Returns
 // the tool's result text and a validation-style error.
 func (r *Registry) ExecuteWithHooks(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	for _, guard := range r.guards {
+		if guard == nil {
+			continue
+		}
+		if err := guard(name, args); err != nil {
+			return fmt.Sprintf("error: tool guard denied %s: %v", name, err), nil
+		}
+	}
 	if err := r.hooks.RunPre(name, args); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}

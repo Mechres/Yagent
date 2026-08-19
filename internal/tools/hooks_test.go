@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,5 +61,26 @@ func TestHooksOnlyMatchTool(t *testing.T) {
 	res, err := reg.ExecuteWithHooks(ctx(), "fs_read", argsJSON(t, map[string]any{"path": "a.txt"}))
 	if err != nil || !strings.Contains(res, "x") {
 		t.Errorf("fs_read with fs_write hook: %q, %v", res, err)
+	}
+}
+
+func TestMonotonicGuardRunsBeforeHooks(t *testing.T) {
+	dir := t.TempDir()
+	hookMarker := filepath.Join(dir, "hook-ran")
+	reg := NewRegistry(dir, Options{
+		Guards: []Guard{func(name string, args json.RawMessage) error {
+			if name == "fs_write" {
+				return fmt.Errorf("policy denies writes")
+			}
+			return nil
+		}},
+		Hooks: []Hook{{When: "pre", Tool: "fs_write", Command: []string{"sh", "-c", "echo ran > " + hookMarker}}},
+	})
+	res, _ := reg.ExecuteWithHooks(ctx(), "fs_write", argsJSON(t, map[string]any{"path": "x", "content": "no"}))
+	if !strings.Contains(res, "tool guard denied") {
+		t.Fatalf("guard result = %q", res)
+	}
+	if _, err := os.Stat(hookMarker); !os.IsNotExist(err) {
+		t.Fatalf("hook ran after guard denial: %v", err)
 	}
 }
