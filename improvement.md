@@ -147,10 +147,11 @@ plugin framework is not a fit for Yagent's small, local-first Go binary.
   changes, and compaction boundaries. Keep the current message projection for
   compatibility; derive replay/debug views from events. Start only after a
   concrete crash-recovery or exact-replay requirement appears.
-- 🟡 **Structured tool outcomes and neutral presentation** — incrementally
+- ✅ **Structured tool outcomes and neutral presentation** — incrementally
   separate canonical tool value, model-facing content, error identity, and UI
-  presentation metadata. Start with filesystem, shell, diagnostics, and MCP;
-  let the TUI render diff/terminal/read/search cards without parsing strings.
+  presentation metadata. `tools.ToolOutcome` now covers filesystem, shell,
+  diagnostics, memory, web, MCP, approvals, and failures; the TUI consumes the
+  neutral callbacks while retaining its existing rendering.
 - ✅ **Monotonic tool guards** — formalize the existing hooks and approvals into
   a policy layer where a matching guard may deny a call but no later hook can
   re-allow it. `tools.Guard` now runs before hooks and execution with
