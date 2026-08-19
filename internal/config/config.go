@@ -298,14 +298,16 @@ func FetchModels(ctx context.Context, baseURL string) ([]string, bool) {
 // FetchModelsDev fetches the live model list for a cloud provider from
 // models.dev (the same index opencode uses), so cloud models never go stale.
 // It returns the provider's model IDs filtered to coding-relevant ones and
-// capped, or ok=false when the fetch fails. This is the cloud counterpart of
+// capped for large general-purpose catalogs, or ok=false when the fetch
+// fails. NVIDIA is an exception: its catalog is returned in full so users can
+// select any NVIDIA-hosted model. This is the cloud counterpart of
 // FetchModels (which reads a local /v1/models endpoint).
 //
 // currentModel, when non-empty, is guaranteed to appear in the result even if
 // it would sort past the cap — the user's active model must stay selectable.
 // Models whose id contains the provider's own name (e.g. "nvidia/…" on NVIDIA)
 // are prioritized so a provider's native models don't get alphabetically
-// squeezed out by third-party listings.
+// squeezed out by third-party listings when a catalog is capped.
 func FetchModelsDev(ctx context.Context, providerKey, currentModel string) ([]string, bool) {
 	if providerKey == "" {
 		return nil, false
@@ -336,10 +338,8 @@ func FetchModelsDev(ctx context.Context, providerKey, currentModel string) ([]st
 	}
 	// Order: the ACTIVE/configured model first (it must always be selectable
 	// regardless of the cap), then the provider's own models (id starts with
-	// "<provider>/" or contains the provider name), then coding-relevant, then
-	// the rest. Keeps the cap from hiding the user's current model or a
-	// provider's native models (NVIDIA's nemotron-* sort behind mistralai/*
-	// alphabetically, and behind dozens of other nvidia/* entries).
+	// "<provider>/"), then coding-relevant, then the rest. Keeps the cap from
+	// hiding the user's current model or a provider's native models.
 	own := providerKey
 	var ownNames, current, coding, other []string
 	for id := range prov.Models {
@@ -368,9 +368,14 @@ func FetchModelsDev(ctx context.Context, providerKey, currentModel string) ([]st
 	out := append(current, ownNames...)
 	out = append(out, coding...)
 	out = append(out, other...)
-	const max = 20
-	if len(out) > max {
-		out = out[:max]
+	// NVIDIA exposes a broad catalog and users commonly need models outside
+	// the coding-oriented subset. The TUI already renders this as a scrollable
+	// pane, so do not silently hide the rest of NVIDIA's catalog.
+	if providerKey != "nvidia" {
+		const max = 20
+		if len(out) > max {
+			out = out[:max]
+		}
 	}
 	return out, len(out) > 0
 }

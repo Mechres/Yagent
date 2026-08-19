@@ -273,8 +273,8 @@ func TestFetchModelsDevShape(t *testing.T) {
 }
 
 // TestFetchModelsDevPrioritizesCurrentModel: the currently configured model
-// must stay in the capped result even if it sorts past the cap — the user's
-// active model has to remain selectable.
+// must stay first even if it sorts past the normal cap — the user's active
+// model has to remain selectable.
 func TestFetchModelsDevPrioritizesCurrentModel(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		models := map[string]any{}
@@ -289,17 +289,40 @@ func TestFetchModelsDevPrioritizesCurrentModel(t *testing.T) {
 	modelsDevURL = ts.URL
 	defer func() { modelsDevURL = old }()
 
-	// nvidia's own models sort first (own-prefix priority), so even without a
-	// current model the nemotron entry survives the cap.
+	// NVIDIA's own models sort first (own-prefix priority).
 	out, _ := FetchModelsDev(context.Background(), "nvidia", "")
 	if !slices.Contains(out, "nvidia/nemotron-3-nano-30b-a3b") {
-		t.Error("provider's own model should appear in the capped list via own-prefix priority")
+		t.Error("provider's own model should appear via own-prefix priority")
 	}
-	// with the current model, it is guaranteed to appear (and stays if the
-	// own-prefix list grew past the cap)
+	// with the current model, it is guaranteed to appear first.
 	out, _ = FetchModelsDev(context.Background(), "nvidia", "nvidia/nemotron-3-nano-30b-a3b")
 	if !slices.Contains(out, "nvidia/nemotron-3-nano-30b-a3b") {
-		t.Errorf("current model missing from capped list: %v", out)
+		t.Errorf("current model missing from list: %v", out)
+	}
+	if out[0] != "nvidia/nemotron-3-nano-30b-a3b" {
+		t.Errorf("current model should be first: %v", out)
+	}
+}
+
+func TestFetchModelsDevReturnsCompleteNVIDIACatalog(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		models := map[string]any{}
+		for i := 0; i < 37; i++ {
+			models[fmt.Sprintf("nvidia/model-%02d", i)] = map[string]any{}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"nvidia": map[string]any{"models": models}})
+	}))
+	defer ts.Close()
+	old := modelsDevURL
+	modelsDevURL = ts.URL
+	defer func() { modelsDevURL = old }()
+
+	out, ok := FetchModelsDev(context.Background(), "nvidia", "")
+	if !ok {
+		t.Fatal("NVIDIA catalog fetch should succeed")
+	}
+	if len(out) != 37 {
+		t.Fatalf("NVIDIA catalog was truncated: got %d models", len(out))
 	}
 }
 
