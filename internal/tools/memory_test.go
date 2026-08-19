@@ -89,6 +89,28 @@ func TestMemoryTools(t *testing.T) {
 	if mem[0].SessionID != "sess-1" || mem[0].Source != "tool" {
 		t.Errorf("memory metadata = %+v", mem[0])
 	}
+	if got := execTool(t, reg, "memory_snapshot", map[string]any{
+		"kind": "user_profile", "action": "replace", "text": "The user prefers concise answers.",
+	}); !strings.Contains(got, "replaced") {
+		t.Errorf("memory_snapshot replace = %q", got)
+	}
+	snap, err := vs.Snapshot(context.Background(), "user_profile")
+	if err != nil || snap.Text != "The user prefers concise answers." {
+		t.Errorf("snapshot = %+v, err=%v", snap, err)
+	}
+	if got := execTool(t, reg, "memory_snapshot", map[string]any{
+		"kind": "user_profile", "action": "remove",
+	}); !strings.Contains(got, "removed") {
+		t.Errorf("memory_snapshot remove = %q", got)
+	}
+	if snap, _ := vs.Snapshot(context.Background(), "user_profile"); snap.Text != "" {
+		t.Errorf("snapshot was not removed: %+v", snap)
+	}
+	if got := execTool(t, reg, "memory_snapshot", map[string]any{
+		"kind": "user_profile", "action": "replace", "text": strings.Repeat("x", memory.MaxUserProfileChars+1),
+	}); !strings.Contains(got, "character cap") {
+		t.Errorf("snapshot cap = %q", got)
+	}
 }
 
 func TestMemoryToolsUnconfigured(t *testing.T) {

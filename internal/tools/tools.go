@@ -185,6 +185,7 @@ func NewRegistry(workspace string, opts Options) *Registry {
 		"git_diff":              &gitDiffTool{ws: r.workspace},
 		"git_log":               &gitLogTool{ws: r.workspace},
 		"memory_save":           &memorySaveTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors, sessionID: opts.SessionID},
+		"memory_snapshot":       &memorySnapshotTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors},
 		"memory_search":         &memorySearchTool{vectors: opts.Vectors, projectVectors: opts.ProjectVectors},
 	}
 	if opts.SessionStore != nil {

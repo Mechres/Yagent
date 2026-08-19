@@ -73,6 +73,72 @@ func (t *memorySaveTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 	return "remembered", nil
 }
 
+// ---------- memory_snapshot ----------
+
+type memorySnapshotTool struct {
+	vectors        *memory.VectorStore
+	projectVectors *memory.VectorStore
+}
+
+type memorySnapshotArgs struct {
+	Kind   string `json:"kind"`
+	Action string `json:"action"`
+	Text   string `json:"text,omitempty"`
+	Scope  string `json:"scope,omitempty"`
+}
+
+var memorySnapshotSchema = fnSchema("memory_snapshot", "manage compact always-on memory injected every turn: replace or remove a global user_profile or project project_facts snapshot; use memory_save for ordinary searchable facts",
+	map[string]any{
+		"kind":   strProp("snapshot kind: user_profile or project_facts"),
+		"action": strProp("replace or remove"),
+		"text":   strProp("replacement snapshot text (required for replace)"),
+		"scope":  strProp("global (default) or project"),
+	}, []string{"kind", "action"})
+
+func (t *memorySnapshotTool) Schema() llm.ToolSchema { return memorySnapshotSchema }
+func (t *memorySnapshotTool) Risk() RiskLevel        { return RiskWrite }
+func (t *memorySnapshotTool) SelfGated() bool        { return true }
+
+func (t *memorySnapshotTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	var a memorySnapshotArgs
+	if err := decodeArgs(raw, &a); err != nil {
+		return "", err
+	}
+	if a.Kind != "project_facts" && a.Kind != "user_profile" {
+		return "", validationErrorf("kind must be project_facts or user_profile")
+	}
+	if a.Action != "replace" && a.Action != "remove" {
+		return "", validationErrorf("action must be replace or remove")
+	}
+	if a.Scope == "" {
+		a.Scope = "global"
+	}
+	var store *memory.VectorStore
+	if a.Scope == "project" {
+		store = t.projectVectors
+	} else if a.Scope == "global" {
+		store = t.vectors
+	} else {
+		return "", validationErrorf("scope must be global or project")
+	}
+	if store == nil {
+		return "error: requested snapshot scope is not configured", nil
+	}
+	if a.Action == "remove" {
+		if err := store.RemoveSnapshot(ctx, a.Kind); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		return "removed always-on snapshot", nil
+	}
+	if strings.TrimSpace(a.Text) == "" {
+		return "", validationErrorf(`argument "text" is required for replace`)
+	}
+	if err := store.ReplaceSnapshot(ctx, a.Kind, a.Text); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+	return "replaced always-on snapshot", nil
+}
+
 // ---------- memory_search ----------
 
 type memorySearchTool struct {

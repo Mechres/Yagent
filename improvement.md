@@ -208,10 +208,11 @@ surface is not a fit for Yagent's local-first single binary.
   tool-call/result pairs, and summarize into stable sections: Goal, Constraints,
   Progress, Decisions, Files, Next Steps, and Critical Context. Later compactions
   include the previous ledger as context instead of starting over.
-- 🟡 **Bounded always-on memory** — add compact project-facts and user-profile
+- ✅ **Bounded always-on memory** — add compact project-facts and user-profile
   snapshots with hard token/character caps and explicit replace/remove behavior.
-  Keep Yagent's larger hybrid L3 store for on-demand recall rather than putting
-  all semantic matches into every system prompt.
+  `memory_snapshot` now manages them in the global/project SQLite stores and
+  injects only these bounded snapshots on every request; larger hybrid L3
+  recall remains on demand.
 - 🟡 **Skill bundles** — add a small YAML alias that loads several existing
   skills plus one short instruction, without adopting a marketplace or remote
   registry.

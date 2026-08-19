@@ -51,7 +51,25 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text);
+CREATE TABLE IF NOT EXISTS always_on_snapshots (
+    kind       TEXT PRIMARY KEY,
+    text       TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 `
+
+const (
+	MaxProjectFactsChars = 4000
+	MaxUserProfileChars  = 2000
+)
+
+// Snapshot is a bounded always-on memory value. Unlike semantic memories it
+// is injected on every turn and is never embedded or ranked.
+type Snapshot struct {
+	Kind      string
+	Text      string
+	UpdatedAt int64
+}
 
 // Memory is one recalled semantic memory (L3).
 type Memory struct {
@@ -111,6 +129,51 @@ func (v *VectorStore) SetBearerToken(token string) {
 
 // Dir returns the store's data directory.
 func (v *VectorStore) Dir() string { return v.dir }
+
+// Snapshot returns one always-on value, or an empty value when unset.
+func (v *VectorStore) Snapshot(ctx context.Context, kind string) (Snapshot, error) {
+	var out Snapshot
+	err := v.db.QueryRowContext(ctx, `SELECT kind, text, updated_at FROM always_on_snapshots WHERE kind = ?`, kind).
+		Scan(&out.Kind, &out.Text, &out.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return Snapshot{Kind: kind}, nil
+	}
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("get always-on snapshot: %w", err)
+	}
+	return out, nil
+}
+
+// ReplaceSnapshot atomically replaces one bounded always-on value.
+func (v *VectorStore) ReplaceSnapshot(ctx context.Context, kind, text string) error {
+	limit := MaxProjectFactsChars
+	if kind == "user_profile" {
+		limit = MaxUserProfileChars
+	}
+	text = strings.TrimSpace(scrub.Text(text))
+	if text == "" {
+		return fmt.Errorf("snapshot text is required")
+	}
+	if len(text) > limit {
+		return fmt.Errorf("%s exceeds %d character cap", kind, limit)
+	}
+	if kind != "project_facts" && kind != "user_profile" {
+		return fmt.Errorf("unknown snapshot kind %q", kind)
+	}
+	_, err := v.db.ExecContext(ctx, `INSERT INTO always_on_snapshots(kind, text, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(kind) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`, kind, text, time.Now().Unix())
+	return err
+}
+
+// RemoveSnapshot removes one always-on value. Removing an absent value is
+// successful, which makes explicit cleanup idempotent.
+func (v *VectorStore) RemoveSnapshot(ctx context.Context, kind string) error {
+	if kind != "project_facts" && kind != "user_profile" {
+		return fmt.Errorf("unknown snapshot kind %q", kind)
+	}
+	_, err := v.db.ExecContext(ctx, `DELETE FROM always_on_snapshots WHERE kind = ?`, kind)
+	return err
+}
 
 func (v *VectorStore) embedOne(ctx context.Context, text string) ([]float32, error) {
 	vecs, err := v.client.Embed(ctx, v.embedModel, []string{text})

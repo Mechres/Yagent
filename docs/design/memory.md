@@ -9,6 +9,12 @@ L3 semantic memory   SQLite hybrid: vectors + FTS5 + weights  (memory pkg)
 L4 codebase index    tree-sitter chunks + embeddings          (index pkg)
 ```
 
+The always-on layer is a bounded companion to L3: `user_profile` is capped at
+2,000 characters and `project_facts` at 4,000 characters. They live in the
+global/project memory SQLite stores, are injected directly on every request,
+and are managed only by explicit `memory_snapshot` replace/remove operations.
+They are not embedded, searched, or treated as instructions.
+
 ## L1 — Working context
 
 The slice of messages actually sent to the model, assembled per `agent-loop.md`. Budgeted by accurate token counts from the server tokenizer (`llm.Client.CountTokens`; `len/4` fallback). When over budget: old tool outputs are first collapsed to one-line `[tool output concealed; N lines hidden]` markers (user/assistant turns kept), then the oldest 50% of history (excluding system/tool-schema) is summarized and replaced by the running summary. Automatic and manual compaction choose message boundaries that never split an assistant tool call from its tool results. Manual `/compact` retains the latest prior user exchange alongside the current turn and protects the first exchange as an anchor in the ledger.
